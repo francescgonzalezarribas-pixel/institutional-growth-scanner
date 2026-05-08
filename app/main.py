@@ -46,7 +46,7 @@ async def main():
 
             await process_signals()
 
-            await asyncio.sleep(300)
+            await asyncio.sleep(900)
 
         except Exception as e:
 
