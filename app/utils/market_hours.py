@@ -19,5 +19,5 @@ def market_is_open():
 
     current = hour + minute / 60
 
-    # 9:30 -> 16:00 NY
+    # mercado USA 9:30 -> 16:00
     return 9.5 <= current <= 16
