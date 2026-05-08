@@ -16,7 +16,10 @@ def get_recent_ipos():
             to="2026-12-31"
         )
 
-        ipo_list = data.get("ipoCalendar", [])
+        ipo_list = data.get(
+            "ipoCalendar",
+            []
+        )
 
         symbols = []
 
@@ -27,15 +30,18 @@ def get_recent_ipos():
             if not symbol:
                 continue
 
-            exchange = ipo.get(
-                "exchange",
-                ""
-            ).lower()
+            exchange = ipo.get("exchange")
+
+            if not exchange:
+                continue
+
+            exchange = exchange.lower()
 
             if (
                 "nasdaq" in exchange
                 or "nyse" in exchange
             ):
+
                 symbols.append(symbol)
 
         return list(set(symbols))
