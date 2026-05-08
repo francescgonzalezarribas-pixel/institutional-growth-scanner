@@ -2,10 +2,15 @@ def calculate_score(data):
 
     score = 0
 
-    if data["relative_volume"] >= 2:
-        score += 20
+    rv = data["relative_volume"]
 
-    if data["relative_volume"] >= 4:
+    if rv >= 2:
+        score += 15
+
+    if rv >= 3:
+        score += 10
+
+    if rv >= 5:
         score += 10
 
     if data["has_news"]:
@@ -21,6 +26,6 @@ def calculate_score(data):
         score += 10
 
     if data["institutional_volume"]:
-        score += 15
+        score += 10
 
     return min(score, 100)
