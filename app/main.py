@@ -1,4 +1,3 @@
-import time
 import asyncio
 
 from app.scanner.market_scanner import scan_market
@@ -38,7 +37,9 @@ async def process_signals():
 
 async def main():
 
-    log.info("Institutional Growth Scanner iniciado")
+    log.info(
+        "Institutional Growth Scanner iniciado"
+    )
 
     while True:
 
@@ -46,13 +47,13 @@ async def main():
 
             await process_signals()
 
-            await asyncio.sleep(1800)
+            await asyncio.sleep(3600)
 
         except Exception as e:
 
             log.error(e)
 
-            await asyncio.sleep(60)
+            await asyncio.sleep(300)
 
 
 if __name__ == "__main__":
