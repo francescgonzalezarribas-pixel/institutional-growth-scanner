@@ -1,0 +1,15 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+MIN_SIGNAL_SCORE = 80
+
+MIN_RELATIVE_VOLUME = 2.0
+
+MIN_MARKET_CAP = 300_000_000
