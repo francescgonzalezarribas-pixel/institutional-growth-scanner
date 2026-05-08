@@ -53,13 +53,15 @@ def scan_market():
                 2
             )
 
-           price = ticker.fast_info.get("lastPrice")
+            price = ticker.fast_info.get(
+                "lastPrice"
+            )
 
-if not price:
-    continue
+            if not price:
+                continue
 
-if price <= 1 or price >= 1000:
-    continue
+            if price <= 1 or price >= 1000:
+                continue
 
             resistance = (
                 hist["High"]
@@ -96,7 +98,7 @@ if price <= 1 or price >= 1000:
 
             data = {
                 "symbol": symbol,
-                "price": price,
+                "price": float(price),
                 "relative_volume": relative_volume,
                 "breakout": breakout,
                 "ipo": ipo,
@@ -113,6 +115,7 @@ if price <= 1 or price >= 1000:
 
             log.info(
                 f"{symbol} | "
+                f"PRICE={price:.2f} | "
                 f"RVOL={relative_volume} | "
                 f"SCORE={score}"
             )
