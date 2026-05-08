@@ -1,8 +1,3 @@
-from app.scanner.ipo_scanner import (
-    get_recent_ipos
-)
-
-
 BASE_STOCKS = [
 
     # IA
@@ -24,7 +19,7 @@ BASE_STOCKS = [
     # Cybersecurity
     "CRWD",
 
-    # Semis
+    # Semiconductors
     "AMD",
 
     # IPO / newer
@@ -35,13 +30,4 @@ BASE_STOCKS = [
 
 def get_market_universe():
 
-    ipo_stocks = (
-        get_recent_ipos()[:5]
-    )
-
-    combined = (
-        BASE_STOCKS
-        + ipo_stocks
-    )
-
-    return list(set(combined))
+    return BASE_STOCKS
