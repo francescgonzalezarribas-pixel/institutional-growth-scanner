@@ -1,4 +1,5 @@
 import time
+import asyncio
 
 from app.scanner.market_scanner import scan_market
 from app.telegram.telegram_bot import send_message
@@ -10,7 +11,32 @@ from app.utils.logger import log
 sent = set()
 
 
-def main():
+async def process_signals():
+
+    signals = scan_market()
+
+    for signal in signals:
+
+        key = (
+            f"{signal['symbol']}"
+            f"-{signal['headline']}"
+        )
+
+        if key in sent:
+            continue
+
+        msg = build_signal(signal)
+
+        await send_message(msg)
+
+        sent.add(key)
+
+        log.info(
+            f"Señal enviada: {signal['symbol']}"
+        )
+
+
+async def main():
 
     log.info("Institutional Growth Scanner iniciado")
 
@@ -18,36 +44,16 @@ def main():
 
         try:
 
-            signals = scan_market()
+            await process_signals()
 
-            for signal in signals:
-
-                key = (
-                    f"{signal['symbol']}"
-                    f"-{signal['headline']}"
-                )
-
-                if key in sent:
-                    continue
-
-                msg = build_signal(signal)
-
-                send_message(msg)
-
-                sent.add(key)
-
-                log.info(
-                    f"Señal enviada: {signal['symbol']}"
-                )
-
-            time.sleep(300)
+            await asyncio.sleep(300)
 
         except Exception as e:
 
             log.error(e)
 
-            time.sleep(60)
+            await asyncio.sleep(60)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
