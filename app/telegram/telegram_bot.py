@@ -8,14 +8,16 @@ from app.config import (
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 
-def send_message(message: str):
+async def send_message(message: str):
 
     try:
-        bot.send_message(
+
+        await bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=message,
             parse_mode="HTML"
         )
 
     except Exception as e:
+
         print(f"Telegram error: {e}")
