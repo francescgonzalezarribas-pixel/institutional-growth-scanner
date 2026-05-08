@@ -89,11 +89,14 @@ def scan_market():
 
             sector_hot = True
 
-            ipo = symbol not in [
-                "NVDA",
-                "AMD",
-                "TSM",
-                "MU"
+            ipo = symbol in [
+                "ARM",
+                "RKLB",
+                "ASTS",
+                "IONQ",
+                "TEM",
+                "RDDT",
+                "CART"
             ]
 
             data = {
@@ -128,12 +131,12 @@ def scan_market():
                     f"SETUP DETECTADO: {symbol}"
                 )
 
-            time.sleep(8)
+            time.sleep(15)
 
         except Exception as e:
 
             log.error(f"{symbol} {e}")
 
-            time.sleep(15)
+            time.sleep(30)
 
     return signals
