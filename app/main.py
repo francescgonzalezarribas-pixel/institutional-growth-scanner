@@ -5,6 +5,9 @@ from app.telegram.telegram_bot import send_message
 from app.telegram.message_builder import build_signal
 
 from app.utils.logger import log
+from app.utils.market_hours import (
+    market_is_open
+)
 
 
 sent = set()
@@ -45,9 +48,23 @@ async def main():
 
         try:
 
-            await process_signals()
+            if market_is_open():
 
-            await asyncio.sleep(3600)
+                log.info(
+                    "Mercado abierto → escaneando"
+                )
+
+                await process_signals()
+
+                await asyncio.sleep(1800)
+
+            else:
+
+                log.info(
+                    "Mercado cerrado"
+                )
+
+                await asyncio.sleep(21600)
 
         except Exception as e:
 
