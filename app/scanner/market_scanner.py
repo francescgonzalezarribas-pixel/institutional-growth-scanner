@@ -128,12 +128,12 @@ def scan_market():
                     f"SETUP DETECTADO: {symbol}"
                 )
 
-            time.sleep(3)
+            time.sleep(8)
 
         except Exception as e:
 
             log.error(f"{symbol} {e}")
 
-            time.sleep(5)
+            time.sleep(15)
 
     return signals
