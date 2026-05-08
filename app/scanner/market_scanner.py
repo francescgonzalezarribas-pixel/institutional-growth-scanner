@@ -7,25 +7,14 @@ from app.scoring.scoring_engine import calculate_score
 from app.utils.logger import log
 
 
-WATCHLIST = [
-    "ASTS",
-    "HIMS",
-    "PLTR",
-    "ARM",
-    "TEM",
-    "SMCI",
-    "SOUN",
-    "IONQ",
-    "RKLB",
-    "CRWD"
-]
+app.scanner.universe
 
 
 def scan_market():
 
     signals = []
 
-    for symbol in WATCHLIST:
+    for symbol in HOT_STOCKS:
 
         try:
 
