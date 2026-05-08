@@ -1,4 +1,9 @@
-HOT_STOCKS = [
+from app.scanner.ipo_scanner import (
+    get_recent_ipos
+)
+
+
+BASE_STOCKS = [
 
     # IA
     "NVDA",
@@ -35,3 +40,15 @@ HOT_STOCKS = [
     "RDDT",
     "CART"
 ]
+
+
+def get_market_universe():
+
+    ipo_stocks = get_recent_ipos()
+
+    combined = (
+        BASE_STOCKS
+        + ipo_stocks
+    )
+
+    return list(set(combined))
