@@ -53,7 +53,13 @@ def scan_market():
                 2
             )
 
-            price = hist["Close"].iloc[-1]
+           price = ticker.fast_info.get("lastPrice")
+
+if not price:
+    continue
+
+if price <= 1 or price >= 1000:
+    continue
 
             resistance = (
                 hist["High"]
