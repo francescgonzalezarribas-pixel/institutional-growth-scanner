@@ -8,35 +8,26 @@ BASE_STOCKS = [
     # IA
     "NVDA",
     "PLTR",
-    "SMCI",
     "ARM",
-    "SOUN",
-    "BBAI",
 
-    # Space / Defense
+    # Space
     "RKLB",
     "ASTS",
-    "LUNR",
 
-    # Quantum / Robotics
+    # Quantum
     "IONQ",
-    "SYM",
-
-    # Cybersecurity
-    "CRWD",
-    "PANW",
 
     # Growth
     "HIMS",
     "TEM",
-    "CAVA",
 
-    # Semiconductors
+    # Cybersecurity
+    "CRWD",
+
+    # Semis
     "AMD",
-    "TSM",
-    "MU",
 
-    # IPO / Newer
+    # IPO / newer
     "RDDT",
     "CART"
 ]
@@ -44,7 +35,9 @@ BASE_STOCKS = [
 
 def get_market_universe():
 
-    ipo_stocks = get_recent_ipos()
+    ipo_stocks = (
+        get_recent_ipos()[:5]
+    )
 
     combined = (
         BASE_STOCKS
