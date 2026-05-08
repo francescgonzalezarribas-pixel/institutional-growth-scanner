@@ -4,17 +4,24 @@ import yfinance as yf
 from app.news.news_engine import get_company_news
 from app.scoring.scoring_engine import calculate_score
 
+from app.scanner.universe import (
+    get_market_universe
+)
+
 from app.utils.logger import log
-
-
-app.scanner.universe
 
 
 def scan_market():
 
     signals = []
 
-    for symbol in HOT_STOCKS:
+    universe = get_market_universe()
+
+    log.info(
+        f"Universo cargado: {len(universe)} acciones"
+    )
+
+    for symbol in universe:
 
         try:
 
@@ -38,6 +45,9 @@ def scan_market():
 
             current_volume = hist["Volume"].iloc[-1]
 
+            if avg_volume <= 0:
+                continue
+
             relative_volume = round(
                 current_volume / avg_volume,
                 2
@@ -59,20 +69,35 @@ def scan_market():
 
             has_news = len(news) > 0
 
+            headline = (
+                news[0]["headline"]
+                if has_news
+                else "Momentum detectado."
+            )
+
+            institutional_volume = (
+                relative_volume >= 3
+            )
+
+            sector_hot = True
+
+            ipo = symbol not in [
+                "NVDA",
+                "AMD",
+                "TSM",
+                "MU"
+            ]
+
             data = {
                 "symbol": symbol,
                 "price": price,
                 "relative_volume": relative_volume,
                 "breakout": breakout,
-                "ipo": True,
-                "sector_hot": True,
-                "institutional_volume": relative_volume >= 3,
+                "ipo": ipo,
+                "sector_hot": sector_hot,
+                "institutional_volume": institutional_volume,
                 "has_news": has_news,
-                "headline": (
-                    news[0]["headline"]
-                    if has_news
-                    else "Momentum detectado."
-                ),
+                "headline": headline,
                 "sector": "Growth"
             }
 
@@ -86,8 +111,13 @@ def scan_market():
                 f"SCORE={score}"
             )
 
-            if score >= 80:
+            if score >= 85:
+
                 signals.append(data)
+
+                log.info(
+                    f"SETUP DETECTADO: {symbol}"
+                )
 
             time.sleep(3)
 
