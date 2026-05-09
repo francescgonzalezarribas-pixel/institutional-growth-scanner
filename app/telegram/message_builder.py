@@ -1,3 +1,8 @@
+from app.utils.company_names import (
+    COMPANY_NAMES
+)
+
+
 def build_signal(data):
 
     conviction = round(
@@ -23,10 +28,17 @@ def build_signal(data):
     else:
         score_display = "🟡"
 
+    company_name = COMPANY_NAMES.get(
+        data["symbol"],
+        data["symbol"]
+    )
+
     return f"""
 🟢 <b>SEÑAL LONG — ALTA CONVICCIÓN</b>
 
-🏢 <b>Empresa:</b> {data['symbol']}
+🏢 <b>Empresa:</b>
+{company_name} ({data['symbol']})
+
 🌍 <b>Mercado:</b> NASDAQ
 📈 <b>Sector:</b> {data['sector']}
 
