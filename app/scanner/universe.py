@@ -1,30 +1,71 @@
 BASE_STOCKS = [
 
-    # IA
+    # =========================
+    # USA — IA / Growth
+    # =========================
+
     "NVDA",
     "PLTR",
     "ARM",
+    "AMD",
+    "SMCI",
+    "SOUN",
 
-    # Space
+    # =========================
+    # USA — Space / Defense
+    # =========================
+
     "RKLB",
     "ASTS",
+    "LUNR",
 
-    # Quantum
+    # =========================
+    # USA — Quantum / Robotics
+    # =========================
+
     "IONQ",
 
-    # Growth
+    # =========================
+    # USA — Growth / IPO
+    # =========================
+
     "HIMS",
     "TEM",
+    "RDDT",
+    "CART",
 
-    # Cybersecurity
+    # =========================
+    # USA — Cybersecurity
+    # =========================
+
     "CRWD",
 
-    # Semiconductors
-    "AMD",
+    # =========================
+    # EUROPA — Semiconductores
+    # =========================
 
-    # IPO / newer
-    "RDDT",
-    "CART"
+    "ASML",
+    "STM",
+    "BESI.AS",
+
+    # =========================
+    # EUROPA — Defensa
+    # =========================
+
+    "RHM.DE",
+    "HO.PA",
+
+    # =========================
+    # EUROPA — IA / Software
+    # =========================
+
+    "DSY.PA",
+
+    # =========================
+    # EUROPA — Ciberseguridad
+    # =========================
+
+    "DARK.L"
 ]
 
 
