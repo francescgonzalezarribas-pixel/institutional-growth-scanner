@@ -1,6 +1,21 @@
 def build_signal(data):
 
-    conviction = round(data["score"] / 10, 1)
+    conviction = round(
+        data["score"] / 10,
+        1
+    )
+
+    if conviction >= 9:
+        score_icon = "🟢"
+
+    elif conviction >= 8:
+        score_icon = "🔵"
+
+    elif conviction >= 7:
+        score_icon = "🟡"
+
+    else:
+        score_icon = "⚪"
 
     return f"""
 🟢 <b>SEÑAL LONG — ALTA CONVICCIÓN</b>
@@ -35,6 +50,6 @@ x{data['relative_volume']}
 
 ━━━━━━━━━━━━━━━━━━
 
-⭐ <b>Convicción:</b>
+{score_icon} <b>Convicción:</b>
 {conviction} / 10
 """
