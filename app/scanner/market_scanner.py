@@ -131,7 +131,7 @@ def scan_market():
                     f"SETUP DETECTADO: {symbol}"
                 )
 
-            time.sleep(15)
+            time.sleep(10)
 
         except Exception as e:
 
