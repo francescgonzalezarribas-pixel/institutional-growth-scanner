@@ -5,17 +5,23 @@ def build_signal(data):
         1
     )
 
-    if conviction >= 9:
-        score_icon = "🟢"
+    if conviction >= 9.5:
+        score_display = "🟢🟢"
 
-    elif conviction >= 8:
-        score_icon = "🔵"
+    elif conviction >= 9.0:
+        score_display = "🟢"
 
-    elif conviction >= 7:
-        score_icon = "🟡"
+    elif conviction >= 8.5:
+        score_display = "🔵🔵"
+
+    elif conviction >= 8.0:
+        score_display = "🔵"
+
+    elif conviction >= 7.5:
+        score_display = "🟡🟡"
 
     else:
-        score_icon = "⚪"
+        score_display = "🟡"
 
     return f"""
 🟢 <b>SEÑAL LONG — ALTA CONVICCIÓN</b>
@@ -50,6 +56,6 @@ x{data['relative_volume']}
 
 ━━━━━━━━━━━━━━━━━━
 
-{score_icon} <b>Convicción:</b>
+{score_display} <b>Convicción:</b>
 {conviction} / 10
 """
