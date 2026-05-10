@@ -11,41 +11,45 @@ def market_is_open():
 
     now = datetime.now(madrid)
 
-    # sábado o domingo
-    if now.weekday() >= 5:
-        return False
-
     hour = now.hour
     minute = now.minute
 
     current = hour + minute / 60
 
+    weekday = now.weekday()
+
     # =========================
     # Asia
-    # Japón / Corea / Taiwán
-    # 01:00 -> 08:00 España
+    # Domingo noche incluido
     # =========================
 
+    asia_day = weekday in [0, 1, 2, 3, 4]
+
+    # domingo noche España
+    if weekday == 6 and current >= 1:
+        asia_day = True
+
     asia_open = (
-        1 <= current <= 8
+        asia_day
+        and 1 <= current <= 8
     )
 
     # =========================
     # Europa
-    # 09:00 -> 17:30 España
     # =========================
 
     europe_open = (
-        9 <= current <= 17.5
+        weekday < 5
+        and 9 <= current <= 17.5
     )
 
     # =========================
     # USA
-    # 15:30 -> 22:00 España
     # =========================
 
     usa_open = (
-        15.5 <= current <= 22
+        weekday < 5
+        and 15.5 <= current <= 22
     )
 
     return (
