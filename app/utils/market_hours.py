@@ -1,14 +1,15 @@
 from datetime import datetime
+
 import pytz
 
 
 def market_is_open():
 
-    ny = pytz.timezone(
-        "America/New_York"
+    madrid = pytz.timezone(
+        "Europe/Madrid"
     )
 
-    now = datetime.now(ny)
+    now = datetime.now(madrid)
 
     # sábado o domingo
     if now.weekday() >= 5:
@@ -19,5 +20,36 @@ def market_is_open():
 
     current = hour + minute / 60
 
-    # mercado USA 9:30 -> 16:00
-    return 9.5 <= current <= 16
+    # =========================
+    # Asia
+    # Japón / Corea / Taiwán
+    # 01:00 -> 08:00 España
+    # =========================
+
+    asia_open = (
+        1 <= current <= 8
+    )
+
+    # =========================
+    # Europa
+    # 09:00 -> 17:30 España
+    # =========================
+
+    europe_open = (
+        9 <= current <= 17.5
+    )
+
+    # =========================
+    # USA
+    # 15:30 -> 22:00 España
+    # =========================
+
+    usa_open = (
+        15.5 <= current <= 22
+    )
+
+    return (
+        asia_open
+        or europe_open
+        or usa_open
+    )
