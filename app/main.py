@@ -56,7 +56,7 @@ async def main():
 
                 await process_signals()
 
-                await asyncio.sleep(1800)
+                await asyncio.sleep(900)
 
             else:
 
