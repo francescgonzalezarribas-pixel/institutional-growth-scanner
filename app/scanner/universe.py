@@ -65,7 +65,7 @@ BASE_STOCKS = [
     # EUROPA — Ciberseguridad
     # =========================
 
-    "DARK.L"
+    "DARK.L",
 # =========================
     # ASIA — Japón
     # =========================
