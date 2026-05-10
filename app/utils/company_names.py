@@ -16,6 +16,14 @@ COMPANY_NAMES = {
     "SOUN": "SoundHound AI",
     "ASML": "ASML",
     "STM": "STMicroelectronics",
+
     "RHM.DE": "Rheinmetall",
     "DARK.L": "Darktrace"
+"8035.T": "Tokyo Electron",
+    "6857.T": "Advantest",
+
+    "005930.KS": "Samsung Electronics",
+    "000660.KS": "SK hynix",
+
+    "2330.TW": "TSMC Taiwan",
 }
