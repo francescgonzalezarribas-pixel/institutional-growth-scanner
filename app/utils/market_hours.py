@@ -20,36 +20,42 @@ def market_is_open():
 
     # =========================
     # Asia
-    # Domingo noche incluido
+    # Japón / Corea / Taiwán
+    # Ajustado Railway UTC
     # =========================
 
     asia_day = weekday in [0, 1, 2, 3, 4]
 
     # domingo noche España
-    if weekday == 6 and current >= 1:
+    if weekday == 6 and current >= 23:
         asia_day = True
 
     asia_open = (
         asia_day
-        and 1 <= current <= 8
+        and (
+            current >= 23
+            or current <= 6
+        )
     )
 
     # =========================
     # Europa
+    # Ajustado Railway UTC
     # =========================
 
     europe_open = (
         weekday < 5
-        and 9 <= current <= 17.5
+        and 7 <= current <= 15.5
     )
 
     # =========================
     # USA
+    # Ajustado Railway UTC
     # =========================
 
     usa_open = (
         weekday < 5
-        and 15.5 <= current <= 22
+        and 13.5 <= current <= 20
     )
 
     return (
