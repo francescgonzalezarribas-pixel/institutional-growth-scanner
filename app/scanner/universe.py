@@ -1,9 +1,6 @@
-BASE_STOCKS = [
+USA_STOCKS = [
 
-    # =========================
-    # USA — IA / Growth
-    # =========================
-
+    # IA / Growth
     "NVDA",
     "PLTR",
     "ARM",
@@ -11,83 +8,52 @@ BASE_STOCKS = [
     "SMCI",
     "SOUN",
 
-    # =========================
-    # USA — Space / Defense
-    # =========================
-
+    # Space
     "RKLB",
     "ASTS",
     "LUNR",
 
-    # =========================
-    # USA — Quantum / Robotics
-    # =========================
-
+    # Quantum
     "IONQ",
 
-    # =========================
-    # USA — Growth / IPO
-    # =========================
-
+    # IPO / Growth
     "HIMS",
     "TEM",
     "RDDT",
     "CART",
 
-    # =========================
-    # USA — Cybersecurity
-    # =========================
-
+    # Cybersecurity
     "CRWD",
+]
 
-    # =========================
-    # EUROPA — Semiconductores
-    # =========================
 
+EUROPE_STOCKS = [
+
+    # Semis
     "ASML",
     "STM",
     "BESI.AS",
 
-    # =========================
-    # EUROPA — Defensa
-    # =========================
-
+    # Defense
     "RHM.DE",
     "HO.PA",
 
-    # =========================
-    # EUROPA — IA / Software
-    # =========================
-
+    # Software / Cyber
     "DSY.PA",
-
-    # =========================
-    # EUROPA — Ciberseguridad
-    # =========================
-
     "DARK.L",
-# =========================
-    # ASIA — Japón
-    # =========================
-
-    "8035.T",
-    "6857.T",
-
-    # =========================
-    # ASIA — Corea
-    # =========================
-
-    "005930.KS",
-    "000660.KS",
-
-    # =========================
-    # ASIA — Taiwán
-    # =========================
-
-    "2330.TW",
 ]
 
 
-def get_market_universe():
+ASIA_STOCKS = [
 
-    return BASE_STOCKS
+    # Japón
+    "8035.T",
+    "6857.T",
+
+    # Corea
+    "005930.KS",
+    "000660.KS",
+
+    # Taiwán
+    "2330.TW",
+]
