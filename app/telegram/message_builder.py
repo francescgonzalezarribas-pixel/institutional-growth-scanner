@@ -33,19 +33,48 @@ def build_signal(data):
         data["symbol"]
     )
 
+    symbol = data["symbol"]
+
+    # =========================
+    # REGIÓN
+    # =========================
+
+    if (
+        ".T" in symbol
+        or ".KS" in symbol
+        or ".TW" in symbol
+    ):
+
+        region = "🌏 Asia"
+
+    elif (
+        ".PA" in symbol
+        or ".DE" in symbol
+        or ".AS" in symbol
+        or ".L" in symbol
+    ):
+
+        region = "🇪🇺 Europa"
+
+    else:
+
+        region = "🇺🇸 USA"
+
     return f"""
 🟢 <b>SEÑAL LONG — ALTA CONVICCIÓN</b>
 
 🏢 <b>Empresa:</b>
-{company_name} ({data['symbol']})
+{company_name} ({symbol})
 
-🌍 <b>Mercado:</b> NASDAQ
+🌍 <b>Región:</b>
+{region}
+
 📈 <b>Sector:</b> {data['sector']}
 
 ━━━━━━━━━━━━━━━━━━
 
 📍 <b>Precio actual:</b>
-{data['price']:.2f} USD
+{data['price']:.2f}
 
 📊 <b>Volumen relativo:</b>
 x{data['relative_volume']}
