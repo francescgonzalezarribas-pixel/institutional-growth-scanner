@@ -64,7 +64,7 @@ async def main():
                     "Mercado cerrado"
                 )
 
-                await asyncio.sleep(21600)
+                await asyncio.sleep(300)
 
         except Exception as e:
 
