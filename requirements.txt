@@ -1,10 +1,6 @@
-python-telegram-bot==21.11.1
-finnhub-python==2.4.18
-yfinance==0.2.54
-pandas==2.2.3
-requests==2.32.3
-numpy==2.2.4
-twelvedata==1.2.25
-
-python-dotenv==1.0.1
-pytz==2025.2
+ccxt==4.4.57
+finnhub-python
+yfinance
+pytz
+requests
+feedparser
