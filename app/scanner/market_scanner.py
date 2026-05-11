@@ -1,5 +1,8 @@
 import time
 import requests
+from datetime import datetime
+
+import pytz
 
 from app.config import (
     TWELVEDATA_API_KEY
@@ -14,7 +17,9 @@ from app.scoring.scoring_engine import (
 )
 
 from app.scanner.universe import (
-    get_market_universe
+    USA_STOCKS,
+    EUROPE_STOCKS,
+    ASIA_STOCKS
 )
 
 from app.utils.logger import log
@@ -24,6 +29,97 @@ BASE_URL = (
     "https://api.twelvedata.com"
 )
 
+
+# =========================
+# SESIÓN ACTUAL
+# =========================
+
+def get_active_market():
+
+    madrid = pytz.timezone(
+        "Europe/Madrid"
+    )
+
+    now = datetime.now(madrid)
+
+    current = (
+        now.hour
+        + now.minute / 60
+    )
+
+    weekday = now.weekday()
+
+    # Asia
+    if (
+        weekday < 5
+        and (
+            current >= 1
+            and current <= 8
+        )
+    ):
+        return "ASIA"
+
+    # Europa
+    if (
+        weekday < 5
+        and (
+            current >= 9
+            and current <= 17.5
+        )
+    ):
+        return "EUROPE"
+
+    # USA
+    if (
+        weekday < 5
+        and (
+            current >= 15.5
+            and current <= 22
+        )
+    ):
+        return "USA"
+
+    return None
+
+
+# =========================
+# UNIVERSO DINÁMICO
+# =========================
+
+def get_active_universe():
+
+    market = get_active_market()
+
+    if market == "ASIA":
+
+        log.info(
+            "Sesión activa: ASIA"
+        )
+
+        return ASIA_STOCKS, 72
+
+    elif market == "EUROPE":
+
+        log.info(
+            "Sesión activa: EUROPA"
+        )
+
+        return EUROPE_STOCKS, 75
+
+    elif market == "USA":
+
+        log.info(
+            "Sesión activa: USA"
+        )
+
+        return USA_STOCKS, 85
+
+    return [], 999
+
+
+# =========================
+# DATOS
+# =========================
 
 def get_stock_data(symbol):
 
@@ -75,9 +171,6 @@ def get_stock_data(symbol):
         highs.reverse()
         volumes.reverse()
 
-        if len(closes) < 10:
-            return None
-
         current_price = closes[-1]
 
         avg_volume = (
@@ -115,24 +208,34 @@ def get_stock_data(symbol):
         return None
 
 
+# =========================
+# SCANNER
+# =========================
+
 def scan_market():
 
     signals = []
 
-    universe = get_market_universe()
+    universe, min_score = (
+        get_active_universe()
+    )
+
+    if not universe:
+
+        log.info(
+            "No hay mercado activo"
+        )
+
+        return signals
 
     log.info(
-        f"Universo cargado: "
+        f"Universo activo: "
         f"{len(universe)} acciones"
     )
 
     for symbol in universe:
 
         try:
-
-            log.info(
-                f"Analizando {symbol}"
-            )
 
             stock_data = get_stock_data(
                 symbol
@@ -141,22 +244,10 @@ def scan_market():
             if not stock_data:
                 continue
 
-            price = stock_data["price"]
-
-            if (
-                price <= 1
-                or price >= 1000
-            ):
-                continue
-
             relative_volume = (
                 stock_data[
                     "relative_volume"
                 ]
-            )
-
-            breakout = (
-                stock_data["breakout"]
             )
 
             news = get_company_news(
@@ -168,33 +259,31 @@ def scan_market():
             headline = (
                 news[0]["headline"]
                 if has_news
-                else "Momentum detectado."
+                else "Momentum detectado"
             )
-
-            institutional_volume = (
-                relative_volume >= 3
-            )
-
-            sector_hot = True
-
-            ipo = symbol in [
-                "ARM",
-                "RKLB",
-                "ASTS",
-                "IONQ",
-                "TEM",
-                "RDDT",
-                "CART"
-            ]
 
             data = {
                 "symbol": symbol,
-                "price": float(price),
+                "price": stock_data[
+                    "price"
+                ],
                 "relative_volume": relative_volume,
-                "breakout": breakout,
-                "ipo": ipo,
-                "sector_hot": sector_hot,
-                "institutional_volume": institutional_volume,
+                "breakout": stock_data[
+                    "breakout"
+                ],
+                "ipo": symbol in [
+                    "ARM",
+                    "RKLB",
+                    "ASTS",
+                    "IONQ",
+                    "TEM",
+                    "RDDT",
+                    "CART"
+                ],
+                "sector_hot": True,
+                "institutional_volume": (
+                    relative_volume >= 2
+                ),
                 "has_news": has_news,
                 "headline": headline,
                 "sector": "Growth"
@@ -206,14 +295,15 @@ def scan_market():
 
             data["score"] = score
 
-            log.info(
-                f"{symbol} | "
-                f"PRICE={price:.2f} | "
-                f"RVOL={relative_volume} | "
-                f"SCORE={score}"
-            )
+            if score >= 70:
 
-            if score >= 85:
+                log.info(
+                    f"{symbol} | "
+                    f"RVOL={relative_volume} | "
+                    f"SCORE={score}"
+                )
+
+            if score >= min_score:
 
                 signals.append(data)
 
@@ -222,7 +312,7 @@ def scan_market():
                     f"{symbol}"
                 )
 
-            time.sleep(5)
+            time.sleep(3)
 
         except Exception as e:
 
@@ -230,6 +320,6 @@ def scan_market():
                 f"{symbol} {e}"
             )
 
-            time.sleep(10)
+            time.sleep(5)
 
     return signals
