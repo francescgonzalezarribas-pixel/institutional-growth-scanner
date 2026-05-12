@@ -26,19 +26,19 @@ TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 FINNHUB_API_KEY  = os.environ.get('FINNHUB_API_KEY', '')
 
-CAPITAL   = 20
-LEVERAGE  = 3
-SL_PCT    = 0.015
-TP1_PCT   = 0.020
-TP2_PCT   = 0.040
-TP3_PCT   = 0.060
-TRAIL_PCT = 0.015
-BE_TRIGGER = 0.003
-EMA_FAST  = 9
-EMA_SLOW  = 21
-EMA_MIN_GAP = 0.001
+CAPITAL          = 20
+LEVERAGE         = 3
+SL_PCT           = 0.015
+TP1_PCT          = 0.020
+TP2_PCT          = 0.040
+TP3_PCT          = 0.060
+TRAIL_PCT        = 0.015
+BE_TRIGGER       = 0.003
+EMA_FAST         = 9
+EMA_SLOW         = 21
+EMA_MIN_GAP      = 0.001
 MAX_EXTRA_TRADES = 2
-STATE_FILE = 'igs_state.json'
+STATE_FILE       = 'igs_state.json'
 
 finnhub_client = finnhub.Client(api_key=FINNHUB_API_KEY) if FINNHUB_API_KEY else None
 
@@ -126,12 +126,12 @@ HOT_KEYWORDS = [
 # ============================================
 
 state = {
-    "position":       None,   # trade apertura
-    "extra_positions": [],    # trades adicionales
-    "signals_sent":   {},
-    "daily_signals":  [],
-    "last_reset":     "",
-    "flags":          {},
+    "position":        None,
+    "extra_positions": [],
+    "signals_sent":    {},
+    "daily_signals":   [],
+    "last_reset":      "",
+    "flags":           {},
 }
 
 def load_state():
@@ -234,24 +234,20 @@ def get_ema_signals(candles):
     }
 
 def confirms_ema(symbol, direction):
-    """Confirma entrada con EMA 1h + 15m."""
     pair = USA_SYMBOL_MAP.get(symbol)
     if not pair:
         return False
     try:
-        # 1h
-        candles_1h = exchange.fetch_ohlcv(pair, '1h', limit=100)
-        sig_1h     = get_ema_signals(candles_1h)
+        candles_1h  = exchange.fetch_ohlcv(pair, '1h', limit=100)
+        sig_1h      = get_ema_signals(candles_1h)
         if not sig_1h:
             return False
-
-        # 15m
         candles_15m = exchange.fetch_ohlcv(pair, '15m', limit=50)
         sig_15m     = get_ema_signals(candles_15m)
         if not sig_15m:
             return False
 
-        if direction == 'long':
+        if direction == 'alcista':
             ok_1h  = (sig_1h['cross_long'] or sig_1h['aligned_long']) and \
                      sig_1h['price_ok_long'] and sig_1h['above_vwap'] and \
                      sig_1h['ema_gap'] >= EMA_MIN_GAP and sig_1h['rsi'] <= 75
@@ -263,9 +259,8 @@ def confirms_ema(symbol, direction):
             ok_15m = sig_15m['aligned_short'] and sig_15m['price_ok_short']
 
         result = ok_1h and ok_15m
-        log.info(f"EMA check {symbol} {direction}: 1h={ok_1h} 15m={ok_15m} → {result}")
+        log.info(f"EMA {symbol} {direction}: 1h={ok_1h} 15m={ok_15m} → {result}")
         return result
-
     except Exception as e:
         log.error(f"confirms_ema {symbol}: {e}")
         return False
@@ -472,7 +467,6 @@ def send_signal(analysis, market):
     s         = analysis
     dir_emoji = "🚀" if s["direction"] == "alcista" else "📉"
     mkt_emoji = {"usa": "🇺🇸", "europe": "🇪🇺", "asia": "🌏"}.get(market, "📈")
-
     msg = (
         f"⚡ *SEÑAL — {s['name']} ({s['symbol']})*\n"
         f"{mkt_emoji} Mercado: *{market.upper()}*\n\n"
@@ -498,10 +492,8 @@ def send_premarket_report(top_movers, market, news):
     emoji = {"usa": "🇺🇸", "europe": "🇪🇺", "asia": "🌏"}.get(market, "📈")
     now   = datetime.now(TZ).strftime("%H:%M")
     msg   = f"{emoji} *PREMERCADO {market.upper()} — {now}*\n\n"
-
     alcistas = [m for m in top_movers if m["change"] > 0][:5]
     bajistas = [m for m in top_movers if m["change"] < 0][:3]
-
     if alcistas:
         msg += "🚀 *Subidas:*\n"
         for m in alcistas:
@@ -591,7 +583,8 @@ def open_trade(analysis):
             f"💰 {CAPITAL} USDT x{LEVERAGE} | size={size}\n"
             f"🎯 Entrada: {round(price,2)}\n"
             f"🛑 SL: {analysis['sl']}\n"
-            f"🎯 TP1: {analysis['tp1']} | TP2: {analysis['tp2']} | TP3: {analysis['tp3']}"
+            f"🎯 TP1: {analysis['tp1']} | TP2: {analysis['tp2']} | TP3: {analysis['tp3']}\n"
+            f"✅ EMA confirmado"
         )
         log.info(f"🚀 AUTO TRADE {pair} @ {price}")
     except Exception as e:
@@ -620,9 +613,9 @@ def manage_trade():
     if not pos:
         return
     try:
-        price = float(exchange.fetch_ticker(pos["pair"])['last'])
-        entry = pos["entry"]
-        pnl   = (price - entry) / entry
+        price     = float(exchange.fetch_ticker(pos["pair"])['last'])
+        entry     = pos["entry"]
+        pnl       = (price - entry) / entry
         trail_pct = get_trail_pct(pnl)
 
         log.info(f"[{pos['pair']}] LONG P={round(price,2)} PnL={round(pnl*100,2)}%")
@@ -637,12 +630,10 @@ def manage_trade():
         if price >= pos["tp1"] and not pos.get("tp1_hit"):
             pos["tp1_hit"] = True
             tg(f"🎯 *TP1* — {pos['pair']} @ {round(price,2)}")
-        # BE
         if not pos.get("be_activated") and pnl >= BE_TRIGGER:
             pos["be_activated"] = True
             pos["trail_sl"]     = round(entry, 4)
             tg(f"📍 *BE activado* — {pos['pair']}")
-        # Trailing
         if price > pos["trail_best"]:
             pos["trail_best"] = price
             pos["trail_sl"]   = round(price * (1 - trail_pct), 4)
@@ -653,7 +644,7 @@ def manage_trade():
         log.error(f"manage_trade: {e}")
 
 # ============================================
-# EXTRA TRADES — durante el día
+# EXTRA TRADES
 # ============================================
 
 def open_extra_trade(analysis):
@@ -661,21 +652,15 @@ def open_extra_trade(analysis):
     pair   = USA_SYMBOL_MAP.get(symbol)
     if not pair:
         return
-
-    # Verificar que no está ya en una posición
     for pos in state["extra_positions"]:
         if pos["pair"] == pair:
-            log.info(f"⏭️ {pair} ya en posición extra")
             return
-
     price = analysis["price"]
     size  = round((CAPITAL * LEVERAGE) / price, 4)
     if size < 0.01:
         size = 0.01
-
     direction = analysis["direction"]
     side      = 'buy' if direction == 'alcista' else 'sell'
-
     try:
         exchange.set_leverage(LEVERAGE, pair, params={
             'marginMode': 'isolated', 'productType': 'USDT-FUTURES',
@@ -684,27 +669,18 @@ def open_extra_trade(analysis):
         exchange.create_order(pair, 'market', side, size, None, {
             'marginMode': 'isolated', 'leverage': str(LEVERAGE), 'reduceOnly': False,
         })
-
         pos = {
-            "pair":        pair,
-            "symbol":      symbol,
-            "side":        direction,
-            "entry":       price,
-            "size":        size,
-            "sl":          analysis["sl"],
-            "tp1":         analysis["tp1"],
-            "tp2":         analysis["tp2"],
-            "tp3":         analysis["tp3"],
-            "entry_time":  time.time(),
-            "trail_best":  price,
-            "trail_sl":    round(price * (1 - TRAIL_PCT) if direction == 'alcista' else price * (1 + TRAIL_PCT), 4),
-            "tp1_hit":     False,
-            "tp2_hit":     False,
-            "be_activated": False,
+            "pair": pair, "symbol": symbol, "side": direction,
+            "entry": price, "size": size,
+            "sl": analysis["sl"], "tp1": analysis["tp1"],
+            "tp2": analysis["tp2"], "tp3": analysis["tp3"],
+            "entry_time": time.time(),
+            "trail_best": price,
+            "trail_sl": round(price * (1 - TRAIL_PCT) if direction == 'alcista' else price * (1 + TRAIL_PCT), 4),
+            "tp1_hit": False, "tp2_hit": False, "be_activated": False,
         }
         state["extra_positions"].append(pos)
         save_state()
-
         emoji = "🟢" if direction == 'alcista' else "🔴"
         tg(
             f"{emoji} *EXTRA TRADE {direction.upper()}* — {pair}\n"
@@ -712,11 +688,12 @@ def open_extra_trade(analysis):
             f"🎯 Entrada: {round(price,2)}\n"
             f"🛑 SL: {analysis['sl']}\n"
             f"🎯 TP1: {analysis['tp1']} | TP2: {analysis['tp2']} | TP3: {analysis['tp3']}\n"
-            f"📊 Score: {analysis['total_score']} | {analysis['grade']}"
+            f"📊 Score: {analysis['total_score']} | {analysis['grade']}\n"
+            f"✅ EMA confirmado"
         )
-        log.info(f"🚀 EXTRA TRADE {direction.upper()} {pair} @ {price}")
+        log.info(f"🚀 EXTRA {direction.upper()} {pair} @ {price}")
     except Exception as e:
-        log.error(f"open_extra_trade: {e}")
+        log.error(f"open_extra: {e}")
         tg(f"❌ Error extra trade: {e}")
 
 def close_extra_trade(pos, reason, price=None):
@@ -727,77 +704,56 @@ def close_extra_trade(pos, reason, price=None):
         })
         p_str = str(round(price, 2)) if price else "N/A"
         tg(f"🏁 *CLOSE EXTRA* — {pos['pair']}\n📋 {reason}\n💰 {p_str}")
-        log.info(f"🏁 CLOSE EXTRA {pos['pair']} — {reason}")
     except Exception as e:
         if "22002" not in str(e):
             log.error(f"close_extra: {e}")
     finally:
-        state["extra_positions"] = [
-            p for p in state["extra_positions"] if p["pair"] != pos["pair"]
-        ]
+        state["extra_positions"] = [p for p in state["extra_positions"] if p["pair"] != pos["pair"]]
         save_state()
 
 def manage_extra_trades():
-    if not state["extra_positions"]:
-        return
     for pos in list(state["extra_positions"]):
         try:
-            price = float(exchange.fetch_ticker(pos["pair"])['last'])
-            entry = pos["entry"]
-            side  = pos["side"]
-            pnl   = ((price - entry) / entry) if side == 'alcista' else ((entry - price) / entry)
+            price     = float(exchange.fetch_ticker(pos["pair"])['last'])
+            entry     = pos["entry"]
+            side      = pos["side"]
+            pnl       = ((price - entry) / entry) if side == 'alcista' else ((entry - price) / entry)
             trail_pct = get_trail_pct(pnl)
 
             log.info(f"[EXTRA {pos['pair']}] {side.upper()} P={round(price,2)} PnL={round(pnl*100,2)}%")
 
-            # SL
             if (side == 'alcista' and price <= pos["sl"]) or \
                (side == 'bajista' and price >= pos["sl"]):
-                close_extra_trade(pos, f"SL {round(pnl*100,2)}%", price)
-                continue
-
-            # TP3
+                close_extra_trade(pos, f"SL {round(pnl*100,2)}%", price); continue
             if (side == 'alcista' and price >= pos["tp3"]) or \
                (side == 'bajista' and price <= pos["tp3"]):
-                close_extra_trade(pos, f"TP3 +{round(pnl*100,2)}%", price)
-                continue
-
-            # TP2
+                close_extra_trade(pos, f"TP3 +{round(pnl*100,2)}%", price); continue
             if not pos.get("tp2_hit"):
                 if (side == 'alcista' and price >= pos["tp2"]) or \
                    (side == 'bajista' and price <= pos["tp2"]):
                     pos["tp2_hit"] = True
                     tg(f"🎯 *TP2 EXTRA* — {pos['pair']} @ {round(price,2)}")
-
-            # TP1
             if not pos.get("tp1_hit"):
                 if (side == 'alcista' and price >= pos["tp1"]) or \
                    (side == 'bajista' and price <= pos["tp1"]):
                     pos["tp1_hit"] = True
                     tg(f"🎯 *TP1 EXTRA* — {pos['pair']} @ {round(price,2)}")
-
-            # BE
             if not pos.get("be_activated") and pnl >= BE_TRIGGER:
                 pos["be_activated"] = True
                 pos["trail_sl"]     = round(entry, 4)
                 tg(f"📍 *BE EXTRA* — {pos['pair']}")
-
-            # Trailing
             if side == 'alcista':
                 if price > pos["trail_best"]:
                     pos["trail_best"] = price
                     pos["trail_sl"]   = round(price * (1 - trail_pct), 4)
                 if price <= pos["trail_sl"] and pos.get("tp1_hit"):
-                    close_extra_trade(pos, f"Trailing {round(pnl*100,2)}%", price)
-                    continue
+                    close_extra_trade(pos, f"Trailing {round(pnl*100,2)}%", price); continue
             else:
                 if price < pos["trail_best"]:
                     pos["trail_best"] = price
                     pos["trail_sl"]   = round(price * (1 + trail_pct), 4)
                 if price >= pos["trail_sl"] and pos.get("tp1_hit"):
-                    close_extra_trade(pos, f"Trailing {round(pnl*100,2)}%", price)
-                    continue
-
+                    close_extra_trade(pos, f"Trailing {round(pnl*100,2)}%", price); continue
             save_state()
         except Exception as e:
             log.error(f"manage_extra {pos['pair']}: {e}")
@@ -805,11 +761,10 @@ def manage_extra_trades():
 def close_all_extra_trades(reason):
     for pos in list(state["extra_positions"]):
         try:
-            ticker = exchange.fetch_ticker(pos["pair"])
-            price  = float(ticker['last'])
+            price = float(exchange.fetch_ticker(pos["pair"])['last'])
             close_extra_trade(pos, reason, price)
         except Exception as e:
-            log.error(f"close_all_extra {pos['pair']}: {e}")
+            log.error(f"close_all_extra: {e}")
 
 # ============================================
 # HORARIOS
@@ -834,7 +789,7 @@ def main_loop():
     tg(
         "🚀 *Institutional Growth Scanner*\n"
         "🇺🇸 USA | 🇪🇺 Europa | 🌏 Asia\n"
-        "📰 Noticias + Señales + Auto Trade"
+        "📰 Noticias + Señales + Auto Trade con EMA"
     )
 
     cached_news     = []
@@ -916,7 +871,7 @@ def main_loop():
                         top = sorted(data, key=lambda x: abs(x["change"]), reverse=True)
                         send_premarket_report(top, "usa", cached_news)
 
-                # ── APERTURA USA 15:30 ────────────────
+                # ── APERTURA USA 15:30 + EMA CONFIRM ──
                 if is_between(t("15:30"), t("15:40")) and not get_flag("usa_open"):
                     set_flag("usa_open")
                     log.info("🇺🇸 Apertura USA")
@@ -926,11 +881,17 @@ def main_loop():
                         send_market_open("usa", top)
                         if not state.get("position"):
                             alcistas = [m for m in top if m["change"] > 0]
-                            if alcistas:
-                                best     = alcistas[0]
+                            for best in alcistas[:5]:
+                                if best["symbol"] not in USA_SYMBOL_MAP:
+                                    continue
                                 analysis = analyze_signal(best, cached_news)
                                 if analysis["prob"] >= 55:
-                                    open_trade(analysis)
+                                    log.info(f"🔍 Verificando EMA para {best['symbol']}...")
+                                    if confirms_ema(best["symbol"], "alcista"):
+                                        open_trade(analysis)
+                                        break
+                                    else:
+                                        log.info(f"⏭️ EMA no confirma {best['symbol']}")
 
                 # ── CIERRE AUTOMÁTICO 21:15 ───────────
                 if is_between(t("21:15"), t("21:20")) and not get_flag("auto_close"):
@@ -938,9 +899,8 @@ def main_loop():
                     log.info("⏰ Cierre automático 21:15")
                     if state.get("position"):
                         try:
-                            pos    = state["position"]
-                            ticker = exchange.fetch_ticker(pos["pair"])
-                            price  = float(ticker['last'])
+                            pos   = state["position"]
+                            price = float(exchange.fetch_ticker(pos["pair"])['last'])
                             close_trade("Cierre automático 21:15", price)
                         except Exception as e:
                             log.error(f"auto_close: {e}")
@@ -956,21 +916,21 @@ def main_loop():
                     manage_trade()
                 manage_extra_trades()
 
-                # ── SEÑALES USA + EXTRA TRADES 15:30-21:15
+                # ── SEÑALES USA + EXTRA TRADES ────────
                 if is_between(t("15:30"), t("21:15")) and \
                    (ts - last_usa_fetch >= USA_INTERVAL):
                     last_usa_fetch = ts
                     log.info("🇺🇸 Escaneando USA...")
                     data = fetch_finnhub_data(USA_STOCKS)
                     for item in data:
-                        if abs(item["change"]) >= 3.0 and can_send_signal(item["symbol"]):
+                        if abs(item["change"]) >= 2.0 and can_send_signal(item["symbol"]):
                             analysis = analyze_signal(item, cached_news)
-                            if analysis["prob"] >= 70:
+                            if analysis["prob"] >= 55:
                                 send_signal(analysis, "usa")
                                 mark_signal_sent(item["symbol"])
                                 state["daily_signals"].append(analysis)
                                 save_state()
-                                # Extra trade si hay espacio y EMA confirma
+                                # Extra trade con EMA confirmado
                                 n_extra = len(state["extra_positions"])
                                 if n_extra < MAX_EXTRA_TRADES and \
                                    item["symbol"] in USA_SYMBOL_MAP:
