@@ -37,7 +37,7 @@ BE_TRIGGER       = 0.003
 EMA_FAST         = 9
 EMA_SLOW         = 21
 EMA_MIN_GAP      = 0.001
-MAX_EXTRA_TRADES = 2
+MAX_EXTRA_TRADES = 3
 STATE_FILE       = 'igs_state.json'
 
 finnhub_client = finnhub.Client(api_key=FINNHUB_API_KEY) if FINNHUB_API_KEY else None
