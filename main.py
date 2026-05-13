@@ -47,9 +47,9 @@ logging.basicConfig(
 # =========================
 
 exchange = ccxt.bitget({
-    "apiKey": API_KEY,
-    "secret": API_SECRET,
-    "password": API_PASSWORD,
+    API_KEY = os.getenv("BITGET_API_KEY")
+API_SECRET = os.getenv("BITGET_API_SECRET")
+API_PASSWORD = os.getenv("BITGET_API_PASSPHRASE")
     "enableRateLimit": True,
     "options": {
         "defaultType": "swap"
