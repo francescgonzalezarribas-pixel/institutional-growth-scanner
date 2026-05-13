@@ -1,6 +1,4 @@
-ccxt==4.4.57
-finnhub-python
-yfinance
-pytz
-requests
-feedparser
+ccxt==4.4.27
+numpy==2.1.1
+requests==2.32.3
+python-dotenv==1.0.1
