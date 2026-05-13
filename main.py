@@ -10,9 +10,11 @@ from ta.momentum import RSIIndicator
 # CONFIG
 # =========================
 
-API_KEY = "TU_API_KEY"
-API_SECRET = "TU_API_SECRET"
-API_PASSWORD = "TU_PASSPHRASE"
+import os
+
+API_KEY = os.getenv("BITGET_API_KEY")
+API_SECRET = os.getenv("BITGET_API_SECRET")
+API_PASSWORD = os.getenv("BITGET_API_PASSPHRASE")
 
 TELEGRAM_TOKEN = "TU_TELEGRAM_TOKEN"
 TELEGRAM_CHAT_ID = "TU_CHAT_ID"
