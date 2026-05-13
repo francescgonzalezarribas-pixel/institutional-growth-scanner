@@ -6,6 +6,15 @@ from datetime import datetime
 
 import ccxt
 import numpy as np
+import requests
+
+from dotenv import load_dotenv
+
+# =========================================
+# LOAD ENV
+# =========================================
+
+load_dotenv()
 
 # =========================================
 # CONFIG
@@ -14,6 +23,9 @@ import numpy as np
 API_KEY        = os.getenv("BITGET_API_KEY", "")
 API_SECRET     = os.getenv("BITGET_API_SECRET", "")
 API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE", "")
+
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 LEVERAGE           = 3
 MAX_TRADES         = 2
@@ -26,7 +38,7 @@ TRAILING_PCT       = 0.012
 SCAN_INTERVAL      = 20
 COOLDOWN_MINUTES   = 60
 
-MIN_VOLUME         = 300_000
+MIN_VOLUME         = 300000
 MIN_CHANGE_5M      = 2.0
 MIN_RVOL           = 2.0
 MAX_SPREAD         = 0.40
@@ -58,6 +70,33 @@ exchange = ccxt.bitget({
 })
 
 # =========================================
+# TELEGRAM
+# =========================================
+
+def tg(msg):
+
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+
+    try:
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": msg
+        }
+
+        requests.post(
+            url,
+            json=payload,
+            timeout=10
+        )
+
+    except Exception as e:
+        log.error(f"telegram: {e}")
+
+# =========================================
 # STATE
 # =========================================
 
@@ -70,30 +109,33 @@ state = {
 # SAVE / LOAD
 # =========================================
 
-
 def load_state():
+
     global state
 
     if os.path.exists(STATE_FILE):
+
         try:
+
             with open(STATE_FILE, "r") as f:
                 state = json.load(f)
+
         except Exception as e:
             log.error(f"load_state: {e}")
 
-
-
 def save_state():
+
     try:
+
         with open(STATE_FILE, "w") as f:
             json.dump(state, f, indent=2)
+
     except Exception as e:
         log.error(f"save_state: {e}")
 
 # =========================================
 # SYMBOLS
 # =========================================
-
 
 def get_tradfi_symbols():
 
@@ -102,27 +144,41 @@ def get_tradfi_symbols():
     symbols = []
 
     crypto_blacklist = {
-        "BTC", "ETH", "SOL", "XRP", "DOGE", "SHIB",
-        "PEPE", "BNB", "TRX", "ADA", "LTC"
+        "BTC",
+        "ETH",
+        "SOL",
+        "XRP",
+        "DOGE",
+        "SHIB",
+        "PEPE",
+        "BNB",
+        "TRX",
+        "ADA",
+        "LTC"
     }
 
     for symbol, market in markets.items():
 
-        if not market.get("active"):
-            continue
+        try:
 
-        if not market.get("swap"):
-            continue
+            if not market.get("active"):
+                continue
 
-        if "/USDT:USDT" not in symbol:
-            continue
+            if not market.get("swap"):
+                continue
 
-        base = market.get("base", "")
+            if "/USDT:USDT" not in symbol:
+                continue
 
-        if base in crypto_blacklist:
-            continue
+            base = market.get("base", "")
 
-        symbols.append(symbol)
+            if base in crypto_blacklist:
+                continue
+
+            symbols.append(symbol)
+
+        except:
+            pass
 
     return sorted(symbols)
 
@@ -130,13 +186,12 @@ def get_tradfi_symbols():
 # HELPERS
 # =========================================
 
-
 def pct_change(a, b):
+
     if b == 0:
         return 0
+
     return ((a - b) / b) * 100
-
-
 
 def calculate_rvol(volumes):
 
@@ -151,8 +206,6 @@ def calculate_rvol(volumes):
 
     return current / avg
 
-
-
 def is_on_cooldown(symbol):
 
     last = state["cooldowns"].get(symbol)
@@ -164,22 +217,25 @@ def is_on_cooldown(symbol):
 
     return elapsed < (COOLDOWN_MINUTES * 60)
 
-
-
 def set_cooldown(symbol):
+
     state["cooldowns"][symbol] = time.time()
+
     save_state()
 
 # =========================================
 # SCANNER
 # =========================================
 
-
 def scan_symbol(symbol):
 
     try:
 
-        candles = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=40)
+        candles = exchange.fetch_ohlcv(
+            symbol,
+            timeframe='1m',
+            limit=40
+        )
 
         if not candles or len(candles) < 20:
             return None
@@ -252,13 +308,14 @@ def scan_symbol(symbol):
         }
 
     except Exception as e:
+
         log.error(f"scan {symbol}: {e}")
+
         return None
 
 # =========================================
 # OPEN TRADE
 # =========================================
-
 
 def open_trade(signal):
 
@@ -271,7 +328,10 @@ def open_trade(signal):
     if is_on_cooldown(symbol):
         return
 
-    size = round((CAPITAL_PER_TRADE * LEVERAGE) / price, 4)
+    size = round(
+        (CAPITAL_PER_TRADE * LEVERAGE) / price,
+        4
+    )
 
     try:
 
@@ -299,7 +359,10 @@ def open_trade(signal):
             }
         )
 
-        sl = round(price * (1 - SL_PCT), 4)
+        sl = round(
+            price * (1 - SL_PCT),
+            4
+        )
 
         position = {
             "symbol": symbol,
@@ -320,13 +383,21 @@ def open_trade(signal):
 
         log.info(f"OPEN LONG {symbol} @ {price}")
 
+        tg(
+            f"🚀 LONG {symbol}\n"
+            f"💰 Entry: {price}\n"
+            f"📈 5m: {signal['change_5m']}%\n"
+            f"🔥 RVOL: {signal['rvol']}\n"
+            f"⭐ Score: {signal['score']}"
+        )
+
     except Exception as e:
+
         log.error(f"open_trade {symbol}: {e}")
 
 # =========================================
 # CLOSE TRADE
 # =========================================
-
 
 def close_trade(position, reason):
 
@@ -345,9 +416,17 @@ def close_trade(position, reason):
             }
         )
 
-        log.info(f"CLOSE {position['symbol']} | {reason}")
+        log.info(
+            f"CLOSE {position['symbol']} | {reason}"
+        )
+
+        tg(
+            f"🏁 CLOSE {position['symbol']}\n"
+            f"📋 {reason}"
+        )
 
     except Exception as e:
+
         log.error(f"close_trade: {e}")
 
     finally:
@@ -361,7 +440,6 @@ def close_trade(position, reason):
 # MANAGE POSITIONS
 # =========================================
 
-
 def manage_positions():
 
     positions = state["positions"][:]
@@ -370,21 +448,37 @@ def manage_positions():
 
         try:
 
-            ticker = exchange.fetch_ticker(pos["symbol"])
-            price  = ticker['last']
+            ticker = exchange.fetch_ticker(
+                pos["symbol"]
+            )
 
-            pnl = pct_change(price, pos["entry"])
+            price = ticker['last']
+
+            pnl = pct_change(
+                price,
+                pos["entry"]
+            )
 
             if price <= pos["sl"]:
-                close_trade(pos, f"SL {round(pnl,2)}%")
+
+                close_trade(
+                    pos,
+                    f"SL {round(pnl,2)}%"
+                )
+
                 continue
 
-            if pnl >= (BREAKEVEN_TRIGGER * 100) and not pos["breakeven"]:
+            if pnl >= (
+                BREAKEVEN_TRIGGER * 100
+            ) and not pos["breakeven"]:
 
                 pos["sl"] = pos["entry"]
+
                 pos["breakeven"] = True
 
-                log.info(f"BREAKEVEN {pos['symbol']}")
+                log.info(
+                    f"BREAKEVEN {pos['symbol']}"
+                )
 
             if price > pos["best_price"]:
 
@@ -399,35 +493,54 @@ def manage_positions():
                     dynamic_trail = 0.03
 
                 pos["trail_sl"] = round(
-                    price * (1 - dynamic_trail),
+                    price * (
+                        1 - dynamic_trail
+                    ),
                     4
                 )
 
             if pos["breakeven"]:
 
                 if price <= pos["trail_sl"]:
-                    close_trade(pos, f"TRAIL {round(pnl,2)}%")
+
+                    close_trade(
+                        pos,
+                        f"TRAIL {round(pnl,2)}%"
+                    )
+
                     continue
 
             save_state()
 
         except Exception as e:
-            log.error(f"manage_positions: {e}")
+
+            log.error(
+                f"manage_positions: {e}"
+            )
 
 # =========================================
 # MAIN LOOP
 # =========================================
 
-
 def main():
 
     load_state()
 
-    log.info("Loading TradFi symbols...")
+    log.info(
+        "Loading TradFi symbols..."
+    )
 
     symbols = get_tradfi_symbols()
 
-    log.info(f"TradFi symbols loaded: {len(symbols)}")
+    log.info(
+        f"TradFi symbols loaded: {len(symbols)}"
+    )
+
+    tg(
+        f"🚀 TradFi Momentum Bot iniciado\n"
+        f"📊 Símbolos: {len(symbols)}\n"
+        f"⚡ Scanner activo"
+    )
 
     while True:
 
@@ -469,10 +582,15 @@ def main():
             time.sleep(SCAN_INTERVAL)
 
         except KeyboardInterrupt:
+
             break
 
         except Exception as e:
-            log.error(f"main loop: {e}")
+
+            log.error(
+                f"main loop: {e}"
+            )
+
             time.sleep(10)
 
 # =========================================
