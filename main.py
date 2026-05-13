@@ -1,23 +1,27 @@
+import os
 import ccxt
 import pandas as pd
 import time
 import requests
 import logging
+
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
 
-# =========================
-# CONFIG
-# =========================
-
-import os
+# ==========================================
+# API KEYS
+# ==========================================
 
 API_KEY = os.getenv("BITGET_API_KEY")
 API_SECRET = os.getenv("BITGET_API_SECRET")
 API_PASSWORD = os.getenv("BITGET_API_PASSPHRASE")
 
-TELEGRAM_TOKEN = "TU_TELEGRAM_TOKEN"
-TELEGRAM_CHAT_ID = "TU_CHAT_ID"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# ==========================================
+# CONFIG
+# ==========================================
 
 TIMEFRAME = "5m"
 
@@ -35,137 +39,142 @@ TRAILING_DISTANCE = 0.01
 
 SCAN_INTERVAL = 20
 
-# =========================
-# LOGS
-# =========================
+# ==========================================
+# LOGGING
+# ==========================================
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
 
-# =========================
-# BITGET
-# =========================
+# ==========================================
+# EXCHANGE
+# ==========================================
 
 exchange = ccxt.bitget({
-    API_KEY = os.getenv("BITGET_API_KEY")
-API_SECRET = os.getenv("BITGET_API_SECRET")
-API_PASSWORD = os.getenv("BITGET_API_PASSPHRASE")
+    "apiKey": API_KEY,
+    "secret": API_SECRET,
+    "password": API_PASSWORD,
     "enableRateLimit": True,
     "options": {
         "defaultType": "swap"
     }
 })
 
-# =========================
+# ==========================================
 # SYMBOLS
-# =========================
+# ==========================================
 
-def get_symbols():
-    return [
+SYMBOLS = [
 
-        "GOOGLUSDT",
-        "BABAUSDT",
-        "RKLBUSDT",
-        "AAOIUSDT",
-        "MRVLUSDT",
-        "LITEUSDT",
-        "LWLGUSDT",
-        "NBISUSDT",
-        "COINUSDT",
-        "PLTRUSDT",
+    "GOOGLUSDT",
+    "BABAUSDT",
+    "RKLBUSDT",
+    "AAOIUSDT",
+    "MRVLUSDT",
+    "LITEUSDT",
+    "LWLGUSDT",
+    "NBISUSDT",
+    "COINUSDT",
+    "PLTRUSDT",
 
-        "MUUSDT",
-        "NVDAUSDT",
-        "SNDKUSDT",
-        "INTCUSDT",
-        "TSLAUSDT",
-        "CRCLUSDT",
-        "MSTRUSDT",
-        "AMDUSDT",
+    "MUUSDT",
+    "NVDAUSDT",
+    "SNDKUSDT",
+    "INTCUSDT",
+    "TSLAUSDT",
+    "CRCLUSDT",
+    "MSTRUSDT",
+    "AMDUSDT",
 
-        "HOODUSDT",
-        "MSFTUSDT",
-        "COHRUSDT",
-        "AAPLUSDT",
-        "KOPNUSDT",
-        "METAUSDT",
-        "TSMUSDT",
-        "AXTIUSDT",
-        "AMZNUSDT",
+    "HOODUSDT",
+    "MSFTUSDT",
+    "COHRUSDT",
+    "AAPLUSDT",
+    "KOPNUSDT",
+    "METAUSDT",
+    "TSMUSDT",
+    "AXTIUSDT",
+    "AMZNUSDT",
 
-        "GMEUSDT",
-        "WMTUSDT",
-        "RDDTUSDT",
-        "MCDUSDT",
-        "OXYUSDT",
-        "GEUSDT",
-        "COPUSDT",
-        "XOMUSDT",
+    "GMEUSDT",
+    "WMTUSDT",
+    "RDDTUSDT",
+    "MCDUSDT",
+    "OXYUSDT",
+    "GEUSDT",
+    "COPUSDT",
+    "XOMUSDT",
 
-        "NIOUSDT",
-        "MPUSDT",
-        "COSTUSDT",
-        "APPUSDT",
-        "VRTUSDT",
-        "ETNUSDT",
-        "AMATUSDT",
-        "UNHUSDT",
-        "KLACUSDT",
+    "NIOUSDT",
+    "MPUSDT",
+    "COSTUSDT",
+    "APPUSDT",
+    "VRTUSDT",
+    "ETNUSDT",
+    "AMATUSDT",
+    "UNHUSDT",
+    "KLACUSDT",
 
-        "USARUSDT",
-        "IONQUSDT",
-        "CBRSUSDT",
-        "AVGOUSDT",
-        "ORCLUSDT",
-        "INFQUSDT",
-        "LLYUSDT",
-        "NFLXUSDT",
-        "ASMLUSDT",
+    "USARUSDT",
+    "IONQUSDT",
+    "CBRSUSDT",
+    "AVGOUSDT",
+    "ORCLUSDT",
+    "INFQUSDT",
+    "LLYUSDT",
+    "NFLXUSDT",
+    "ASMLUSDT",
 
-        "APLDUSDT",
-        "ARMUSDT",
-        "JDUSDT",
-        "OKLOUSDT",
-        "FLYUSDT",
-        "BEUSDT",
-        "FUTUUSDT",
-        "CRWVUSDT",
-        "CRDOUSDT"
-    ]
+    "APLDUSDT",
+    "ARMUSDT",
+    "JDUSDT",
+    "OKLOUSDT",
+    "FLYUSDT",
+    "BEUSDT",
+    "FUTUUSDT",
+    "CRWVUSDT",
+    "CRDOUSDT"
+]
 
-# =========================
+# ==========================================
 # TELEGRAM
-# =========================
+# ==========================================
 
-def send_telegram(msg):
+def send_telegram(message):
+
     try:
+
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-        requests.post(url, data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": msg
-        })
+        requests.post(
+            url,
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message
+            }
+        )
 
     except Exception as e:
         logging.error(f"Telegram error: {e}")
 
-# =========================
-# DATA
-# =========================
+# ==========================================
+# GET DATA
+# ==========================================
 
 def get_ohlcv(symbol):
 
     try:
-        bars = exchange.fetch_ohlcv(
+
+        data = exchange.fetch_ohlcv(
             symbol,
             timeframe=TIMEFRAME,
             limit=120
         )
 
         df = pd.DataFrame(
-            bars,
+            data,
             columns=[
                 "timestamp",
                 "open",
@@ -179,12 +188,13 @@ def get_ohlcv(symbol):
         return df
 
     except Exception as e:
-        logging.error(f"{symbol} OHLCV error: {e}")
+
+        logging.error(f"{symbol} OHLCV ERROR: {e}")
         return None
 
-# =========================
-# SIGNAL
-# =========================
+# ==========================================
+# SIGNALS
+# ==========================================
 
 def get_signal(symbol):
 
@@ -253,18 +263,19 @@ def get_signal(symbol):
         return None
 
     except Exception as e:
-        logging.error(f"{symbol} signal error: {e}")
+
+        logging.error(f"{symbol} SIGNAL ERROR: {e}")
         return None
 
-# =========================
+# ==========================================
 # OPEN POSITIONS
-# =========================
+# ==========================================
 
 open_positions = {}
 
-# =========================
-# ORDER
-# =========================
+# ==========================================
+# OPEN TRADE
+# ==========================================
 
 def open_trade(symbol, side):
 
@@ -274,11 +285,13 @@ def open_trade(symbol, side):
             return
 
         ticker = exchange.fetch_ticker(symbol)
+
         price = ticker["last"]
 
         amount = (USDT_PER_TRADE * LEVERAGE) / price
 
-        # FORZAR ISOLATED
+        # FORCE ISOLATED
+
         try:
             exchange.set_margin_mode(
                 MARGIN_MODE,
@@ -287,7 +300,8 @@ def open_trade(symbol, side):
         except:
             pass
 
-        # FORZAR LEVERAGE
+        # FORCE LEVERAGE
+
         try:
             exchange.set_leverage(
                 LEVERAGE,
@@ -310,24 +324,26 @@ def open_trade(symbol, side):
             "lowest": price
         }
 
-        msg = (
+        message = (
             f"🚀 TRADE OPEN\n\n"
             f"Symbol: {symbol}\n"
             f"Side: {side}\n"
             f"Entry: {price}\n"
-            f"Size: {USDT_PER_TRADE}$\n"
+            f"Capital: {USDT_PER_TRADE}$\n"
             f"Leverage: x{LEVERAGE}"
         )
 
-        logging.info(msg)
-        send_telegram(msg)
+        logging.info(message)
+
+        send_telegram(message)
 
     except Exception as e:
-        logging.error(f"{symbol} open trade error: {e}")
 
-# =========================
+        logging.error(f"{symbol} OPEN TRADE ERROR: {e}")
+
+# ==========================================
 # CLOSE TRADE
-# =========================
+# ==========================================
 
 def close_trade(symbol):
 
@@ -336,28 +352,29 @@ def close_trade(symbol):
         if symbol not in open_positions:
             return
 
-        pos = open_positions[symbol]
+        position = open_positions[symbol]
 
-        side = "sell" if pos["side"] == "buy" else "buy"
+        side = "sell" if position["side"] == "buy" else "buy"
 
         exchange.create_market_order(
             symbol=symbol,
             side=side,
-            amount=pos["amount"]
+            amount=position["amount"]
         )
 
-        logging.info(f"{symbol} CLOSED")
-
         send_telegram(f"❌ CLOSED {symbol}")
+
+        logging.info(f"{symbol} CLOSED")
 
         del open_positions[symbol]
 
     except Exception as e:
-        logging.error(f"{symbol} close error: {e}")
 
-# =========================
+        logging.error(f"{symbol} CLOSE ERROR: {e}")
+
+# ==========================================
 # MANAGE POSITIONS
-# =========================
+# ==========================================
 
 def manage_positions():
 
@@ -366,98 +383,127 @@ def manage_positions():
         try:
 
             ticker = exchange.fetch_ticker(symbol)
+
             price = ticker["last"]
 
-            pos = open_positions[symbol]
+            position = open_positions[symbol]
 
-            entry = pos["entry"]
-            side = pos["side"]
+            entry = position["entry"]
 
-            # =================
+            side = position["side"]
+
+            # ======================================
             # LONG
-            # =================
+            # ======================================
 
             if side == "buy":
 
                 pnl = (price - entry) / entry
 
-                if price > pos["highest"]:
-                    pos["highest"] = price
+                if price > position["highest"]:
+                    position["highest"] = price
 
                 # TAKE PROFIT
 
                 if pnl >= TAKE_PROFIT:
+
                     logging.info(f"{symbol} TAKE PROFIT")
+
                     close_trade(symbol)
+
                     continue
 
                 # STOP LOSS
 
                 if pnl <= -STOP_LOSS:
+
                     logging.info(f"{symbol} STOP LOSS")
+
                     close_trade(symbol)
+
                     continue
 
                 # TRAILING
 
                 if pnl >= TRAILING_TRIGGER:
 
-                    trail_price = pos["highest"] * (
-                        1 - TRAILING_DISTANCE
+                    trailing_price = (
+                        position["highest"]
+                        * (1 - TRAILING_DISTANCE)
                     )
 
-                    if price <= trail_price:
+                    if price <= trailing_price:
+
                         logging.info(f"{symbol} TRAILING STOP")
+
                         close_trade(symbol)
+
                         continue
 
-            # =================
+            # ======================================
             # SHORT
-            # =================
+            # ======================================
 
             if side == "sell":
 
                 pnl = (entry - price) / entry
 
-                if price < pos["lowest"]:
-                    pos["lowest"] = price
+                if price < position["lowest"]:
+                    position["lowest"] = price
+
+                # TAKE PROFIT
 
                 if pnl >= TAKE_PROFIT:
+
                     logging.info(f"{symbol} TAKE PROFIT")
+
                     close_trade(symbol)
+
                     continue
 
+                # STOP LOSS
+
                 if pnl <= -STOP_LOSS:
+
                     logging.info(f"{symbol} STOP LOSS")
+
                     close_trade(symbol)
+
                     continue
+
+                # TRAILING
 
                 if pnl >= TRAILING_TRIGGER:
 
-                    trail_price = pos["lowest"] * (
-                        1 + TRAILING_DISTANCE
+                    trailing_price = (
+                        position["lowest"]
+                        * (1 + TRAILING_DISTANCE)
                     )
 
-                    if price >= trail_price:
+                    if price >= trailing_price:
+
                         logging.info(f"{symbol} TRAILING STOP")
+
                         close_trade(symbol)
+
                         continue
 
         except Exception as e:
-            logging.error(f"{symbol} manage error: {e}")
 
-# =========================
+            logging.error(f"{symbol} MANAGE ERROR: {e}")
+
+# ==========================================
 # MAIN
-# =========================
+# ==========================================
 
 def main():
 
-    symbols = get_symbols()
-
-    logging.info(f"TradFi symbols loaded: {len(symbols)}")
+    logging.info(
+        f"TradFi symbols loaded: {len(SYMBOLS)}"
+    )
 
     send_telegram(
-        f"🤖 BOT STARTED\n\nSymbols: {len(symbols)}"
+        f"🤖 BOT STARTED\n\nSymbols: {len(SYMBOLS)}"
     )
 
     while True:
@@ -468,7 +514,7 @@ def main():
 
             if len(open_positions) < MAX_OPEN_TRADES:
 
-                for symbol in symbols:
+                for symbol in SYMBOLS:
 
                     if symbol in open_positions:
                         continue
@@ -499,9 +545,9 @@ def main():
 
             time.sleep(10)
 
-# =========================
+# ==========================================
 # START
-# =========================
+# ==========================================
 
 if __name__ == "__main__":
     main()
