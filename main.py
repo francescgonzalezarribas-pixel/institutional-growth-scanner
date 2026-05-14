@@ -1,6 +1,7 @@
-# ============================================
-# INSTITUTIONAL GROWTH SCANNER v2
-# ============================================
+# =========================================================
+# INSTITUTIONAL GROWTH SCANNER v4
+# Yahoo Scanner + Bitget Execution
+# =========================================================
 
 import os
 import time
@@ -9,18 +10,16 @@ import logging
 import threading
 import urllib.request
 import urllib.parse
+
 import ccxt
-import finnhub
 import yfinance as yf
-import requests
-import feedparser
 import pytz
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# ============================================
-# LOGGING
-# ============================================
+# =========================================================
+# LOGS
+# =========================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,27 +30,14 @@ log = logging.getLogger(__name__)
 
 TZ = pytz.timezone("Europe/Madrid")
 
-# ============================================
+# =========================================================
 # CONFIG
-# ============================================
-
-TELEGRAM_TOKEN = os.environ.get(
-    'TELEGRAM_TOKEN',
-    ''
-)
-
-TELEGRAM_CHAT_ID = os.environ.get(
-    'TELEGRAM_CHAT_ID',
-    ''
-)
-
-FINNHUB_API_KEY = os.environ.get(
-    'FINNHUB_API_KEY',
-    ''
-)
+# =========================================================
 
 CAPITAL = 20
 LEVERAGE = 3
+
+MAX_TRADES = 3
 
 SL_PCT = 0.015
 
@@ -60,46 +46,60 @@ TP2_PCT = 0.04
 TP3_PCT = 0.06
 
 TRAIL_PCT = 0.015
-
 BE_TRIGGER = 0.003
 
-EMA_FAST = 9
-EMA_SLOW = 21
-EMA_MIN_GAP = 0.001
+SCAN_INTERVAL = 90
+MANAGE_INTERVAL = 10
 
-MAX_TRADES = 3
+STATE_FILE = "igs_state.json"
 
-STATE_FILE = 'igs_state.json'
+# =========================================================
+# TELEGRAM
+# =========================================================
 
-# ============================================
-# CLIENTS
-# ============================================
-
-finnhub_client = finnhub.Client(
-    api_key=FINNHUB_API_KEY
+TELEGRAM_TOKEN = os.environ.get(
+    "TELEGRAM_TOKEN",
+    ""
 )
 
+TELEGRAM_CHAT_ID = os.environ.get(
+    "TELEGRAM_CHAT_ID",
+    ""
+)
+
+# =========================================================
+# BITGET
+# =========================================================
+
 exchange = ccxt.bitget({
+
     'apiKey': os.environ.get(
         'BITGET_API_KEY',
         ''
     ),
+
     'secret': os.environ.get(
         'BITGET_API_SECRET',
         ''
     ),
+
     'password': os.environ.get(
         'BITGET_API_PASSPHRASE',
         ''
     ),
+
+    'timeout': 15000,
+
+    'enableRateLimit': True,
+
     'options': {
         'defaultType': 'swap'
     }
 })
 
-# ============================================
+# =========================================================
 # TELEGRAM
-# ============================================
+# =========================================================
 
 def tg(msg):
 
@@ -117,9 +117,11 @@ def tg(msg):
         )
 
         data = urllib.parse.urlencode({
+
             'chat_id': TELEGRAM_CHAT_ID,
             'text': msg,
             'parse_mode': 'Markdown'
+
         }).encode()
 
         urllib.request.urlopen(
@@ -130,108 +132,65 @@ def tg(msg):
 
     except Exception as e:
 
-        log.error(f"Telegram: {e}")
+        log.error(f"telegram: {e}")
 
-# ============================================
+# =========================================================
 # SYMBOLS
-# ============================================
-
-USA_STOCKS = [
-
-    "NVDA",
-    "AMD",
-    "META",
-    "TSLA",
-    "GOOGL",
-    "MSFT",
-    "INTC",
-    "AMZN",
-    "AAPL",
-    "COIN",
-    "PLTR",
-    "BABA",
-    "MSTR",
-    "MU",
-    "ORCL",
-    "ARM",
-    "TSM",
-    "CRWV",
-    "OKLO",
-    "GME",
-    "HOOD",
-    "APP",
-    "RKLB",
-    "IONQ",
-    "SOUN",
-    "SNDK",
-    "NBIS",
-    "NFLX",
-    "AVGO",
-    "MRVL",
-    "AMAT",
-    "KLAC",
-    "WMT",
-    "COST",
-    "LLY",
-    "XOM",
-    "RDDT",
-    "GE",
-    "UNH",
-    "COP",
-]
+# =========================================================
 
 USA_SYMBOL_MAP = {
 
-    s: f"{s}/USDT:USDT"
-
-    for s in [
-
-        "NVDA",
-        "AMD",
-        "META",
-        "TSLA",
-        "GOOGL",
-        "MSFT",
-        "INTC",
-        "AMZN",
-        "AAPL",
-        "COIN",
-        "PLTR",
-        "BABA",
-        "MSTR",
-        "MU",
-        "ORCL",
-        "ARM",
-        "SOUN",
-        "SNDK",
-        "NBIS",
-        "NFLX",
-        "AVGO",
-        "MRVL",
-        "GME",
-        "HOOD",
-        "CRWV",
-        "RKLB",
-        "IONQ",
-        "OKLO",
-        "APP",
-    ]
+    "NVDA": "NVDA/USDT:USDT",
+    "AMD": "AMD/USDT:USDT",
+    "META": "META/USDT:USDT",
+    "TSLA": "TSLA/USDT:USDT",
+    "GOOGL": "GOOGL/USDT:USDT",
+    "MSFT": "MSFT/USDT:USDT",
+    "INTC": "INTC/USDT:USDT",
+    "AMZN": "AMZN/USDT:USDT",
+    "AAPL": "AAPL/USDT:USDT",
+    "COIN": "COIN/USDT:USDT",
+    "PLTR": "PLTR/USDT:USDT",
+    "BABA": "BABA/USDT:USDT",
+    "MSTR": "MSTR/USDT:USDT",
+    "MU": "MU/USDT:USDT",
+    "ORCL": "ORCL/USDT:USDT",
+    "ARM": "ARM/USDT:USDT",
+    "TSM": "TSM/USDT:USDT",
+    "CRWV": "CRWV/USDT:USDT",
+    "OKLO": "OKLO/USDT:USDT",
+    "GME": "GME/USDT:USDT",
+    "HOOD": "HOOD/USDT:USDT",
+    "APP": "APP/USDT:USDT",
+    "RKLB": "RKLB/USDT:USDT",
+    "IONQ": "IONQ/USDT:USDT",
+    "SNDK": "SNDK/USDT:USDT",
+    "NBIS": "NBIS/USDT:USDT",
+    "NFLX": "NFLX/USDT:USDT",
+    "AVGO": "AVGO/USDT:USDT",
+    "MRVL": "MRVL/USDT:USDT",
 }
 
-# ============================================
+WATCHLIST = list(
+    USA_SYMBOL_MAP.keys()
+)
+
+# =========================================================
 # STATE
-# ============================================
+# =========================================================
 
 state = {
+
     "positions": [],
+
     "signals_sent": {},
-    "daily_signals": [],
-    "last_reset": "",
+
+    "last_reset": ""
 }
 
-# ============================================
-# LOAD SAVE
-# ============================================
+# =========================================================
+# STATE SAVE
+# =========================================================
 
 def load_state():
 
@@ -266,44 +225,11 @@ def save_state():
 
         log.error(f"save_state: {e}")
 
-# ============================================
-# RESET
-# ============================================
-
-def reset_daily():
-
-    today = datetime.now(TZ).strftime(
-        "%Y-%m-%d"
-    )
-
-    if state["last_reset"] != today:
-
-        state["signals_sent"] = {}
-
-        state["daily_signals"] = []
-
-        state["last_reset"] = today
-
-        save_state()
-
-        log.info("🔄 Reset diario")
-
-# ============================================
+# =========================================================
 # HELPERS
-# ============================================
+# =========================================================
 
-def get_active_count():
-
-    return len(state["positions"])
-
-def is_pair_active(pair):
-
-    return any(
-        p["pair"] == pair
-        for p in state["positions"]
-    )
-
-def can_send_signal(symbol):
+def can_signal(symbol):
 
     last = state["signals_sent"].get(
         symbol,
@@ -312,17 +238,28 @@ def can_send_signal(symbol):
 
     return (
         time.time() - last
-    ) >= 4 * 3600
+    ) > 3600
 
-def mark_signal_sent(symbol):
+def mark_signal(symbol):
 
     state["signals_sent"][symbol] = time.time()
 
     save_state()
 
-# ============================================
-# EMA / RSI
-# ============================================
+def active_count():
+
+    return len(state["positions"])
+
+def pair_active(pair):
+
+    return any(
+        p["pair"] == pair
+        for p in state["positions"]
+    )
+
+# =========================================================
+# EMA
+# =========================================================
 
 def calc_ema(values, period):
 
@@ -338,191 +275,44 @@ def calc_ema(values, period):
 
     return ema
 
-def calc_rsi(closes, period=14):
-
-    if len(closes) < period + 1:
-        return 50
-
-    diffs = [
-
-        closes[i] - closes[i - 1]
-
-        for i in range(
-            1,
-            len(closes)
-        )
-    ]
-
-    gains = [max(d, 0) for d in diffs]
-
-    losses = [max(-d, 0) for d in diffs]
-
-    ag = sum(gains[-period:]) / period
-
-    al = sum(losses[-period:]) / period
-
-    if al == 0:
-        return 100
-
-    rs = ag / al
-
-    return 100 - (100 / (1 + rs))
-
-# ============================================
-# SIGNALS
-# ============================================
-
-def get_ema_signals(candles):
-
-    if len(candles) < EMA_SLOW + 5:
-        return None
-
-    closes = [c[4] for c in candles]
-
-    ema_fast = calc_ema(
-        closes,
-        EMA_FAST
-    )
-
-    ema_slow = calc_ema(
-        closes,
-        EMA_SLOW
-    )
-
-    rsi = calc_rsi(closes[-30:])
-
-    ef_now = ema_fast[-1]
-    ef_prev = ema_fast[-2]
-
-    es_now = ema_slow[-1]
-    es_prev = ema_slow[-2]
-
-    ema_gap = abs(
-        ef_now - es_now
-    ) / es_now
-
-    return {
-
-        "cross_long":
-            ef_prev <= es_prev
-            and ef_now > es_now,
-
-        "cross_short":
-            ef_prev >= es_prev
-            and ef_now < es_now,
-
-        "aligned_long":
-            ef_now > es_now,
-
-        "aligned_short":
-            ef_now < es_now,
-
-        "ema_gap":
-            ema_gap,
-
-        "rsi":
-            rsi
-    }
-
-# ============================================
+# =========================================================
 # EMA CONFIRM
-# ============================================
+# =========================================================
 
-def confirms_ema(symbol, direction):
-
-    pair = USA_SYMBOL_MAP.get(symbol)
-
-    if not pair:
-        return False
+def confirms_ema(pair, direction):
 
     try:
 
-        candles_1h = exchange.fetch_ohlcv(
+        candles = exchange.fetch_ohlcv(
             pair,
-            '1h',
-            limit=100
-        )
-
-        sig_1h = get_ema_signals(
-            candles_1h
-        )
-
-        candles_15m = exchange.fetch_ohlcv(
-            pair,
-            '15m',
+            '5m',
             limit=50
         )
 
-        sig_15m = get_ema_signals(
-            candles_15m
-        )
+        closes = [c[4] for c in candles]
 
-        if not sig_1h:
-            return False
+        ema9 = calc_ema(closes, 9)
 
-        if not sig_15m:
-            return False
+        ema21 = calc_ema(closes, 21)
 
-        # LONG
+        price = closes[-1]
 
-        if direction == 'alcista':
+        if direction == "alcista":
 
-            ok_1h = (
-
-                (
-                    sig_1h['cross_long']
-                    or sig_1h['aligned_long']
-                )
-
-                and sig_1h['ema_gap']
-                >= EMA_MIN_GAP
-
-                and 40 <= sig_1h['rsi'] <= 70
+            result = (
+                ema9[-1] > ema21[-1]
+                and price > ema9[-1]
             )
-
-            ok_15m = (
-
-                sig_15m['aligned_long']
-
-                and sig_15m['ema_gap']
-                >= EMA_MIN_GAP
-
-                and sig_15m['rsi'] > 50
-            )
-
-        # SHORT
 
         else:
 
-            ok_1h = (
-
-                (
-                    sig_1h['cross_short']
-                    or sig_1h['aligned_short']
-                )
-
-                and sig_1h['ema_gap']
-                >= EMA_MIN_GAP
-
-                and 30 <= sig_1h['rsi'] <= 60
+            result = (
+                ema9[-1] < ema21[-1]
+                and price < ema9[-1]
             )
-
-            ok_15m = (
-
-                sig_15m['aligned_short']
-
-                and sig_15m['ema_gap']
-                >= EMA_MIN_GAP
-
-                and sig_15m['rsi'] < 50
-            )
-
-        result = ok_1h and ok_15m
 
         log.info(
-            f"EMA {symbol} "
-            f"{direction} "
-            f"-> {result}"
+            f"EMA {pair} {direction} -> {result}"
         )
 
         return result
@@ -530,14 +320,61 @@ def confirms_ema(symbol, direction):
     except Exception as e:
 
         log.error(
-            f"confirms_ema {symbol}: {e}"
+            f"ema {pair}: {e}"
         )
 
         return False
 
-# ============================================
-# FOMO FILTER
-# ============================================
+# =========================================================
+# ACCELERATION
+# =========================================================
+
+def has_acceleration(pair):
+
+    try:
+
+        candles = exchange.fetch_ohlcv(
+            pair,
+            '1m',
+            limit=5
+        )
+
+        closes = [c[4] for c in candles]
+
+        move1 = abs(
+            closes[-1] - closes[-2]
+        )
+
+        move2 = abs(
+            closes[-2] - closes[-3]
+        )
+
+        if move2 == 0:
+            return False
+
+        accel = move1 / move2
+
+        ok = accel >= 1.1
+
+        if not ok:
+
+            log.info(
+                f"⛔ {pair} no acceleration"
+            )
+
+        return ok
+
+    except Exception as e:
+
+        log.error(
+            f"acceleration {pair}: {e}"
+        )
+
+        return False
+
+# =========================================================
+# OVEREXTENDED
+# =========================================================
 
 def is_overextended(pair):
 
@@ -558,235 +395,111 @@ def is_overextended(pair):
 
         max_high = max(highs)
 
-        extension = (
+        ext = (
             (current - max_high)
             / max_high
         )
 
-        return extension > 0.025
+        return ext > 0.025
 
-    except Exception as e:
-
-        log.error(
-            f"is_overextended {pair}: {e}"
-        )
-
+    except:
         return False
 
-# ============================================
-# ACCELERATION
-# ============================================
+# =========================================================
+# YAHOO SCANNER
+# =========================================================
 
-def has_acceleration(pair):
+def scan_market():
 
-    try:
+    movers = []
 
-        candles = exchange.fetch_ohlcv(
-            pair,
-            '5m',
-            limit=12
-        )
-
-        closes = [c[4] for c in candles]
-
-        recent = (
-            (closes[-1] - closes[-3])
-            / closes[-3]
-        )
-
-        previous = (
-            (closes[-4] - closes[-8])
-            / closes[-8]
-        )
-
-        return (
-            recent > previous * 1.5
-            and recent > 0.01
-        )
-
-    except Exception as e:
-
-        log.error(
-            f"has_acceleration {pair}: {e}"
-        )
-
-        return False
-
-# ============================================
-# FINNHUB
-# ============================================
-
-def fetch_finnhub_data(symbols):
-
-    data = []
-
-    for symbol in symbols:
+    for symbol in WATCHLIST:
 
         try:
 
-            quote = finnhub_client.quote(
-                symbol
+            ticker = yf.Ticker(symbol)
+
+            hist = ticker.history(
+                period="1d",
+                interval="1m",
+                prepost=True
             )
 
-            if not quote:
+            if hist.empty:
                 continue
 
-            price = quote["c"]
-
-            prev = quote["pc"]
-
-            volume = quote.get(
-                "v",
-                0
+            price = float(
+                hist["Close"].iloc[-1]
             )
 
-            if prev == 0:
+            open_price = float(
+                hist["Open"].iloc[0]
+            )
+
+            volume = float(
+                hist["Volume"].sum()
+            )
+
+            if open_price == 0:
                 continue
 
-            change = round(
-                (
-                    (price - prev)
-                    / prev
-                ) * 100,
-                2
-            )
+            change = (
+                (price - open_price)
+                / open_price
+            ) * 100
 
-            data.append({
+            if abs(change) < 3:
+                continue
+
+            if volume < 5_000_000:
+                continue
+
+            movers.append({
 
                 "symbol": symbol,
-                "name": symbol,
-                "price": price,
-                "change": change,
+
+                "price": round(price, 2),
+
+                "change": round(change, 2),
+
                 "volume": volume,
             })
+
+            log.info(
+                f"🔥 {symbol} "
+                f"{round(change,2)}% "
+                f"VOL {round(volume)}"
+            )
 
         except Exception as e:
 
             log.error(
-                f"finnhub {symbol}: {e}"
+                f"scan {symbol}: {e}"
             )
 
-    return data
-
-# ============================================
-# ANALYZE
-# ============================================
-
-def analyze_signal(item):
-
-    symbol = item["symbol"]
-
-    price = item["price"]
-
-    change = item["change"]
-
-    direction = (
-        "alcista"
-        if change > 0
-        else "bajista"
+    movers.sort(
+        key=lambda x: abs(x["change"]),
+        reverse=True
     )
 
-    if direction == "alcista":
+    return movers[:5]
 
-        sl = round(
-            price * (1 - SL_PCT),
-            2
-        )
-
-        tp1 = round(
-            price * (1 + TP1_PCT),
-            2
-        )
-
-        tp2 = round(
-            price * (1 + TP2_PCT),
-            2
-        )
-
-        tp3 = round(
-            price * (1 + TP3_PCT),
-            2
-        )
-
-    else:
-
-        sl = round(
-            price * (1 + SL_PCT),
-            2
-        )
-
-        tp1 = round(
-            price * (1 - TP1_PCT),
-            2
-        )
-
-        tp2 = round(
-            price * (1 - TP2_PCT),
-            2
-        )
-
-        tp3 = round(
-            price * (1 - TP3_PCT),
-            2
-        )
-
-    return {
-
-        "symbol": symbol,
-
-        "name": symbol,
-
-        "price": price,
-
-        "change": change,
-
-        "direction": direction,
-
-        "sl": sl,
-
-        "tp1": tp1,
-
-        "tp2": tp2,
-
-        "tp3": tp3,
-    }
-
-# ============================================
-# TRAILING
-# ============================================
-
-def get_trail_pct(pnl):
-
-    if pnl >= 0.03:
-        return 0.005
-
-    elif pnl >= 0.01:
-        return 0.01
-
-    return 0.015
-
-# ============================================
+# =========================================================
 # OPEN TRADE
-# ============================================
+# =========================================================
 
-def open_trade(analysis):
-
-    symbol = analysis["symbol"]
+def open_trade(symbol, direction, price):
 
     pair = USA_SYMBOL_MAP.get(symbol)
 
     if not pair:
         return
 
-    if is_pair_active(pair):
+    if pair_active(pair):
         return
 
-    if get_active_count() >= MAX_TRADES:
+    if active_count() >= MAX_TRADES:
         return
-
-    # ========================================
-    # FILTERS
-    # ========================================
 
     if is_overextended(pair):
 
@@ -797,22 +510,11 @@ def open_trade(analysis):
         return
 
     if not has_acceleration(pair):
-
-        log.info(
-            f"⛔ {pair} no acceleration"
-        )
-
         return
-
-    # ========================================
-
-    price = analysis["price"]
-
-    direction = analysis["direction"]
 
     side = (
         'buy'
-        if direction == 'alcista'
+        if direction == "alcista"
         else 'sell'
     )
 
@@ -821,32 +523,32 @@ def open_trade(analysis):
         4
     )
 
-    if size < 0.01:
-        size = 0.01
-
     try:
 
-        # ====================================
-        # FORCE ISOLATED + X3
-        # ====================================
+        # =====================================
+        # NO TOCAR
+        # =====================================
 
         exchange.set_leverage(
+
             LEVERAGE,
+
             pair,
+
             params={
                 'marginMode': 'isolated',
                 'productType': 'USDT-FUTURES',
             }
         )
 
-        time.sleep(0.5)
-
         exchange.create_order(
+
             pair,
             'market',
             side,
             size,
             None,
+
             {
                 'marginMode': 'isolated',
                 'leverage': str(LEVERAGE),
@@ -854,51 +556,56 @@ def open_trade(analysis):
             }
         )
 
-        # ====================================
+        # =====================================
+
+        sl = (
+            price * (1 - SL_PCT)
+            if direction == "alcista"
+            else price * (1 + SL_PCT)
+        )
+
+        tp1 = (
+            price * (1 + TP1_PCT)
+            if direction == "alcista"
+            else price * (1 - TP1_PCT)
+        )
+
+        tp2 = (
+            price * (1 + TP2_PCT)
+            if direction == "alcista"
+            else price * (1 - TP2_PCT)
+        )
+
+        tp3 = (
+            price * (1 + TP3_PCT)
+            if direction == "alcista"
+            else price * (1 - TP3_PCT)
+        )
 
         pos = {
 
             "pair": pair,
-
             "symbol": symbol,
-
             "side": direction,
-
             "entry": price,
-
             "size": size,
 
-            "sl": analysis["sl"],
+            "sl": sl,
 
-            "tp1": analysis["tp1"],
-
-            "tp2": analysis["tp2"],
-
-            "tp3": analysis["tp3"],
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
 
             "trail_best": price,
 
-            "trail_sl": round(
-
-                (
-                    price * (1 - TRAIL_PCT)
-                )
-
-                if direction == 'alcista'
-
-                else (
-
-                    price * (1 + TRAIL_PCT)
-                ),
-
-                4
+            "trail_sl": (
+                price * (1 - TRAIL_PCT)
+                if direction == "alcista"
+                else price * (1 + TRAIL_PCT)
             ),
 
             "tp1_hit": False,
-
-            "tp2_hit": False,
-
-            "be_activated": False,
+            "be": False,
         }
 
         state["positions"].append(pos)
@@ -906,45 +613,45 @@ def open_trade(analysis):
         save_state()
 
         tg(
-            f"🚀 *TRADE* {pair}\n"
-            f"📈 {direction.upper()}\n"
-            f"💰 {CAPITAL} USDT x{LEVERAGE}\n"
-            f"🎯 Entry: {price}\n"
-            f"🛑 SL: {analysis['sl']}\n"
-            f"🎯 TP1: {analysis['tp1']}\n"
-            f"🎯 TP2: {analysis['tp2']}\n"
-            f"🎯 TP3: {analysis['tp3']}"
+            f"🚀 TRADE {direction.upper()}\n\n"
+            f"{pair}\n"
+            f"📈 Entry {price}\n"
+            f"🛑 SL {round(sl,2)}\n"
+            f"🎯 TP1 {round(tp1,2)}\n"
+            f"🎯 TP2 {round(tp2,2)}\n"
+            f"🎯 TP3 {round(tp3,2)}"
         )
 
-        log.info(
-            f"TRADE {direction} "
-            f"{pair} @ {price}"
-        )
+        log.info(f"🚀 OPEN {pair}")
 
     except Exception as e:
 
-        log.error(f"open_trade: {e}")
+        log.error(
+            f"open trade {pair}: {e}"
+        )
 
-# ============================================
+# =========================================================
 # CLOSE TRADE
-# ============================================
+# =========================================================
 
-def close_trade(pos, reason, price=None):
+def close_trade(pos, reason):
 
     side = (
         'sell'
-        if pos["side"] == 'alcista'
+        if pos["side"] == "alcista"
         else 'buy'
     )
 
     try:
 
         exchange.create_order(
+
             pos["pair"],
             'market',
             side,
             pos["size"],
             None,
+
             {
                 'marginMode': 'isolated',
                 'leverage': str(LEVERAGE),
@@ -952,290 +659,307 @@ def close_trade(pos, reason, price=None):
             }
         )
 
-        tg(
-            f"🏁 CLOSE {pos['pair']}\n"
-            f"{reason}"
-        )
-
     except Exception as e:
 
-        log.error(f"close_trade: {e}")
+        log.error(
+            f"close trade: {e}"
+        )
 
-    finally:
+    state["positions"] = [
 
-        state["positions"] = [
+        p
 
-            p
+        for p in state["positions"]
 
-            for p in state["positions"]
+        if p["pair"] != pos["pair"]
+    ]
 
-            if p["pair"] != pos["pair"]
-        ]
-
-        save_state()
-
-# ============================================
-# MANAGE TRADES
-# ============================================
-
-def manage_trades():
-
-    for pos in list(state["positions"]):
-
-        try:
-
-            price = float(
-                exchange.fetch_ticker(
-                    pos["pair"]
-                )['last']
-            )
-
-            entry = pos["entry"]
-
-            side = pos["side"]
-
-            pnl = (
-
-                ((price - entry) / entry)
-
-                if side == 'alcista'
-
-                else (
-
-                    (entry - price) / entry
-                )
-            )
-
-            trail_pct = get_trail_pct(
-                pnl
-            )
-
-            # SL
-
-            if (
-
-                (
-                    side == 'alcista'
-                    and price <= pos["sl"]
-                )
-
-                or
-
-                (
-                    side == 'bajista'
-                    and price >= pos["sl"]
-                )
-            ):
-
-                close_trade(
-                    pos,
-                    "SL",
-                    price
-                )
-
-                continue
-
-            # TP3
-
-            if (
-
-                (
-                    side == 'alcista'
-                    and price >= pos["tp3"]
-                )
-
-                or
-
-                (
-                    side == 'bajista'
-                    and price <= pos["tp3"]
-                )
-            ):
-
-                close_trade(
-                    pos,
-                    "TP3",
-                    price
-                )
-
-                continue
-
-            # TP1
-
-            if not pos["tp1_hit"]:
-
-                if (
-
-                    (
-                        side == 'alcista'
-                        and price >= pos["tp1"]
-                    )
-
-                    or
-
-                    (
-                        side == 'bajista'
-                        and price <= pos["tp1"]
-                    )
-                ):
-
-                    pos["tp1_hit"] = True
-
-                    tg(
-                        f"🎯 TP1 "
-                        f"{pos['pair']}"
-                    )
-
-            # BE
-
-            if (
-
-                not pos["be_activated"]
-
-                and pnl >= BE_TRIGGER
-            ):
-
-                pos["be_activated"] = True
-
-                pos["trail_sl"] = entry
-
-            # TRAILING
-
-            if side == 'alcista':
-
-                if price > pos["trail_best"]:
-
-                    pos["trail_best"] = price
-
-                    pos["trail_sl"] = round(
-                        price * (1 - trail_pct),
-                        4
-                    )
-
-                if (
-
-                    price <= pos["trail_sl"]
-
-                    and pos["tp1_hit"]
-                ):
-
-                    close_trade(
-                        pos,
-                        "TRAIL",
-                        price
-                    )
-
-                    continue
-
-            else:
-
-                if price < pos["trail_best"]:
-
-                    pos["trail_best"] = price
-
-                    pos["trail_sl"] = round(
-                        price * (1 + trail_pct),
-                        4
-                    )
-
-                if (
-
-                    price >= pos["trail_sl"]
-
-                    and pos["tp1_hit"]
-                ):
-
-                    close_trade(
-                        pos,
-                        "TRAIL",
-                        price
-                    )
-
-                    continue
-
-            save_state()
-
-        except Exception as e:
-
-            log.error(
-                f"manage_trades: {e}"
-            )
-
-# ============================================
-# MAIN LOOP
-# ============================================
-
-def main_loop():
-
-    load_state()
+    save_state()
 
     tg(
-        "🚀 Institutional Growth Scanner"
+        f"🏁 CLOSE {pos['pair']}\n"
+        f"{reason}"
     )
 
-    log.info("🚀 BOT STARTED")
+# =========================================================
+# MANAGE TRADES
+# =========================================================
+
+def manage_trades():
 
     while True:
 
         try:
 
-            reset_daily()
+            for pos in list(state["positions"]):
 
-            manage_trades()
+                try:
 
-            data = fetch_finnhub_data(
-                USA_STOCKS
-            )
-
-            for item in data:
-
-                if abs(item["change"]) < 4:
-                    continue
-
-                if not can_send_signal(
-                    item["symbol"]
-                ):
-                    continue
-
-                analysis = analyze_signal(
-                    item
-                )
-
-                mark_signal_sent(
-                    item["symbol"]
-                )
-
-                state["daily_signals"].append(
-                    analysis
-                )
-
-                save_state()
-
-                direction = analysis[
-                    "direction"
-                ]
-
-                if confirms_ema(
-                    item["symbol"],
-                    direction
-                ):
-
-                    open_trade(
-                        analysis
+                    ticker = exchange.fetch_ticker(
+                        pos["pair"]
                     )
 
-            time.sleep(300)
+                    price = float(
+                        ticker['last']
+                    )
+
+                    entry = pos["entry"]
+
+                    side = pos["side"]
+
+                    pnl = (
+
+                        ((price - entry) / entry)
+
+                        if side == "alcista"
+
+                        else (
+
+                            (entry - price) / entry
+                        )
+                    )
+
+                    log.info(
+                        f"💰 {pos['pair']} "
+                        f"{round(pnl*100,2)}%"
+                    )
+
+                    # SL
+
+                    if side == "alcista":
+
+                        if price <= pos["sl"]:
+
+                            close_trade(
+                                pos,
+                                "SL"
+                            )
+
+                            continue
+
+                    else:
+
+                        if price >= pos["sl"]:
+
+                            close_trade(
+                                pos,
+                                "SL"
+                            )
+
+                            continue
+
+                    # TP1
+
+                    if not pos["tp1_hit"]:
+
+                        if (
+
+                            side == "alcista"
+                            and price >= pos["tp1"]
+
+                        ) or (
+
+                            side == "bajista"
+                            and price <= pos["tp1"]
+
+                        ):
+
+                            pos["tp1_hit"] = True
+
+                            pos["trail_sl"] = entry
+
+                            tg(
+                                f"🎯 TP1 "
+                                f"{pos['pair']}"
+                            )
+
+                    # TP3
+
+                    if (
+
+                        side == "alcista"
+                        and price >= pos["tp3"]
+
+                    ) or (
+
+                        side == "bajista"
+                        and price <= pos["tp3"]
+
+                    ):
+
+                        close_trade(
+                            pos,
+                            "TP3"
+                        )
+
+                        continue
+
+                    # TRAILING
+
+                    if side == "alcista":
+
+                        if price > pos["trail_best"]:
+
+                            pos["trail_best"] = price
+
+                            pos["trail_sl"] = (
+                                price * (1 - TRAIL_PCT)
+                            )
+
+                        if (
+
+                            pos["tp1_hit"]
+
+                            and
+
+                            price <= pos["trail_sl"]
+                        ):
+
+                            close_trade(
+                                pos,
+                                "TRAIL"
+                            )
+
+                            continue
+
+                    else:
+
+                        if price < pos["trail_best"]:
+
+                            pos["trail_best"] = price
+
+                            pos["trail_sl"] = (
+                                price * (1 + TRAIL_PCT)
+                            )
+
+                        if (
+
+                            pos["tp1_hit"]
+
+                            and
+
+                            price >= pos["trail_sl"]
+                        ):
+
+                            close_trade(
+                                pos,
+                                "TRAIL"
+                            )
+
+                            continue
+
+                    save_state()
+
+                except Exception as e:
+
+                    log.error(
+                        f"manage pos: {e}"
+                    )
+
+            time.sleep(MANAGE_INTERVAL)
 
         except Exception as e:
 
-            log.error(f"MAIN LOOP: {e}")
+            log.error(
+                f"manage loop: {e}"
+            )
 
-            time.sleep(30)
+            time.sleep(5)
 
-# ============================================
+# =========================================================
+# SCANNER LOOP
+# =========================================================
+
+def scanner_loop():
+
+    while True:
+
+        try:
+
+            log.info("💓 scanner alive")
+
+            movers = scan_market()
+
+            for item in movers:
+
+                symbol = item["symbol"]
+
+                price = item["price"]
+
+                change = item["change"]
+
+                if not can_signal(symbol):
+                    continue
+
+                direction = (
+                    "alcista"
+                    if change > 0
+                    else "bajista"
+                )
+
+                pair = USA_SYMBOL_MAP[symbol]
+
+                log.info(
+                    f"🔍 {symbol} {change}%"
+                )
+
+                if not confirms_ema(
+                    pair,
+                    direction
+                ):
+                    continue
+
+                log.info(
+                    f"✅ setup {symbol}"
+                )
+
+                tg(
+                    f"⚡ SIGNAL {symbol}\n"
+                    f"{direction.upper()} "
+                    f"{change}%"
+                )
+
+                mark_signal(symbol)
+
+                open_trade(
+                    symbol,
+                    direction,
+                    price
+                )
+
+            time.sleep(SCAN_INTERVAL)
+
+        except Exception as e:
+
+            log.error(
+                f"scanner loop: {e}"
+            )
+
+            time.sleep(10)
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    load_state()
+
+    tg(
+        "🚀 Institutional Growth Scanner v4"
+    )
+
+    threading.Thread(
+        target=manage_trades,
+        daemon=True
+    ).start()
+
+    scanner_loop()
+
+# =========================================================
 # START
-# ============================================
+# =========================================================
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
-    main_loop()
+    main()
