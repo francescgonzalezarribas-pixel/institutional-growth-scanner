@@ -1,1 +1,3 @@
 ccxt==4.4.57
+pytz
+requests
