@@ -1,6 +1,1 @@
- ccxt==4.4.57
-finnhub-python
-yfinance
-pytz
-requests
-feedparser
+ccxt==4.4.57
