@@ -42,7 +42,7 @@ def tg(msg):
 exchange = ccxt.bitget({
     'apiKey':   os.environ['BITGET_API_KEY'],
     'secret':   os.environ['BITGET_API_SECRET'],
-    'password': os.environ['BITGET_PASSPHRASE'],
+    'password': os.environ['BITGET_API_PASSPHRASE'],
     'options':  {'defaultType': 'swap'},
     'timeout':  10000,
 })
