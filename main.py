@@ -1,6 +1,6 @@
 """
 Financial Telegram Bot — 100% GRATIS
-IA: OpenRouter (Llama 3.3 70B) — gratis
+IA: OpenRouter (múltiples modelos gratuitos con fallback)
 Datos: yfinance
 Noticias: RSS feeds
 Alertas: APScheduler
@@ -32,6 +32,14 @@ SYSTEM = """Eres un analista financiero senior. Reglas:
 - Máximo 4 párrafos o listas cortas
 - Da conclusiones concretas y accionables
 - No das consejos de inversión pero sí análisis objetivo con sesgo claro"""
+
+MODELS = [
+    "google/gemini-2.0-flash-exp:free",
+    "deepseek/deepseek-r1-0528:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+    "qwen/qwen2.5-72b-instruct:free",
+]
 
 ai_client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -68,23 +76,27 @@ def allowed(message):
 
 
 def ask_ai(prompt: str) -> str:
-    for attempt in range(3):
-        try:
-            resp = ai_client.chat.completions.create(
-                model="google/gemini-2.0-flash-exp:free",
-                messages=[
-                    {"role": "system", "content": SYSTEM},
-                    {"role": "user",   "content": prompt}
-                ],
-                temperature=0.4,
-            )
-            return resp.choices[0].message.content
-        except Exception as e:
-            if attempt < 2:
-                time.sleep(3)
-            else:
-                log.error(f"AI error: {e}")
-                return "⚠️ Error IA. Intenta en unos segundos."
+    for model in MODELS:
+        for attempt in range(2):
+            try:
+                resp = ai_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": SYSTEM},
+                        {"role": "user",   "content": prompt}
+                    ],
+                    temperature=0.4,
+                )
+                return resp.choices[0].message.content
+            except Exception as e:
+                if "402" in str(e) or "429" in str(e):
+                    log.warning(f"Modelo {model} sin quota, probando siguiente...")
+                    break
+                if attempt < 1:
+                    time.sleep(3)
+                else:
+                    log.warning(f"{model} falló: {e}")
+    return "⚠️ Todos los modelos sin quota. Intenta en unos minutos."
 
 
 def get_news(max_items=10):
