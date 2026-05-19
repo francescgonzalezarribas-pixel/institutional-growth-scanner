@@ -71,7 +71,7 @@ def ask_ai(prompt: str) -> str:
     for attempt in range(3):
         try:
             resp = ai_client.chat.completions.create(
-                model="meta-llama/llama-3.3-70b-instruct:free",
+                model="google/gemini-2.0-flash-exp:free",
                 messages=[
                     {"role": "system", "content": SYSTEM},
                     {"role": "user",   "content": prompt}
