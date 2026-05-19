@@ -4,7 +4,7 @@ IA: Google Gemini 2.0 Flash Lite
 Datos: yfinance (Yahoo Finance)
 Noticias: RSS feeds
 Calendario: ForexFactory (gratis)
-Alertas: JobQueue automático
+Alertas: APScheduler
 """
 
 import os
@@ -13,8 +13,10 @@ import feedparser
 import yfinance as yf
 import requests
 import pytz
+import asyncio
 import google.generativeai as genai
 from datetime import datetime, time
+from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -285,9 +287,9 @@ async def cmd_explosiones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     bloque = "\n".join(rows)
     prompt = (
-        f"Acciones con posible explosión de precio:\n{bloque}\n\n"
+        f"Acciones con posible explosión:\n{bloque}\n\n"
         "Para cada una:\n1. Por qué podría explotar al alza\n"
-        "2. Nivel clave a superar para confirmar\n3. Riesgo si falla el movimiento"
+        "2. Nivel clave a superar para confirmar\n3. Riesgo si falla"
     )
     texto = ask_ai(prompt)
     await msg.edit_text(f"💥 *Posibles Explosiones*\n\n{bloque}\n\n{texto}", parse_mode="Markdown")
@@ -306,7 +308,7 @@ async def cmd_calendario(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"📌 *{fecha}* [{pais}] {titulo}")
         bloque = "\n".join(lines)
         prompt = (
-            f"Eventos económicos de alto impacto esta semana:\n{bloque}\n\n"
+            f"Eventos económicos alto impacto esta semana:\n{bloque}\n\n"
             "1. Los 3 más importantes y por qué mueven mercado\n"
             "2. Qué esperar de cada uno\n"
             "3. Sectores/acciones más afectados"
@@ -416,26 +418,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await fn(update, context)
 
 # ── Jobs automáticos ──────────────────────────────────────────────────────────
-async def job_morning(context):
+async def job_morning(app):
+    bot       = app.bot
     titulares = get_news(8)
     bloque    = "\n".join(f"• {t}" for t in titulares) if titulares else "Sin noticias"
     eventos   = get_economic_calendar()
     cal_hoy   = [e for e in eventos if datetime.now().strftime("%Y-%m-%d") in e.get("date", "")]
-    cal_txt   = "\n".join(f"• [{e.get('country','').upper()}] {e.get('title','')}" for e in cal_hoy) or "Sin eventos de alto impacto hoy"
+    cal_txt   = "\n".join(f"• [{e.get('country','').upper()}] {e.get('title','')}" for e in cal_hoy) or "Sin eventos hoy"
     prompt    = (
         f"Briefing — {datetime.now().strftime('%A %d/%m')}:\n\n"
         f"Noticias:\n{bloque}\n\nEventos hoy:\n{cal_txt}\n\n"
         "Briefing completo: sentimiento, qué vigilar, sectores calientes, niveles S&P y DAX."
     )
     texto = ask_ai(prompt)
-    await context.bot.send_message(
-        chat_id=ALLOWED_USER_ID,
+    await bot.send_message(chat_id=ALLOWED_USER_ID,
         text=f"☀️ *Briefing — {datetime.now().strftime('%d/%m')}*\n\n{texto}",
-        parse_mode="Markdown"
-    )
+        parse_mode="Markdown")
 
 
-async def job_close_eu(context):
+async def job_close_eu(app):
+    bot = app.bot
     lines, data_ai = [], []
     for t, nombre in list(INDICES.items())[3:]:
         d = fetch_quote(t, "5d")
@@ -444,14 +446,13 @@ async def job_close_eu(context):
             data_ai.append(f"{nombre}: {d['d1']:+.2f}% hoy")
     snap  = "\n".join(lines)
     texto = ask_ai("Cierre EU:\n" + "\n".join(data_ai) + "\n\nResumen sesión EU y qué esperar de EEUU.")
-    await context.bot.send_message(
-        chat_id=ALLOWED_USER_ID,
+    await bot.send_message(chat_id=ALLOWED_USER_ID,
         text=f"🇪🇺 *Cierre Europa — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{texto}",
-        parse_mode="Markdown"
-    )
+        parse_mode="Markdown")
 
 
-async def job_close_us(context):
+async def job_close_us(app):
+    bot = app.bot
     lines, data_ai = [], []
     for t, nombre in list(INDICES.items())[:3]:
         d = fetch_quote(t, "5d")
@@ -460,41 +461,34 @@ async def job_close_us(context):
             data_ai.append(f"{nombre}: {d['d1']:+.2f}% hoy")
     snap  = "\n".join(lines)
     texto = ask_ai("Cierre EEUU:\n" + "\n".join(data_ai) + "\n\nResumen sesión EEUU y perspectiva mañana.")
-    await context.bot.send_message(
-        chat_id=ALLOWED_USER_ID,
+    await bot.send_message(chat_id=ALLOWED_USER_ID,
         text=f"🇺🇸 *Cierre EEUU — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{texto}",
-        parse_mode="Markdown"
-    )
+        parse_mode="Markdown")
 
 
-async def job_sr_scanner(context):
+async def job_sr_scanner(app):
+    bot    = app.bot
     alerts = scan_sr_alerts(ALL_STOCKS)
     if not alerts:
         return
     bloque = "\n".join(alerts[:6])
     texto  = ask_ai(f"Alertas S/R:\n{bloque}\n\nTop 2 más interesantes y operativa sugerida.")
-    await context.bot.send_message(
-        chat_id=ALLOWED_USER_ID,
+    await bot.send_message(chat_id=ALLOWED_USER_ID,
         text=f"🔔 *Alerta S/R — {datetime.now().strftime('%H:%M')}*\n\n{bloque}\n\n{texto}",
-        parse_mode="Markdown"
-    )
+        parse_mode="Markdown")
 
 
-async def job_explosion_scanner(context):
+async def job_explosion_scanner(app):
+    bot        = app.bot
     candidates = scan_explosions(ALL_STOCKS)
     if not candidates:
         return
-    rows = [
-        f"💥 *{c['ticker']}*: semana {c['d5']:+.1f}% | vol {c['vol_rel']}x | R1 `{c['r1']}`"
-        for c in candidates[:3]
-    ]
+    rows   = [f"💥 *{c['ticker']}*: semana {c['d5']:+.1f}% | vol {c['vol_rel']}x | R1 `{c['r1']}`" for c in candidates[:3]]
     bloque = "\n".join(rows)
     texto  = ask_ai(f"Posibles explosiones:\n{bloque}\n\nAnálisis rápido y niveles a vigilar.")
-    await context.bot.send_message(
-        chat_id=ALLOWED_USER_ID,
+    await bot.send_message(chat_id=ALLOWED_USER_ID,
         text=f"💥 *Detector Explosiones — {datetime.now().strftime('%H:%M')}*\n\n{bloque}\n\n{texto}",
-        parse_mode="Markdown"
-    )
+        parse_mode="Markdown")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
@@ -512,13 +506,17 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    if ALLOWED_USER_ID and app.job_queue:
-        jq = app.job_queue
-        jq.run_daily(job_morning,              time(8,  0,  tzinfo=MADRID))
-        jq.run_daily(job_close_eu,             time(17, 35, tzinfo=MADRID))
-        jq.run_daily(job_close_us,             time(22,  5, tzinfo=MADRID))
-        jq.run_repeating(job_sr_scanner,        interval=7200,  first=60)
-        jq.run_repeating(job_explosion_scanner, interval=10800, first=120)
+    if ALLOWED_USER_ID:
+        def run_job(coro_fn):
+            asyncio.run(coro_fn(app))
+
+        scheduler = BackgroundScheduler(timezone=MADRID)
+        scheduler.add_job(lambda: run_job(job_morning),           "cron",     hour=8,  minute=0)
+        scheduler.add_job(lambda: run_job(job_close_eu),          "cron",     hour=17, minute=35)
+        scheduler.add_job(lambda: run_job(job_close_us),          "cron",     hour=22, minute=5)
+        scheduler.add_job(lambda: run_job(job_sr_scanner),        "interval", hours=2)
+        scheduler.add_job(lambda: run_job(job_explosion_scanner), "interval", hours=3)
+        scheduler.start()
         log.info("✅ Jobs automáticos activados")
     else:
         log.warning("⚠️ ALLOWED_USER_ID no configurado — jobs desactivados")
