@@ -69,7 +69,7 @@ def ask_ai(prompt: str) -> str:
     for attempt in range(3):
         try:
             resp = gemini.models.generate_content(
-                model="gemini-2.0-flash-lite",
+                model="gemini-1.5-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM,
