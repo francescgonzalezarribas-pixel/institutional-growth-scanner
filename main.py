@@ -8,6 +8,7 @@ Alertas: APScheduler
 
 import os
 import logging
+import time
 import feedparser
 import yfinance as yf
 import requests
@@ -65,19 +66,23 @@ def allowed(message):
 
 
 def ask_ai(prompt: str) -> str:
-    try:
-        resp = gemini.models.generate_content(
-            model="gemini-2.0-flash-lite",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM,
-                temperature=0.4,
+    for attempt in range(3):
+        try:
+            resp = gemini.models.generate_content(
+                model="gemini-2.0-flash-lite",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM,
+                    temperature=0.4,
+                )
             )
-        )
-        return resp.text
-    except Exception as e:
-        log.error(f"Gemini error: {e}")
-        return "⚠️ Error IA. Intenta en unos segundos."
+            return resp.text
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(4)
+            else:
+                log.error(f"Gemini error: {e}")
+                return "⚠️ Error IA. Intenta en unos segundos."
 
 
 def get_news(max_items=10):
@@ -131,12 +136,31 @@ def fetch_quote(ticker, period="3mo"):
 
 
 def get_economic_calendar():
+    eventos = []
     try:
-        resp = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json", timeout=8)
-        return [e for e in resp.json() if e.get("impact") == "High"][:15]
+        resp    = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json", timeout=8)
+        eventos = [e for e in resp.json() if e.get("impact") == "High"][:12]
     except Exception as e:
         log.warning(f"Calendar: {e}")
-        return []
+
+    # Earnings de empresas clave esta semana
+    for ticker in ["NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "JPM"]:
+        try:
+            cal = yf.Ticker(ticker).calendar
+            if cal is not None and "Earnings Date" in cal:
+                fecha = str(cal["Earnings Date"][0])[:10]
+                semana = datetime.now().strftime("%Y-%m")
+                if semana in fecha:
+                    eventos.append({
+                        "date": fecha,
+                        "country": "US",
+                        "title": f"📊 Earnings {ticker}",
+                        "impact": "High"
+                    })
+        except:
+            pass
+
+    return eventos
 
 
 def scan_sr_alerts(stocks):
@@ -275,15 +299,21 @@ def cmd_calendario(msg):
     m = bot.send_message(msg.chat.id, "📅 Cargando calendario económico…")
     eventos = get_economic_calendar()
     if eventos:
-        lines  = [f"📌 *{e.get('date','')[:10]}* [{e.get('country','').upper()}] {e.get('title','')}" for e in eventos]
+        eventos_sorted = sorted(eventos, key=lambda x: x.get("date",""))
+        lines  = [f"📌 *{e.get('date','')[:10]}* [{e.get('country','').upper()}] {e.get('title','')}"
+                  for e in eventos_sorted]
         bloque = "\n".join(lines)
-        prompt = (f"Eventos alto impacto esta semana:\n{bloque}\n\n"
-                  "1. 3 más importantes\n2. Qué esperar de cada uno\n3. Sectores afectados")
+        prompt = (f"Eventos económicos alto impacto esta semana:\n{bloque}\n\n"
+                  "Traduce y explica cada evento en español. Luego:\n"
+                  "1. Los 3 más importantes y por qué mueven mercado\n"
+                  "2. Qué esperar de cada uno (consenso del mercado)\n"
+                  "3. Sectores y acciones más afectados")
         texto  = ask_ai(prompt)
         bot.edit_message_text(f"📅 *Calendario — Esta Semana*\n\n{bloque}\n\n{texto}",
                               msg.chat.id, m.message_id, parse_mode="Markdown")
     else:
-        texto = ask_ai("Calendario eventos económicos clave esta semana: Fed, BCE, inflación, empleo, earnings.")
+        texto = ask_ai("Calendario eventos económicos clave esta semana en español: "
+                       "Fed, BCE, inflación, empleo, earnings importantes. Fechas y expectativas.")
         bot.edit_message_text(f"📅 *Calendario Económico*\n\n{texto}",
                               msg.chat.id, m.message_id, parse_mode="Markdown")
 
@@ -381,7 +411,7 @@ def job_morning():
     cal_hoy   = [e for e in eventos if datetime.now().strftime("%Y-%m-%d") in e.get("date","")]
     cal_txt   = "\n".join(f"• [{e.get('country','').upper()}] {e.get('title','')}" for e in cal_hoy) or "Sin eventos hoy"
     prompt    = (f"Briefing {datetime.now().strftime('%A %d/%m')}:\nNoticias:\n{bloque}\n"
-                 f"Eventos hoy:\n{cal_txt}\n\nBriefing: sentimiento, sectores, niveles S&P y DAX.")
+                 f"Eventos hoy:\n{cal_txt}\n\nBriefing en español: sentimiento, sectores, niveles S&P y DAX.")
     texto = ask_ai(prompt)
     bot.send_message(ALLOWED_USER_ID, f"☀️ *Briefing — {datetime.now().strftime('%d/%m')}*\n\n{texto}", parse_mode="Markdown")
 
