@@ -1,6 +1,6 @@
 """
 Financial Telegram Bot — 100% GRATIS
-IA: Google Gemini 2.0 Flash Lite (google-genai)
+IA: OpenRouter (Llama 3.3 70B) — gratis
 Datos: yfinance
 Noticias: RSS feeds
 Alertas: APScheduler
@@ -15,16 +15,15 @@ import requests
 import pytz
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # ── Config ────────────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
-GEMINI_API_KEY  = os.environ["GEMINI_API_KEY"]
-ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", 0))
-MADRID          = pytz.timezone("Europe/Madrid")
+TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
+OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
+ALLOWED_USER_ID    = int(os.environ.get("ALLOWED_USER_ID", 0))
+MADRID             = pytz.timezone("Europe/Madrid")
 
 SYSTEM = """Eres un analista financiero senior. Reglas:
 - Responde SIEMPRE en español
@@ -34,8 +33,11 @@ SYSTEM = """Eres un analista financiero senior. Reglas:
 - Da conclusiones concretas y accionables
 - No das consejos de inversión pero sí análisis objetivo con sesgo claro"""
 
-gemini = genai.Client(api_key=GEMINI_API_KEY)
-bot    = telebot.TeleBot(TELEGRAM_TOKEN)
+ai_client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+)
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -68,20 +70,20 @@ def allowed(message):
 def ask_ai(prompt: str) -> str:
     for attempt in range(3):
         try:
-            resp = gemini.models.generate_content(
-                model="gemini-1.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM,
-                    temperature=0.4,
-                )
+            resp = ai_client.chat.completions.create(
+                model="meta-llama/llama-3.3-70b-instruct:free",
+                messages=[
+                    {"role": "system", "content": SYSTEM},
+                    {"role": "user",   "content": prompt}
+                ],
+                temperature=0.4,
             )
-            return resp.text
+            return resp.choices[0].message.content
         except Exception as e:
             if attempt < 2:
-                time.sleep(4)
+                time.sleep(3)
             else:
-                log.error(f"Gemini error: {e}")
+                log.error(f"AI error: {e}")
                 return "⚠️ Error IA. Intenta en unos segundos."
 
 
@@ -143,23 +145,19 @@ def get_economic_calendar():
     except Exception as e:
         log.warning(f"Calendar: {e}")
 
-    # Earnings de empresas clave esta semana
     for ticker in ["NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "JPM"]:
         try:
             cal = yf.Ticker(ticker).calendar
             if cal is not None and "Earnings Date" in cal:
-                fecha = str(cal["Earnings Date"][0])[:10]
+                fecha  = str(cal["Earnings Date"][0])[:10]
                 semana = datetime.now().strftime("%Y-%m")
                 if semana in fecha:
                     eventos.append({
-                        "date": fecha,
-                        "country": "US",
-                        "title": f"📊 Earnings {ticker}",
-                        "impact": "High"
+                        "date": fecha, "country": "US",
+                        "title": f"📊 Earnings {ticker}", "impact": "High"
                     })
         except:
             pass
-
     return eventos
 
 
@@ -306,7 +304,7 @@ def cmd_calendario(msg):
         prompt = (f"Eventos económicos alto impacto esta semana:\n{bloque}\n\n"
                   "Traduce y explica cada evento en español. Luego:\n"
                   "1. Los 3 más importantes y por qué mueven mercado\n"
-                  "2. Qué esperar de cada uno (consenso del mercado)\n"
+                  "2. Qué esperar de cada uno\n"
                   "3. Sectores y acciones más afectados")
         texto  = ask_ai(prompt)
         bot.edit_message_text(f"📅 *Calendario — Esta Semana*\n\n{bloque}\n\n{texto}",
