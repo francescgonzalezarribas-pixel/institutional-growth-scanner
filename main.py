@@ -70,7 +70,7 @@ def allowed(message):
 def ask_ai(prompt: str) -> str:
     for attempt in range(3):
         try:
-            resp = ai_client.chat.completions.create(
+            model="google/gemini-2.0-flash-exp:free",
                model="deepseek/deepseek-r1-0528:free", 
                 messages=[
                     {"role": "system", "content": SYSTEM},
