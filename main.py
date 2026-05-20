@@ -48,14 +48,14 @@ RSS_FEEDS = [
     "https://finance.yahoo.com/news/rssindex",
 ]
 
-# ── IPOs seguimiento ──────────────────────────────────────────────────────────
+# ── IPOs ──────────────────────────────────────────────────────────────────────
 IPOS_WATCH = [
-    {"nombre": "SpaceX",    "ticker": None,   "sector": "Aeroespacial",  "valor": "$1.5T",  "estado": "Próxima",   "bolsa": "NYSE"},
-    {"nombre": "OpenAI",    "ticker": None,   "sector": "IA",            "valor": "$1T",    "estado": "Próxima",   "bolsa": "NASDAQ"},
-    {"nombre": "Kraken",    "ticker": None,   "sector": "Crypto",        "valor": "$20B",   "estado": "Próxima",   "bolsa": "NASDAQ"},
-    {"nombre": "Revolut",   "ticker": None,   "sector": "Fintech",       "valor": "$75B",   "estado": "Próxima",   "bolsa": "NASDAQ"},
-    {"nombre": "Canva",     "ticker": None,   "sector": "SaaS",          "valor": "$42B",   "estado": "Próxima",   "bolsa": "NYSE/ASX"},
-    {"nombre": "Cerebras",  "ticker": "CBRS", "sector": "Chips IA",      "valor": "$48B",   "estado": "Reciente",  "bolsa": "NASDAQ"},
+    {"nombre": "SpaceX",    "ticker": None,   "sector": "Aeroespacial",     "valor": "$1.5T",  "estado": "Próxima",      "bolsa": "NYSE"},
+    {"nombre": "OpenAI",    "ticker": None,   "sector": "IA",               "valor": "$1T",    "estado": "Próxima",      "bolsa": "NASDAQ"},
+    {"nombre": "Kraken",    "ticker": None,   "sector": "Crypto",           "valor": "$20B",   "estado": "Próxima",      "bolsa": "NASDAQ"},
+    {"nombre": "Revolut",   "ticker": None,   "sector": "Fintech",          "valor": "$75B",   "estado": "Próxima",      "bolsa": "NASDAQ"},
+    {"nombre": "Canva",     "ticker": None,   "sector": "SaaS",             "valor": "$42B",   "estado": "Próxima",      "bolsa": "NYSE/ASX"},
+    {"nombre": "Cerebras",  "ticker": "CBRS", "sector": "Chips IA",         "valor": "$48B",   "estado": "Reciente",     "bolsa": "NASDAQ"},
     {"nombre": "Lincoln International", "ticker": "LCLN", "sector": "Banca inversión", "valor": "$1.94B", "estado": "Esta semana", "bolsa": "NYSE"},
 ]
 
@@ -185,7 +185,6 @@ def get_economic_calendar():
 
 
 def get_ipo_news():
-    """Busca noticias de IPOs en RSS."""
     titulares = []
     try:
         feed = feedparser.parse(
@@ -269,7 +268,7 @@ def main_kb():
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     if not allowed(msg): return
-    safe_send(msg.chat.id,
+    bot.send_message(msg.chat.id,
         "🏦 *Financial Bot* — Análisis EU & EEUU\n\n"
         "*/noticias* — Titulares + resumen IA\n"
         "*/mercados* — Índices con variación\n"
@@ -282,9 +281,10 @@ def cmd_start(msg):
         "*/ipos* — IPOs próximas y recientes\n"
         "*/analisis TICKER* — Análisis completo\n"
         "*/crypto* — BTC, ETH, SOL\n"
-        "✉️ Pregunta libre → IA responde\n\nElige 👇"
+        "✉️ Pregunta libre → IA responde\n\nElige 👇",
+        parse_mode="Markdown",
+        reply_markup=main_kb()
     )
-    bot.send_message(msg.chat.id, "👇", reply_markup=main_kb())
 
 
 @bot.message_handler(commands=["noticias"])
@@ -434,8 +434,6 @@ def cmd_metales(msg):
 def cmd_ipos(msg):
     if not allowed(msg): return
     m = bot.send_message(msg.chat.id, "🚀 Cargando IPOs…")
-
-    # Precios de IPOs que ya cotizan
     lines = []
     for ipo in IPOS_WATCH:
         if ipo["ticker"]:
@@ -452,22 +450,14 @@ def cmd_ipos(msg):
         else:
             lines.append(f"⏳ *{ipo['nombre']}* — {ipo['estado']}\n"
                          f"   Sector: {ipo['sector']} | Val: {ipo['valor']} | {ipo['bolsa']}")
-
-    snap = "\n\n".join(lines)
-
-    # Noticias recientes de IPOs
+    snap         = "\n\n".join(lines)
     noticias_ipo = get_ipo_news()
     noticias_txt = "\n".join(f"• {n}" for n in noticias_ipo) if noticias_ipo else ""
-
-    prompt = (
-        f"IPOs más relevantes ahora mismo:\n{snap}\n\n"
-        f"Últimas noticias IPO:\n{noticias_txt}\n\n"
-        "Para cada IPO activa o próxima:\n"
-        "1. 🎯 ¿Vale la pena entrar? SÍ/NO/ESPERAR y por qué\n"
-        "2. Riesgo principal de cada una\n"
-        "3. Cuál tiene más potencial a 6-12 meses\n"
-        "4. Estrategia: ¿entrar en el debut o esperar corrección?"
-    )
+    prompt = (f"IPOs relevantes:\n{snap}\n\nNoticias IPO:\n{noticias_txt}\n\n"
+              "Para cada IPO activa o próxima:\n"
+              "1. ¿Vale la pena entrar? SÍ/NO/ESPERAR y por qué\n"
+              "2. Riesgo principal\n3. Cuál tiene más potencial a 6-12 meses\n"
+              "4. ¿Entrar en debut o esperar corrección?")
     texto = ask_ai(prompt)
     safe_send(msg.chat.id,
         f"🚀 *IPOs — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{texto}",
@@ -620,7 +610,7 @@ def job_metales_scanner():
     if not data_ai:
         return
     prompt = (f"Metales ahora:\n" + "\n".join(data_ai) + "\n\n"
-              "¿Hay señal clara de entrada o salida en algún metal?\n"
+              "¿Hay señal clara de entrada o salida?\n"
               "Si SÍ: cuál, entrada, stop, objetivo.\n"
               "Si NO: responde solo 'SIN SEÑAL'.")
     texto = ask_ai(prompt)
@@ -630,14 +620,13 @@ def job_metales_scanner():
 
 
 def job_ipo_scanner():
-    """Cada 24h — revisa novedades en IPOs."""
     noticias = get_ipo_news()
     if not noticias:
         return
     bloque = "\n".join(f"• {n}" for n in noticias)
     prompt = (f"Noticias IPO hoy:\n{bloque}\n\n"
-              "¿Hay alguna novedad importante de IPO que requiera atención inmediata?\n"
-              "Si SÍ: explica cuál y por qué es relevante.\n"
+              "¿Hay novedad importante de IPO?\n"
+              "Si SÍ: explica cuál y por qué.\n"
               "Si NO: responde solo 'SIN NOVEDAD'.")
     texto = ask_ai(prompt)
     if "SIN NOVEDAD" in texto.upper():
@@ -660,4 +649,9 @@ if __name__ == "__main__":
         log.info("✅ Jobs automáticos activados")
 
     log.info("🤖 Financial Bot arrancado")
-    bot.polling(none_stop=True)
+    while True:
+        try:
+            bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            log.error(f"Polling error: {e}")
+            time.sleep(15)
