@@ -48,6 +48,17 @@ RSS_FEEDS = [
     "https://finance.yahoo.com/news/rssindex",
 ]
 
+# ── IPOs seguimiento ──────────────────────────────────────────────────────────
+IPOS_WATCH = [
+    {"nombre": "SpaceX",    "ticker": None,   "sector": "Aeroespacial",  "valor": "$1.5T",  "estado": "Próxima",   "bolsa": "NYSE"},
+    {"nombre": "OpenAI",    "ticker": None,   "sector": "IA",            "valor": "$1T",    "estado": "Próxima",   "bolsa": "NASDAQ"},
+    {"nombre": "Kraken",    "ticker": None,   "sector": "Crypto",        "valor": "$20B",   "estado": "Próxima",   "bolsa": "NASDAQ"},
+    {"nombre": "Revolut",   "ticker": None,   "sector": "Fintech",       "valor": "$75B",   "estado": "Próxima",   "bolsa": "NASDAQ"},
+    {"nombre": "Canva",     "ticker": None,   "sector": "SaaS",          "valor": "$42B",   "estado": "Próxima",   "bolsa": "NYSE/ASX"},
+    {"nombre": "Cerebras",  "ticker": "CBRS", "sector": "Chips IA",      "valor": "$48B",   "estado": "Reciente",  "bolsa": "NASDAQ"},
+    {"nombre": "Lincoln International", "ticker": "LCLN", "sector": "Banca inversión", "valor": "$1.94B", "estado": "Esta semana", "bolsa": "NYSE"},
+]
+
 # ── Activos ───────────────────────────────────────────────────────────────────
 INDICES = {
     "^GSPC": "S&P 500", "^DJI": "Dow Jones", "^IXIC": "Nasdaq",
@@ -173,6 +184,22 @@ def get_economic_calendar():
     return eventos
 
 
+def get_ipo_news():
+    """Busca noticias de IPOs en RSS."""
+    titulares = []
+    try:
+        feed = feedparser.parse(
+            "https://news.google.com/rss/search?q=IPO+2026+NYSE+NASDAQ&hl=en&gl=US&ceid=US:en"
+        )
+        for entry in feed.entries[:8]:
+            title = entry.get("title", "").strip()
+            if title:
+                titulares.append(title)
+    except Exception as e:
+        log.warning(f"IPO RSS: {e}")
+    return titulares[:8]
+
+
 def scan_sr_alerts(stocks):
     alerts = []
     for t in stocks:
@@ -234,7 +261,8 @@ def main_kb():
            InlineKeyboardButton("₿ Crypto",         callback_data="crypto"))
     kb.row(InlineKeyboardButton("🔔 S/R Scanner",   callback_data="sr_scan"),
            InlineKeyboardButton("🏆 Señales",        callback_data="senales"))
-    kb.row(InlineKeyboardButton("🪙 Metales",        callback_data="metales"))
+    kb.row(InlineKeyboardButton("🪙 Metales",        callback_data="metales"),
+           InlineKeyboardButton("🚀 IPOs",           callback_data="ipos"))
     return kb
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -251,6 +279,7 @@ def cmd_start(msg):
         "*/sr* — Scanner S/R\n"
         "*/senales* — 4 mejores operaciones del día\n"
         "*/metales* — Oro, Plata, Platino, Cobre\n"
+        "*/ipos* — IPOs próximas y recientes\n"
         "*/analisis TICKER* — Análisis completo\n"
         "*/crypto* — BTC, ETH, SOL\n"
         "✉️ Pregunta libre → IA responde\n\nElige 👇"
@@ -401,6 +430,50 @@ def cmd_metales(msg):
         message_id=m.message_id)
 
 
+@bot.message_handler(commands=["ipos"])
+def cmd_ipos(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "🚀 Cargando IPOs…")
+
+    # Precios de IPOs que ya cotizan
+    lines = []
+    for ipo in IPOS_WATCH:
+        if ipo["ticker"]:
+            d = fetch_quote(ipo["ticker"], "1mo")
+            if d:
+                lines.append(
+                    f"{'🟢' if d['d1'] >= 0 else '🔴'} *{ipo['nombre']}* ({ipo['ticker']}) — "
+                    f"`{d['price']}` | hoy {arrow(d['d1'])} | semana {arrow(d['d5'])}\n"
+                    f"   Sector: {ipo['sector']} | Val: {ipo['valor']} | {ipo['bolsa']}"
+                )
+            else:
+                lines.append(f"🆕 *{ipo['nombre']}* ({ipo['ticker']}) — {ipo['estado']}\n"
+                             f"   Sector: {ipo['sector']} | Val: {ipo['valor']} | {ipo['bolsa']}")
+        else:
+            lines.append(f"⏳ *{ipo['nombre']}* — {ipo['estado']}\n"
+                         f"   Sector: {ipo['sector']} | Val: {ipo['valor']} | {ipo['bolsa']}")
+
+    snap = "\n\n".join(lines)
+
+    # Noticias recientes de IPOs
+    noticias_ipo = get_ipo_news()
+    noticias_txt = "\n".join(f"• {n}" for n in noticias_ipo) if noticias_ipo else ""
+
+    prompt = (
+        f"IPOs más relevantes ahora mismo:\n{snap}\n\n"
+        f"Últimas noticias IPO:\n{noticias_txt}\n\n"
+        "Para cada IPO activa o próxima:\n"
+        "1. 🎯 ¿Vale la pena entrar? SÍ/NO/ESPERAR y por qué\n"
+        "2. Riesgo principal de cada una\n"
+        "3. Cuál tiene más potencial a 6-12 meses\n"
+        "4. Estrategia: ¿entrar en el debut o esperar corrección?"
+    )
+    texto = ask_ai(prompt)
+    safe_send(msg.chat.id,
+        f"🚀 *IPOs — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{texto}",
+        message_id=m.message_id)
+
+
 @bot.message_handler(commands=["analisis"])
 def cmd_analisis(msg):
     if not allowed(msg): return
@@ -468,6 +541,7 @@ def handle_callback(call):
         "crypto":        cmd_crypto,
         "senales":       cmd_senales,
         "metales":       cmd_metales,
+        "ipos":          cmd_ipos,
     }
     fn = handlers.get(call.data)
     if fn:
@@ -554,6 +628,23 @@ def job_metales_scanner():
         return
     safe_send(ALLOWED_USER_ID, f"🪙 *Alerta Metales — {datetime.now().strftime('%H:%M')}*\n\n{texto}")
 
+
+def job_ipo_scanner():
+    """Cada 24h — revisa novedades en IPOs."""
+    noticias = get_ipo_news()
+    if not noticias:
+        return
+    bloque = "\n".join(f"• {n}" for n in noticias)
+    prompt = (f"Noticias IPO hoy:\n{bloque}\n\n"
+              "¿Hay alguna novedad importante de IPO que requiera atención inmediata?\n"
+              "Si SÍ: explica cuál y por qué es relevante.\n"
+              "Si NO: responde solo 'SIN NOVEDAD'.")
+    texto = ask_ai(prompt)
+    if "SIN NOVEDAD" in texto.upper():
+        return
+    safe_send(ALLOWED_USER_ID, f"🚀 *Novedad IPO — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{texto}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if ALLOWED_USER_ID:
@@ -564,6 +655,7 @@ if __name__ == "__main__":
         scheduler.add_job(job_sr_scanner,        "interval", hours=2)
         scheduler.add_job(job_explosion_scanner, "interval", hours=3)
         scheduler.add_job(job_metales_scanner,   "interval", hours=4)
+        scheduler.add_job(job_ipo_scanner,       "cron",     hour=8,  minute=30)
         scheduler.start()
         log.info("✅ Jobs automáticos activados")
 
