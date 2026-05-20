@@ -58,11 +58,8 @@ EU_STOCKS  = ["ASML", "SAP", "SIE.DE", "TTE.PA", "LVMH.PA", "NESN.SW"]
 CRYPTO     = ["BTC-USD", "ETH-USD", "SOL-USD"]
 ALL_STOCKS = US_STOCKS + EU_STOCKS
 METALES    = {
-    "GC=F":  "Oro",
-    "SI=F":  "Plata",
-    "PL=F":  "Platino",
-    "HG=F":  "Cobre",
-    "PA=F":  "Paladio",
+    "GC=F": "Oro", "SI=F": "Plata",
+    "PL=F": "Platino", "HG=F": "Cobre", "PA=F": "Paladio",
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -72,7 +69,7 @@ def allowed(message):
     return message.from_user.id == ALLOWED_USER_ID
 
 
-def ask_ai(prompt: str) -> str:
+def ask_ai(prompt: str, max_chars: int = 3000) -> str:
     for attempt in range(3):
         try:
             resp = ai_client.chat(
@@ -82,13 +79,28 @@ def ask_ai(prompt: str) -> str:
                     ChatMessage(role="user",   content=prompt)
                 ],
             )
-            return resp.choices[0].message.content
+            texto = resp.choices[0].message.content
+            if len(texto) > max_chars:
+                texto = texto[:max_chars] + "\n\n_...respuesta truncada_"
+            return texto
         except Exception as e:
             if attempt < 2:
                 time.sleep(3)
             else:
                 log.error(f"Mistral error: {e}")
                 return "⚠️ Error IA. Intenta en unos segundos."
+
+
+def safe_send(chat_id, text, message_id=None, parse_mode="Markdown"):
+    if len(text) > 4000:
+        text = text[:4000] + "\n\n_...mensaje truncado_"
+    try:
+        if message_id:
+            bot.edit_message_text(text, chat_id, message_id, parse_mode=parse_mode)
+        else:
+            bot.send_message(chat_id, text, parse_mode=parse_mode)
+    except Exception as e:
+        log.error(f"Send error: {e}")
 
 
 def get_news(max_items=10):
@@ -152,7 +164,7 @@ def get_economic_calendar():
         try:
             cal = yf.Ticker(ticker).calendar
             if cal is not None and "Earnings Date" in cal:
-                fecha  = str(cal["Earnings Date"][0])[:10]
+                fecha = str(cal["Earnings Date"][0])[:10]
                 if datetime.now().strftime("%Y-%m") in fecha:
                     eventos.append({"date": fecha, "country": "US",
                                     "title": f"📊 Earnings {ticker}", "impact": "High"})
@@ -190,27 +202,20 @@ def scan_explosions(stocks):
 
 
 def get_top_signals():
-    """Escanea EU + EEUU + Crypto y devuelve los 4 mejores setups del día."""
     candidatos = []
     for t in ALL_STOCKS + CRYPTO:
         d = fetch_quote(t, "3mo")
         if not d:
             continue
         score = 0
-        # Criterios de puntuación
-        if d["vol_rel"] >= 1.5:             score += 2
-        if d["d1"] >= 1.0:                  score += 2
-        if d["d5"] >= 3.0:                  score += 2
-        dist_hi = (d["hi52"] - d["price"]) / d["hi52"] * 100
-        dist_lo = (d["price"] - d["lo52"]) / d["lo52"] * 100
-        if dist_hi <= 5.0:                  score += 3  # cerca de máximos
-        if dist_lo <= 5.0:                  score += 1  # cerca de mínimos (rebote)
-        # Cerca de soporte
+        if d["vol_rel"] >= 1.5:                                      score += 2
+        if d["d1"] >= 1.0:                                           score += 2
+        if d["d5"] >= 3.0:                                           score += 2
+        if (d["hi52"] - d["price"]) / d["hi52"] * 100 <= 5.0:       score += 3
+        if (d["price"] - d["lo52"]) / d["lo52"] * 100 <= 5.0:       score += 1
         for nivel in [d["s1"], d["s2"]]:
-            if abs(d["price"] - nivel) / nivel * 100 <= 1.5:
-                score += 2
+            if abs(d["price"] - nivel) / nivel * 100 <= 1.5:         score += 2
         candidatos.append({**d, "score": score})
-
     candidatos.sort(key=lambda x: x["score"], reverse=True)
     return candidatos[:4]
 
@@ -236,7 +241,7 @@ def main_kb():
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     if not allowed(msg): return
-    bot.send_message(msg.chat.id,
+    safe_send(msg.chat.id,
         "🏦 *Financial Bot* — Análisis EU & EEUU\n\n"
         "*/noticias* — Titulares + resumen IA\n"
         "*/mercados* — Índices con variación\n"
@@ -248,9 +253,9 @@ def cmd_start(msg):
         "*/metales* — Oro, Plata, Platino, Cobre\n"
         "*/analisis TICKER* — Análisis completo\n"
         "*/crypto* — BTC, ETH, SOL\n"
-        "✉️ Pregunta libre → IA responde\n\nElige 👇",
-        parse_mode="Markdown", reply_markup=main_kb()
+        "✉️ Pregunta libre → IA responde\n\nElige 👇"
     )
+    bot.send_message(msg.chat.id, "👇", reply_markup=main_kb())
 
 
 @bot.message_handler(commands=["noticias"])
@@ -265,8 +270,9 @@ def cmd_noticias(msg):
     else:
         prompt = "Estado mercados EU y EEUU hoy, factores clave, sectores con momentum."
     texto = ask_ai(prompt)
-    bot.edit_message_text(f"📰 *Noticias — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{texto}",
-                          msg.chat.id, m.message_id, parse_mode="Markdown")
+    safe_send(msg.chat.id,
+        f"📰 *Noticias — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{texto}",
+        message_id=m.message_id)
 
 
 @bot.message_handler(commands=["mercados"])
@@ -281,8 +287,9 @@ def cmd_mercados(msg):
             data_ai.append(f"{nombre}: {d['price']:,.0f} ({d['d1']:+.2f}% hoy, {d['d5']:+.2f}% semana)")
     snap     = "\n".join(lines) or "_Sin datos_"
     analisis = ask_ai("Snapshot:\n" + "\n".join(data_ai) + "\n\nLectura global, divergencias EU/EEUU, qué vigilar.")
-    bot.edit_message_text(f"📊 *Mercados — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{analisis}",
-                          msg.chat.id, m.message_id, parse_mode="Markdown")
+    safe_send(msg.chat.id,
+        f"📊 *Mercados — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{analisis}",
+        message_id=m.message_id)
 
 
 @bot.message_handler(commands=["oportunidades"])
@@ -299,8 +306,7 @@ def cmd_oportunidades(msg):
     prompt = ("Datos técnicos:\n" + "\n".join(rows) + "\n\n"
               "1. 2-3 mejores setups\n2. Acciones a evitar\n3. Trade concreto: entrada/objetivo/stop\n4. Riesgo 1-10")
     texto = ask_ai(prompt)
-    bot.edit_message_text(f"🎯 *Oportunidades*\n\n{texto}",
-                          msg.chat.id, m.message_id, parse_mode="Markdown")
+    safe_send(msg.chat.id, f"🎯 *Oportunidades*\n\n{texto}", message_id=m.message_id)
 
 
 @bot.message_handler(commands=["explosiones"])
@@ -309,16 +315,14 @@ def cmd_explosiones(msg):
     m = bot.send_message(msg.chat.id, "💥 Buscando explosiones…")
     candidates = scan_explosions(ALL_STOCKS)
     if not candidates:
-        bot.edit_message_text("💥 *Explosiones*\n\nMercado en calma, sin señales claras.",
-                              msg.chat.id, m.message_id, parse_mode="Markdown")
+        safe_send(msg.chat.id, "💥 *Explosiones*\n\nMercado en calma, sin señales claras.", message_id=m.message_id)
         return
     rows = [f"*{c['ticker']}*: `{c['price']}` | semana {c['d5']:+.1f}% | "
             f"vol {c['vol_rel']}x | dist máx52 {c['dist_hi52']:.1f}% | R1 `{c['r1']}`"
             for c in candidates]
     bloque = "\n".join(rows)
     texto  = ask_ai(f"Posibles explosiones:\n{bloque}\n\n1. Por qué podría subir\n2. Nivel a superar\n3. Riesgo si falla")
-    bot.edit_message_text(f"💥 *Posibles Explosiones*\n\n{bloque}\n\n{texto}",
-                          msg.chat.id, m.message_id, parse_mode="Markdown")
+    safe_send(msg.chat.id, f"💥 *Posibles Explosiones*\n\n{bloque}\n\n{texto}", message_id=m.message_id)
 
 
 @bot.message_handler(commands=["calendario"])
@@ -331,19 +335,14 @@ def cmd_calendario(msg):
         lines  = [f"📌 *{e.get('date','')[:10]}* [{e.get('country','').upper()}] {e.get('title','')}"
                   for e in eventos_sorted]
         bloque = "\n".join(lines)
-        prompt = (f"Eventos económicos alto impacto esta semana:\n{bloque}\n\n"
-                  "Traduce y explica cada evento en español. Luego:\n"
-                  "1. Los 3 más importantes y por qué mueven mercado\n"
-                  "2. Qué esperar de cada uno\n"
-                  "3. Sectores y acciones más afectados")
+        prompt = (f"Eventos esta semana:\n{bloque}\n\n"
+                  "Traduce en español. Luego:\n"
+                  "1. 3 más importantes y por qué\n2. Qué esperar\n3. Sectores afectados")
         texto  = ask_ai(prompt)
-        bot.edit_message_text(f"📅 *Calendario — Esta Semana*\n\n{bloque}\n\n{texto}",
-                              msg.chat.id, m.message_id, parse_mode="Markdown")
+        safe_send(msg.chat.id, f"📅 *Calendario — Esta Semana*\n\n{bloque}\n\n{texto}", message_id=m.message_id)
     else:
-        texto = ask_ai("Calendario eventos económicos clave esta semana en español: "
-                       "Fed, BCE, inflación, empleo, earnings importantes. Fechas y expectativas.")
-        bot.edit_message_text(f"📅 *Calendario Económico*\n\n{texto}",
-                              msg.chat.id, m.message_id, parse_mode="Markdown")
+        texto = ask_ai("Calendario eventos económicos clave esta semana en español: Fed, BCE, inflación, empleo, earnings.")
+        safe_send(msg.chat.id, f"📅 *Calendario Económico*\n\n{texto}", message_id=m.message_id)
 
 
 @bot.message_handler(commands=["sr"])
@@ -354,11 +353,9 @@ def cmd_sr(msg):
     if alerts:
         bloque = "\n".join(alerts)
         texto  = ask_ai(f"Acciones en zona S/R:\n{bloque}\n\n1. Rebote o ruptura\n2. Qué confirmaría\n3. Operativa")
-        bot.edit_message_text(f"🔔 *S/R Scanner*\n\n{bloque}\n\n{texto}",
-                              msg.chat.id, m.message_id, parse_mode="Markdown")
+        safe_send(msg.chat.id, f"🔔 *S/R Scanner*\n\n{bloque}\n\n{texto}", message_id=m.message_id)
     else:
-        bot.edit_message_text("🔔 *S/R Scanner*\n\nNinguna acción en zona crítica ahora mismo.",
-                              msg.chat.id, m.message_id, parse_mode="Markdown")
+        safe_send(msg.chat.id, "🔔 *S/R Scanner*\n\nNinguna acción en zona crítica ahora mismo.", message_id=m.message_id)
 
 
 @bot.message_handler(commands=["senales"])
@@ -367,32 +364,19 @@ def cmd_senales(msg):
     m = bot.send_message(msg.chat.id, "🏆 Calculando las 4 mejores operaciones del día…")
     signals = get_top_signals()
     if not signals:
-        bot.edit_message_text("🏆 *Señales*\n\nNo hay setups claros ahora mismo.",
-                              msg.chat.id, m.message_id, parse_mode="Markdown")
+        safe_send(msg.chat.id, "🏆 *Señales*\n\nNo hay setups claros ahora mismo.", message_id=m.message_id)
         return
-    rows = []
-    for s in signals:
-        rows.append(
-            f"*{s['ticker']}*: `{s['price']}` | hoy {arrow(s['d1'])} | "
-            f"semana {arrow(s['d5'])} | vol `{s['vol_rel']}x` | "
-            f"S1 `{s['s1']}` R1 `{s['r1']}` | score `{s['score']}`"
-        )
+    rows = [f"*{s['ticker']}*: `{s['price']}` | hoy {arrow(s['d1'])} | "
+            f"semana {arrow(s['d5'])} | vol `{s['vol_rel']}x` | S1 `{s['s1']}` R1 `{s['r1']}`"
+            for s in signals]
     bloque = "\n".join(rows)
-    prompt = (
-        f"Los 4 mejores setups técnicos de hoy EU+EEUU+Crypto:\n{bloque}\n\n"
-        "Para cada uno dame:\n"
-        "1. 🎯 Precio de entrada exacto\n"
-        "2. 🛑 Stop loss exacto\n"
-        "3. ✅ Objetivo de beneficio\n"
-        "4. 📊 Ratio R/R\n"
-        "5. ⏱ Horizonte temporal recomendado\n"
-        "Sé muy concreto con los precios."
-    )
+    prompt = (f"4 mejores setups EU+EEUU+Crypto:\n{bloque}\n\n"
+              "Para cada uno:\n1. 🎯 Entrada exacta\n2. 🛑 Stop loss\n"
+              "3. ✅ Objetivo\n4. 📊 R/R\n5. ⏱ Horizonte temporal\nSé concreto con precios.")
     texto = ask_ai(prompt)
-    bot.edit_message_text(
+    safe_send(msg.chat.id,
         f"🏆 *4 Mejores Operaciones — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{bloque}\n\n{texto}",
-        msg.chat.id, m.message_id, parse_mode="Markdown"
-    )
+        message_id=m.message_id)
 
 
 @bot.message_handler(commands=["metales"])
@@ -403,30 +387,18 @@ def cmd_metales(msg):
     for t, nombre in METALES.items():
         d = fetch_quote(t, "3mo")
         if d:
-            lines.append(
-                f"{arrow(d['d1'])} *{nombre}*: `{d['price']:,.2f}` | semana {arrow(d['d5'])}\n"
-                f"   🔴 R1 `{d['r1']}` | 🟢 S1 `{d['s1']}` | Vol `{d['vol_rel']}x`"
-            )
-            data_ai.append(
-                f"{nombre} ({t}): precio={d['price']}, 1d={d['d1']}%, 5d={d['d5']}%, "
-                f"S1={d['s1']}, R1={d['r1']}, vol={d['vol_rel']}x, "
-                f"hi52={d['hi52']}, lo52={d['lo52']}"
-            )
+            lines.append(f"{arrow(d['d1'])} *{nombre}*: `{d['price']:,.2f}` | semana {arrow(d['d5'])}\n"
+                         f"   🔴 R1 `{d['r1']}` | 🟢 S1 `{d['s1']}` | Vol `{d['vol_rel']}x`")
+            data_ai.append(f"{nombre}: precio={d['price']}, 1d={d['d1']}%, 5d={d['d5']}%, "
+                           f"S1={d['s1']}, R1={d['r1']}, vol={d['vol_rel']}x, hi52={d['hi52']}, lo52={d['lo52']}")
     snap   = "\n".join(lines) or "_Sin datos_"
-    prompt = (
-        f"Datos técnicos de metales preciosos e industriales:\n" + "\n".join(data_ai) + "\n\n"
-        "Para cada metal:\n"
-        "1. Tendencia actual y contexto\n"
-        "2. 🎯 Señal clara: COMPRAR / VENDER / ESPERAR\n"
-        "3. Precio de entrada, stop loss y objetivo\n"
-        "4. Catalizadores macro que afectan a cada metal\n"
-        "Sé muy concreto con los precios."
-    )
+    prompt = (f"Metales:\n" + "\n".join(data_ai) + "\n\n"
+              "Para cada metal:\n1. Tendencia\n2. Señal: COMPRAR/VENDER/ESPERAR\n"
+              "3. Entrada, stop, objetivo\n4. Catalizador macro")
     texto  = ask_ai(prompt)
-    bot.edit_message_text(
+    safe_send(msg.chat.id,
         f"🪙 *Metales — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{texto}",
-        msg.chat.id, m.message_id, parse_mode="Markdown"
-    )
+        message_id=m.message_id)
 
 
 @bot.message_handler(commands=["analisis"])
@@ -434,13 +406,13 @@ def cmd_analisis(msg):
     if not allowed(msg): return
     parts = msg.text.split()
     if len(parts) < 2:
-        bot.send_message(msg.chat.id, "Uso: `/analisis TICKER`\nEj: `/analisis AAPL`", parse_mode="Markdown")
+        safe_send(msg.chat.id, "Uso: `/analisis TICKER`\nEj: `/analisis AAPL`")
         return
     ticker = parts[1].upper()
     m = bot.send_message(msg.chat.id, f"🔍 Analizando *{ticker}*…", parse_mode="Markdown")
     d = fetch_quote(ticker, "6mo")
     if not d:
-        bot.edit_message_text(f"❌ Sin datos para `{ticker}`.", msg.chat.id, m.message_id, parse_mode="Markdown")
+        safe_send(msg.chat.id, f"❌ Sin datos para `{ticker}`.", message_id=m.message_id)
         return
     prompt = (f"Acción: {ticker}\nPrecio: {d['price']} | 1d: {d['d1']}% | 5d: {d['d5']}%\n"
               f"Máx52: {d['hi52']} | Mín52: {d['lo52']} | Vol: {d['vol_rel']}x\n"
@@ -454,7 +426,7 @@ def cmd_analisis(msg):
               f"⚪ Pivot `{d['pivot']}`\n"
               f"🟢 S1 `{d['s1']}` › S2 `{d['s2']}`\n"
               f"📅 52s: `{d['lo52']}` — `{d['hi52']}`\n\n")
-    bot.edit_message_text(header + texto, msg.chat.id, m.message_id, parse_mode="Markdown")
+    safe_send(msg.chat.id, header + texto, message_id=m.message_id)
 
 
 @bot.message_handler(commands=["crypto"])
@@ -470,16 +442,16 @@ def cmd_crypto(msg):
             lines.append(f"{arrow(d['d1'])} *{n}*: `{d['price']:,.0f}` | semana {arrow(d['d5'])}")
             data_ai.append(f"{n}: {d['price']:,.0f} ({d['d1']:+.2f}%) S1={d['s1']} R1={d['r1']}")
     texto = ask_ai("Crypto:\n" + "\n".join(data_ai) + "\n\n1. Lectura técnica\n2. Mejor setup\n3. Niveles BTC")
-    bot.edit_message_text(
+    safe_send(msg.chat.id,
         f"₿ *Crypto — {datetime.now().strftime('%H:%M')}*\n\n" + "\n".join(lines) + f"\n\n{texto}",
-        msg.chat.id, m.message_id, parse_mode="Markdown")
+        message_id=m.message_id)
 
 
 @bot.message_handler(func=lambda m: True)
 def handle_text(msg):
     if not allowed(msg): return
     resp = ask_ai(f"Pregunta: {msg.text}\nResponde como analista financiero.")
-    bot.send_message(msg.chat.id, resp, parse_mode="Markdown")
+    safe_send(msg.chat.id, resp)
 
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -508,26 +480,16 @@ def job_morning():
     eventos   = get_economic_calendar()
     cal_hoy   = [e for e in eventos if datetime.now().strftime("%Y-%m-%d") in e.get("date","")]
     cal_txt   = "\n".join(f"• [{e.get('country','').upper()}] {e.get('title','')}" for e in cal_hoy) or "Sin eventos hoy"
-    # Top 4 señales del día
     signals   = get_top_signals()
-    sig_rows  = []
-    for s in signals:
-        sig_rows.append(f"{s['ticker']}: precio={s['price']}, 1d={s['d1']}%, vol={s['vol_rel']}x, S1={s['s1']}, R1={s['r1']}")
-    sig_txt   = "\n".join(sig_rows)
-    prompt    = (
-        f"Briefing matinal {datetime.now().strftime('%A %d/%m')}:\n\n"
-        f"Noticias:\n{bloque}\n\n"
-        f"Eventos hoy:\n{cal_txt}\n\n"
-        f"Top 4 candidatos técnicos:\n{sig_txt}\n\n"
-        "Dame:\n1. Resumen del día en español\n"
-        "2. Para cada candidato: entrada exacta, stop, objetivo y R/R\n"
-        "3. Niveles clave S&P y DAX para hoy\n"
-        "4. Metal más interesante hoy"
-    )
+    sig_rows  = [f"{s['ticker']}: precio={s['price']}, 1d={s['d1']}%, vol={s['vol_rel']}x, S1={s['s1']}, R1={s['r1']}"
+                 for s in signals]
+    prompt    = (f"Briefing {datetime.now().strftime('%A %d/%m')}:\n\n"
+                 f"Noticias:\n{bloque}\n\nEventos hoy:\n{cal_txt}\n\n"
+                 f"Top 4 candidatos:\n" + "\n".join(sig_rows) + "\n\n"
+                 "1. Resumen del día\n2. Para cada candidato: entrada, stop, objetivo, R/R\n"
+                 "3. Niveles clave S&P y DAX\n4. Metal más interesante hoy")
     texto = ask_ai(prompt)
-    bot.send_message(ALLOWED_USER_ID,
-        f"☀️ *Briefing + Señales — {datetime.now().strftime('%d/%m')}*\n\n{texto}",
-        parse_mode="Markdown")
+    safe_send(ALLOWED_USER_ID, f"☀️ *Briefing + Señales — {datetime.now().strftime('%d/%m')}*\n\n{texto}")
 
 
 def job_close_eu():
@@ -539,9 +501,7 @@ def job_close_eu():
             data_ai.append(f"{nombre}: {d['d1']:+.2f}%")
     snap  = "\n".join(lines)
     texto = ask_ai("Cierre EU:\n" + "\n".join(data_ai) + "\n\nResumen sesión y qué esperar de EEUU.")
-    bot.send_message(ALLOWED_USER_ID,
-        f"🇪🇺 *Cierre Europa — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{texto}",
-        parse_mode="Markdown")
+    safe_send(ALLOWED_USER_ID, f"🇪🇺 *Cierre Europa — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{texto}")
 
 
 def job_close_us():
@@ -553,9 +513,7 @@ def job_close_us():
             data_ai.append(f"{nombre}: {d['d1']:+.2f}%")
     snap  = "\n".join(lines)
     texto = ask_ai("Cierre EEUU:\n" + "\n".join(data_ai) + "\n\nResumen sesión y perspectiva mañana.")
-    bot.send_message(ALLOWED_USER_ID,
-        f"🇺🇸 *Cierre EEUU — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{texto}",
-        parse_mode="Markdown")
+    safe_send(ALLOWED_USER_ID, f"🇺🇸 *Cierre EEUU — {datetime.now().strftime('%d/%m %H:%M')}*\n\n{snap}\n\n{texto}")
 
 
 def job_sr_scanner():
@@ -564,9 +522,7 @@ def job_sr_scanner():
         return
     bloque = "\n".join(alerts[:6])
     texto  = ask_ai(f"Alertas S/R:\n{bloque}\n\nTop 2 más interesantes y operativa.")
-    bot.send_message(ALLOWED_USER_ID,
-        f"🔔 *Alerta S/R — {datetime.now().strftime('%H:%M')}*\n\n{bloque}\n\n{texto}",
-        parse_mode="Markdown")
+    safe_send(ALLOWED_USER_ID, f"🔔 *Alerta S/R — {datetime.now().strftime('%H:%M')}*\n\n{bloque}\n\n{texto}")
 
 
 def job_explosion_scanner():
@@ -577,46 +533,37 @@ def job_explosion_scanner():
               for c in candidates[:3]]
     bloque = "\n".join(rows)
     texto  = ask_ai(f"Posibles explosiones:\n{bloque}\n\nAnálisis y niveles a vigilar.")
-    bot.send_message(ALLOWED_USER_ID,
-        f"💥 *Explosiones — {datetime.now().strftime('%H:%M')}*\n\n{bloque}\n\n{texto}",
-        parse_mode="Markdown")
+    safe_send(ALLOWED_USER_ID, f"💥 *Explosiones — {datetime.now().strftime('%H:%M')}*\n\n{bloque}\n\n{texto}")
 
 
 def job_metales_scanner():
-    """Cada 4h — analiza metales y avisa solo si hay señal clara."""
     data_ai = []
     for t, nombre in METALES.items():
         d = fetch_quote(t, "3mo")
         if d:
-            data_ai.append(
-                f"{nombre}: precio={d['price']}, 1d={d['d1']}%, 5d={d['d5']}%, "
-                f"S1={d['s1']}, R1={d['r1']}, vol={d['vol_rel']}x"
-            )
+            data_ai.append(f"{nombre}: precio={d['price']}, 1d={d['d1']}%, 5d={d['d5']}%, "
+                           f"S1={d['s1']}, R1={d['r1']}, vol={d['vol_rel']}x")
     if not data_ai:
         return
-    prompt = (
-        f"Datos metales ahora:\n" + "\n".join(data_ai) + "\n\n"
-        "¿Hay alguna señal clara de entrada o salida en algún metal ahora mismo?\n"
-        "Si SÍ: di cuál, precio entrada, stop y objetivo.\n"
-        "Si NO: responde solo 'SIN SEÑAL' sin más texto."
-    )
+    prompt = (f"Metales ahora:\n" + "\n".join(data_ai) + "\n\n"
+              "¿Hay señal clara de entrada o salida en algún metal?\n"
+              "Si SÍ: cuál, entrada, stop, objetivo.\n"
+              "Si NO: responde solo 'SIN SEÑAL'.")
     texto = ask_ai(prompt)
     if "SIN SEÑAL" in texto.upper():
         return
-    bot.send_message(ALLOWED_USER_ID,
-        f"🪙 *Alerta Metales — {datetime.now().strftime('%H:%M')}*\n\n{texto}",
-        parse_mode="Markdown")
+    safe_send(ALLOWED_USER_ID, f"🪙 *Alerta Metales — {datetime.now().strftime('%H:%M')}*\n\n{texto}")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if ALLOWED_USER_ID:
         scheduler = BackgroundScheduler(timezone=MADRID)
-        scheduler.add_job(job_morning,          "cron",     hour=9,  minute=0)
-        scheduler.add_job(job_close_eu,         "cron",     hour=17, minute=35)
-        scheduler.add_job(job_close_us,         "cron",     hour=22, minute=5)
-        scheduler.add_job(job_sr_scanner,       "interval", hours=2)
-        scheduler.add_job(job_explosion_scanner,"interval", hours=3)
-        scheduler.add_job(job_metales_scanner,  "interval", hours=4)
+        scheduler.add_job(job_morning,           "cron",     hour=9,  minute=0)
+        scheduler.add_job(job_close_eu,          "cron",     hour=17, minute=35)
+        scheduler.add_job(job_close_us,          "cron",     hour=22, minute=5)
+        scheduler.add_job(job_sr_scanner,        "interval", hours=2)
+        scheduler.add_job(job_explosion_scanner, "interval", hours=3)
+        scheduler.add_job(job_metales_scanner,   "interval", hours=4)
         scheduler.start()
         log.info("✅ Jobs automáticos activados")
 
