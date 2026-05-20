@@ -1,6 +1,6 @@
 """
 Financial Telegram Bot — 100% GRATIS
-IA: OpenRouter (múltiples modelos gratuitos con fallback)
+IA: Mistral AI (mistral-small-latest)
 Datos: yfinance
 Noticias: RSS feeds
 Alertas: APScheduler
@@ -15,15 +15,15 @@ import requests
 import pytz
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from openai import OpenAI
+from mistralai import Mistral
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # ── Config ────────────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
-OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
-ALLOWED_USER_ID    = int(os.environ.get("ALLOWED_USER_ID", 0))
-MADRID             = pytz.timezone("Europe/Madrid")
+TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
+MISTRAL_API_KEY = os.environ["MISTRAL_API_KEY"]
+ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", 0))
+MADRID          = pytz.timezone("Europe/Madrid")
 
 SYSTEM = """Eres un analista financiero senior. Reglas:
 - Responde SIEMPRE en español
@@ -33,18 +33,7 @@ SYSTEM = """Eres un analista financiero senior. Reglas:
 - Da conclusiones concretas y accionables
 - No das consejos de inversión pero sí análisis objetivo con sesgo claro"""
 
-MODELS = [
-    "google/gemini-2.0-flash-exp:free",
-    "deepseek/deepseek-r1-0528:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
-    "qwen/qwen2.5-72b-instruct:free",
-]
-
-ai_client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
+ai_client = Mistral(api_key=MISTRAL_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
@@ -76,27 +65,23 @@ def allowed(message):
 
 
 def ask_ai(prompt: str) -> str:
-    for model in MODELS:
-        for attempt in range(2):
-            try:
-                resp = ai_client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": SYSTEM},
-                        {"role": "user",   "content": prompt}
-                    ],
-                    temperature=0.4,
-                )
-                return resp.choices[0].message.content
-            except Exception as e:
-                if "402" in str(e) or "429" in str(e):
-                    log.warning(f"Modelo {model} sin quota, probando siguiente...")
-                    break
-                if attempt < 1:
-                    time.sleep(3)
-                else:
-                    log.warning(f"{model} falló: {e}")
-    return "⚠️ Todos los modelos sin quota. Intenta en unos minutos."
+    for attempt in range(3):
+        try:
+            resp = ai_client.chat.complete(
+                model="mistral-small-latest",
+                messages=[
+                    {"role": "system", "content": SYSTEM},
+                    {"role": "user",   "content": prompt}
+                ],
+                temperature=0.4,
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(3)
+            else:
+                log.error(f"Mistral error: {e}")
+                return "⚠️ Error IA. Intenta en unos segundos."
 
 
 def get_news(max_items=10):
