@@ -1,6 +1,6 @@
 """
 Financial Telegram Bot — 100% GRATIS
-IA: Mistral AI (mistral-small-latest)
+IA: Mistral AI
 Datos: yfinance
 Noticias: RSS feeds
 Alertas: APScheduler
@@ -15,7 +15,8 @@ import requests
 import pytz
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from mistralai import Mistral
+from mistralai.client import MistralClient as Mistral
+from mistralai.models.chat_completion import ChatMessage
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -67,13 +68,12 @@ def allowed(message):
 def ask_ai(prompt: str) -> str:
     for attempt in range(3):
         try:
-            resp = ai_client.chat.complete(
+            resp = ai_client.chat(
                 model="mistral-small-latest",
                 messages=[
-                    {"role": "system", "content": SYSTEM},
-                    {"role": "user",   "content": prompt}
+                    ChatMessage(role="system", content=SYSTEM),
+                    ChatMessage(role="user",   content=prompt)
                 ],
-                temperature=0.4,
             )
             return resp.choices[0].message.content
         except Exception as e:
