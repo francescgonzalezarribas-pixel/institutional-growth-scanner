@@ -7,3 +7,5 @@ pandas>=2.0.0
 numpy>=1.24.0
 pytz>=2024.1
 apscheduler>=3.10.0 
+mplfinance>=0.12.9
+matplotlib>=3.7.0
