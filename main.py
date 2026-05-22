@@ -1,7 +1,7 @@
 """
-Financial Telegram Bot - Version Mejorada
+Financial Telegram Bot - Version Completa
 RSI + MACD + Graficos + Alertas + Backtest + Macro
-Senales filtradas y nombres completos de empresas
+ETFs + Anomalias + Sectores + Bull Detector + Noticias Impacto
 """
 
 import os, io, logging, time, feedparser
@@ -39,44 +39,41 @@ ALERTS = defaultdict(list)
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Nombres completos de empresas
+# Nombres completos
 NOMBRES = {
-    # IBEX
-    "SAN.MC": "Banco Santander", "BBVA.MC": "BBVA", "ITX.MC": "Inditex",
-    "REP.MC": "Repsol", "TEF.MC": "Telefonica", "IBE.MC": "Iberdrola",
-    "ELE.MC": "Endesa", "AMS.MC": "Amadeus IT",
-    # CAC
-    "OR.PA": "L'Oreal", "BNP.PA": "BNP Paribas", "AIR.PA": "Airbus",
-    "MC.PA": "LVMH", "TTE.PA": "TotalEnergies", "LVMH.PA": "LVMH",
-    "BN.PA": "Danone",
-    # DAX
-    "BMW.DE": "BMW", "BAS.DE": "BASF", "DTE.DE": "Deutsche Telekom",
-    "VOW3.DE": "Volkswagen", "SIE.DE": "Siemens", "SAP": "SAP",
-    # FTSE
-    "HSBA.L": "HSBC", "BP.L": "BP", "SHEL.L": "Shell",
-    "AZN.L": "AstraZeneca", "RIO.L": "Rio Tinto",
-    # Other EU
-    "ASML": "ASML Holding", "NESN.SW": "Nestle", "NOVO-B.CO": "Novo Nordisk",
-    # US Tech
-    "AAPL": "Apple", "MSFT": "Microsoft", "NVDA": "Nvidia",
-    "AMZN": "Amazon", "GOOGL": "Alphabet", "META": "Meta",
-    "TSLA": "Tesla", "AMD": "AMD", "INTC": "Intel",
-    "CRM": "Salesforce", "ORCL": "Oracle",
-    # US Finance
-    "JPM": "JPMorgan", "GS": "Goldman Sachs", "BAC": "Bank of America",
-    "V": "Visa", "MA": "Mastercard",
-    # US Health
-    "JNJ": "Johnson & Johnson", "UNH": "UnitedHealth", "PFE": "Pfizer",
-    # US Energy
-    "XOM": "ExxonMobil", "CVX": "Chevron",
-    # US Consumer
-    "WMT": "Walmart", "HD": "Home Depot", "MCD": "McDonald's",
-    "KO": "Coca-Cola", "PEP": "PepsiCo",
-    # US Industrial/Media
-    "BA": "Boeing", "CAT": "Caterpillar", "NFLX": "Netflix", "DIS": "Disney",
-    # Crypto
-    "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum",
-    "SOL-USD": "Solana", "BNB-USD": "BNB",
+    "SAN.MC":"Banco Santander","BBVA.MC":"BBVA","ITX.MC":"Inditex",
+    "REP.MC":"Repsol","TEF.MC":"Telefonica","IBE.MC":"Iberdrola",
+    "ELE.MC":"Endesa","AMS.MC":"Amadeus IT",
+    "OR.PA":"L'Oreal","BNP.PA":"BNP Paribas","AIR.PA":"Airbus",
+    "MC.PA":"LVMH","TTE.PA":"TotalEnergies","LVMH.PA":"LVMH","BN.PA":"Danone",
+    "BMW.DE":"BMW","BAS.DE":"BASF","DTE.DE":"Deutsche Telekom",
+    "VOW3.DE":"Volkswagen","SIE.DE":"Siemens","SAP":"SAP",
+    "HSBA.L":"HSBC","BP.L":"BP","SHEL.L":"Shell","AZN.L":"AstraZeneca","RIO.L":"Rio Tinto",
+    "ASML":"ASML Holding","NESN.SW":"Nestle","NOVO-B.CO":"Novo Nordisk",
+    "AAPL":"Apple","MSFT":"Microsoft","NVDA":"Nvidia","AMZN":"Amazon",
+    "GOOGL":"Alphabet","META":"Meta","TSLA":"Tesla","AMD":"AMD","INTC":"Intel",
+    "CRM":"Salesforce","ORCL":"Oracle",
+    "JPM":"JPMorgan","GS":"Goldman Sachs","BAC":"Bank of America","V":"Visa","MA":"Mastercard",
+    "JNJ":"Johnson & Johnson","UNH":"UnitedHealth","PFE":"Pfizer",
+    "XOM":"ExxonMobil","CVX":"Chevron",
+    "WMT":"Walmart","HD":"Home Depot","MCD":"McDonalds","KO":"Coca-Cola","PEP":"PepsiCo",
+    "BA":"Boeing","CAT":"Caterpillar","NFLX":"Netflix","DIS":"Disney",
+    "BTC-USD":"Bitcoin","ETH-USD":"Ethereum","SOL-USD":"Solana","BNB-USD":"BNB",
+    # ETFs indices
+    "SPY":"S&P 500 ETF","QQQ":"Nasdaq 100 ETF","IWM":"Russell 2000 ETF","DIA":"Dow Jones ETF",
+    "VTI":"Total Market ETF","VEA":"Europa ETF","EWG":"DAX ETF","EWQ":"CAC 40 ETF","EZU":"Eurozona ETF",
+    # ETFs sectoriales
+    "XLK":"Tech ETF","XLF":"Finanzas ETF","XLE":"Energia ETF","XLV":"Salud ETF",
+    "XLI":"Industrial ETF","XLY":"Consumo ETF","XLP":"Consumo Basico ETF",
+    "XLU":"Utilities ETF","XLB":"Materiales ETF","XLRE":"Inmobiliario ETF","XLC":"Comunicaciones ETF",
+    # ETFs tematicos
+    "GLD":"Oro ETF","SLV":"Plata ETF","USO":"Petroleo ETF","PDBC":"Commodities ETF",
+    "ARKK":"ARK Innovation ETF","BOTZ":"Robotica IA ETF","ICLN":"Energia Limpia ETF",
+    "HACK":"Ciberseguridad ETF","SOXX":"Semiconductores ETF","CIBR":"Ciberseguridad ETF",
+    "MCHI":"China ETF","EEM":"Emergentes ETF",
+    # Rumores/especiales
+    "LUNR":"Intuitive Machines","RKLB":"Rocket Lab","ASTS":"AST SpaceMobile",
+    "ACHR":"Archer Aviation","JOBY":"Joby Aviation",
 }
 
 def nombre(ticker):
@@ -96,6 +93,7 @@ US_STOCKS = [
 ]
 
 CRYPTO = ["BTC-USD","ETH-USD","SOL-USD","BNB-USD"]
+
 METALES = {"GC=F":"Oro","SI=F":"Plata","PL=F":"Platino","HG=F":"Cobre","PA=F":"Paladio"}
 
 INDICES = {
@@ -109,10 +107,39 @@ MACRO_TICKERS = {
     "GC=F":"Oro","CL=F":"Petroleo WTI",
 }
 
+# ETFs organizados por categoria
+ETFS_INDICES = ["SPY","QQQ","IWM","DIA","VTI","VEA","EWG","EZU"]
+ETFS_SECTORIALES = ["XLK","XLF","XLE","XLV","XLI","XLY","XLP","XLU","XLB","XLRE","XLC"]
+ETFS_TEMATICOS = ["GLD","SLV","USO","ARKK","BOTZ","ICLN","HACK","SOXX","EEM","MCHI"]
+ETFS_ESPECIALES = ["LUNR","RKLB","ASTS","ACHR","JOBY"]  # proximas a SpaceX/NASA
+
+# Sectores SP500 para analisis de rotacion
+SECTORES_SP500 = {
+    "Tecnologia": ["AAPL","MSFT","NVDA","AMD","INTC","CRM","ORCL","XLK"],
+    "Finanzas": ["JPM","GS","BAC","V","MA","XLF"],
+    "Salud": ["JNJ","UNH","PFE","XLV"],
+    "Energia": ["XOM","CVX","XLE"],
+    "Consumo Discrecional": ["TSLA","AMZN","HD","MCD","NFLX","XLY"],
+    "Consumo Basico": ["WMT","KO","PEP","XLP"],
+    "Industrial": ["BA","CAT","XLI"],
+    "Comunicaciones": ["GOOGL","META","DIS","XLC"],
+    "Materiales": ["XLB"],
+    "Utilities": ["XLU"],
+    "Inmobiliario": ["XLRE"],
+}
+
 RSS_FEEDS = [
     "https://feeds.marketwatch.com/marketwatch/topstories/",
     "https://news.google.com/rss/search?q=stock+market+europe+usa&hl=en&gl=US&ceid=US:en",
     "https://feeds.reuters.com/reuters/businessNews",
+]
+
+RSS_IMPACTO = [
+    "https://news.google.com/rss/search?q=merger+acquisition+takeover+2026&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=earnings+surprise+beat+2026&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=FDA+approval+drug+2026&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=SpaceX+NASA+contract+IPO+2026&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=short+squeeze+unusual+volume+2026&hl=en&gl=US&ceid=US:en",
 ]
 
 IPOS_WATCH = [
@@ -154,6 +181,7 @@ def fetch_quote(ticker, period="3mo"):
         price = c.iloc[-1]
         d1 = (price - c.iloc[-2]) / c.iloc[-2] * 100
         d5 = (price - c.iloc[-6]) / c.iloc[-6] * 100 if len(c) > 5 else 0
+        d20 = (price - c.iloc[-21]) / c.iloc[-21] * 100 if len(c) > 20 else 0
         pivot = (h.iloc[-1] + lo.iloc[-1] + c.iloc[-1]) / 3
         r1 = 2*pivot - lo.iloc[-1]
         s1 = 2*pivot - h.iloc[-1]
@@ -166,11 +194,14 @@ def fetch_quote(ticker, period="3mo"):
         macd_cross_up = (macd_l.iloc[-1] > macd_s.iloc[-1] and macd_l.iloc[-2] <= macd_s.iloc[-2])
         avg_vol = vol.tail(20).mean()
         vol_rel = vol.iloc[-1] / avg_vol if avg_vol > 0 else 1.0
+        # Tendencia: precio sobre EMA20
+        ema20 = c.ewm(span=20, adjust=False).mean().iloc[-1]
+        sobre_ema20 = price > ema20
         return {
             "ticker": ticker,
             "nombre": nombre(ticker),
-            "price": round(price, 2),
-            "d1": round(d1, 2), "d5": round(d5, 2),
+            "price": round(price, 4) if price < 10 else round(price, 2),
+            "d1": round(d1, 2), "d5": round(d5, 2), "d20": round(d20, 2),
             "pivot": round(pivot, 2),
             "r1": round(r1, 2), "r2": round(r2, 2),
             "s1": round(s1, 2), "s2": round(s2, 2),
@@ -179,6 +210,8 @@ def fetch_quote(ticker, period="3mo"):
             "vol_rel": round(vol_rel, 2),
             "rsi": round(rsi, 1),
             "macd_cross_up": macd_cross_up,
+            "sobre_ema20": sobre_ema20,
+            "ema20": round(ema20, 2),
         }
     except Exception as e:
         log.warning(f"fetch_quote {ticker}: {e}")
@@ -218,54 +251,27 @@ def get_top_signals(stocks, n=4):
         d = fetch_quote(t, "3mo")
         if not d:
             continue
-
-        # Filtros obligatorios - descartar directamente
         if d["rsi"] > 65:
-            continue  # sobrecomprada, no entrar
+            continue
         if d["vol_rel"] < 0.8:
-            continue  # volumen demasiado bajo, senal debil
-
+            continue
         score = 0
-
-        # RSI: cuanto mas bajo mas alcista
-        if d["rsi"] < 30:
-            score += 5      # sobreventa fuerte - muy alcista
-        elif d["rsi"] < 40:
-            score += 3      # sobreventa moderada
-        elif d["rsi"] < 50:
-            score += 1      # neutral-bajo
-
-        # MACD cruce alcista: senal de entrada
-        if d["macd_cross_up"]:
-            score += 4
-
-        # Volumen por encima de media - confirma movimiento
-        if d["vol_rel"] >= 2.0:
-            score += 4
-        elif d["vol_rel"] >= 1.5:
-            score += 2
-        elif d["vol_rel"] >= 1.0:
-            score += 1
-
-        # Momentum positivo reciente
-        if d["d1"] >= 1.5:
-            score += 2
-        if d["d5"] >= 3.0:
-            score += 2
-
-        # Precio cerca de soporte - buena entrada
+        if d["rsi"] < 30:       score += 5
+        elif d["rsi"] < 40:     score += 3
+        elif d["rsi"] < 50:     score += 1
+        if d["macd_cross_up"]:  score += 4
+        if d["vol_rel"] >= 2.0: score += 4
+        elif d["vol_rel"] >= 1.5: score += 2
+        elif d["vol_rel"] >= 1.0: score += 1
+        if d["d1"] >= 1.5:      score += 2
+        if d["d5"] >= 3.0:      score += 2
         for nivel in [d["s1"], d["s2"]]:
             if nivel > 0 and abs(d["price"] - nivel) / nivel * 100 <= 1.5:
                 score += 3
-
-        # Precio cerca de maximo anual - momentum fuerte
         if d["hi52"] > 0 and (d["hi52"] - d["price"]) / d["hi52"] * 100 <= 3.0:
             score += 2
-
-        # Umbral minimo exigente
         if score < 6:
             continue
-
         entry = d["price"]
         stop = round(d["s1"] * 0.985, 2)
         risk = entry - stop
@@ -275,14 +281,144 @@ def get_top_signals(stocks, n=4):
         tp1 = round(entry + risk * 1.5, 2)
         tp2 = round(entry + risk * 3.0, 2)
         rr = round((tp1 - entry) / risk, 2) if risk > 0 else 0
-
         candidatos.append({
             **d, "score": score, "direction": "COMPRAR",
             "entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "rr": rr,
         })
-
     candidatos.sort(key=lambda x: x["score"], reverse=True)
     return candidatos[:n]
+
+
+def scan_anomalias(stocks):
+    """Detecta acciones con volumen anomalo 3x+ sin noticia clara — posible rumor o insider."""
+    anomalias = []
+    for t in stocks:
+        try:
+            hist = yf.Ticker(t).history(period="1mo")
+            if hist.empty or len(hist) < 10:
+                continue
+            vol = hist["Volume"]
+            c = hist["Close"]
+            avg_vol = vol.tail(20).mean()
+            vol_hoy = vol.iloc[-1]
+            vol_rel = vol_hoy / avg_vol if avg_vol > 0 else 1.0
+            d1 = (c.iloc[-1] - c.iloc[-2]) / c.iloc[-2] * 100
+            if vol_rel >= 2.5:
+                anomalias.append({
+                    "ticker": t,
+                    "nombre": nombre(t),
+                    "vol_rel": round(vol_rel, 1),
+                    "d1": round(d1, 2),
+                    "price": round(c.iloc[-1], 2),
+                })
+        except:
+            pass
+    anomalias.sort(key=lambda x: x["vol_rel"], reverse=True)
+    return anomalias[:8]
+
+
+def analisis_sectores():
+    """Semaforo de sectores: bull, neutro o bear. Detecta rotacion."""
+    resultados = []
+    for sector, tickers in SECTORES_SP500.items():
+        rsis, d5s, vol_rels, sobre_ema = [], [], [], []
+        for t in tickers:
+            d = fetch_quote(t, "3mo")
+            if d:
+                rsis.append(d["rsi"])
+                d5s.append(d["d5"])
+                vol_rels.append(d["vol_rel"])
+                sobre_ema.append(1 if d["sobre_ema20"] else 0)
+        if not rsis:
+            continue
+        rsi_med = round(np.mean(rsis), 1)
+        d5_med = round(np.mean(d5s), 2)
+        vol_med = round(np.mean(vol_rels), 2)
+        pct_sobre_ema = round(np.mean(sobre_ema) * 100, 0)
+        # Semaforo
+        if rsi_med > 55 and d5_med > 1.0 and pct_sobre_ema >= 60:
+            estado = "BULL"
+            emoji = "verde"
+        elif rsi_med < 40 or d5_med < -2.0:
+            estado = "BEAR"
+            emoji = "rojo"
+        else:
+            estado = "NEUTRO"
+            emoji = "amarillo"
+        resultados.append({
+            "sector": sector, "estado": estado, "emoji": emoji,
+            "rsi": rsi_med, "d5": d5_med, "vol": vol_med,
+            "sobre_ema": pct_sobre_ema,
+        })
+    resultados.sort(key=lambda x: (x["estado"] == "BULL", x["d5"]), reverse=True)
+    return resultados
+
+
+def bull_detector():
+    """Detecta posibles bull runs nacientes en sectores, crypto y ETFs."""
+    senales = []
+
+    # Sectores
+    sectores = analisis_sectores()
+    bulls = [s for s in sectores if s["estado"] == "BULL"]
+    for b in bulls:
+        senales.append({
+            "tipo": "SECTOR",
+            "nombre": b["sector"],
+            "fuerza": b["d5"],
+            "rsi": b["rsi"],
+            "detalle": f"RSI medio {b['rsi']} | semana {b['d5']:+.1f}% | {b['sobre_ema']}% sobre EMA20",
+        })
+
+    # ETFs tematicos con momentum
+    for t in ETFS_TEMATICOS + ETFS_INDICES[:4]:
+        d = fetch_quote(t, "3mo")
+        if not d:
+            continue
+        if d["d20"] > 5.0 and d["rsi"] > 50 and d["rsi"] < 72 and d["vol_rel"] >= 1.0:
+            senales.append({
+                "tipo": "ETF",
+                "nombre": d["nombre"],
+                "ticker": t,
+                "fuerza": d["d20"],
+                "rsi": d["rsi"],
+                "detalle": f"RSI {d['rsi']} | mes {d['d20']:+.1f}% | vol {d['vol_rel']}x",
+            })
+
+    # Crypto dominancia y momentum
+    for t in CRYPTO:
+        d = fetch_quote(t, "3mo")
+        if not d:
+            continue
+        if d["d20"] > 10.0 and d["rsi"] > 50 and d["rsi"] < 75:
+            senales.append({
+                "tipo": "CRYPTO",
+                "nombre": d["nombre"],
+                "ticker": t,
+                "fuerza": d["d20"],
+                "rsi": d["rsi"],
+                "detalle": f"RSI {d['rsi']} | mes {d['d20']:+.1f}% | vol {d['vol_rel']}x",
+            })
+
+    senales.sort(key=lambda x: x["fuerza"], reverse=True)
+    return senales[:8]
+
+
+def get_noticias_impacto():
+    """Noticias de alto impacto: M&A, earnings sorpresa, FDA, rumores."""
+    todas = []
+    for url in RSS_IMPACTO:
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:4]:
+                title = entry.get("title", "").strip()
+                link = entry.get("link", "")
+                published = entry.get("published", "")[:16] if entry.get("published") else ""
+                if title and title not in [t["title"] for t in todas]:
+                    todas.append({"title": title, "link": link, "published": published})
+        except:
+            pass
+    return todas[:15]
 
 
 def run_backtest(stocks):
@@ -297,8 +433,7 @@ def run_backtest(stocks):
             macd_l, macd_s = calc_macd(c)
             wins = losses = total = 0
             for i in range(20, len(c)-6):
-                if (rsi.iloc[i] < 45 and
-                        rsi.iloc[i] < 65 and
+                if (rsi.iloc[i] < 45 and rsi.iloc[i] < 65 and
                         macd_l.iloc[i] > macd_s.iloc[i] and
                         macd_l.iloc[i-1] <= macd_s.iloc[i-1]):
                     entry = c.iloc[i]
@@ -307,17 +442,13 @@ def run_backtest(stocks):
                     total += 1
                     for j in range(i+1, min(i+8, len(c))):
                         if c.iloc[j] >= tp:
-                            wins += 1
-                            break
+                            wins += 1; break
                         elif c.iloc[j] <= sl:
-                            losses += 1
-                            break
+                            losses += 1; break
             if total > 0:
                 results.append({
-                    "ticker": t,
-                    "nombre": nombre(t),
-                    "total": total, "wins": wins,
-                    "losses": losses,
+                    "ticker": t, "nombre": nombre(t),
+                    "total": total, "wins": wins, "losses": losses,
                     "winrate": round(wins/total*100, 1),
                 })
         except Exception as e:
@@ -368,7 +499,7 @@ def send_signal(chat_id, s):
     pct_tp1 = (s['tp1']/s['entry']-1)*100
     pct_tp2 = (s['tp2']/s['entry']-1)*100
     pct_sl = (s['stop']/s['entry']-1)*100
-    rsi_texto = f"{s['rsi']} (buena entrada)" if s['rsi'] < 40 else f"{s['rsi']}"
+    rsi_txt = f"{s['rsi']} (sobreventa - buena entrada)" if s['rsi'] < 40 else f"{s['rsi']}"
     text = (f"SENAL: {s['nombre']} ({s['ticker']})\n"
             f"Accion: {s['direction']}\n"
             f"Entrada:  {s['entry']}\n"
@@ -376,7 +507,7 @@ def send_signal(chat_id, s):
             f"TP2:      {s['tp2']} ({pct_tp2:+.1f}%)\n"
             f"Stop:     {s['stop']} ({pct_sl:+.1f}%)\n"
             f"R/R:      {s['rr']}x\n"
-            f"RSI:      {rsi_texto}\n"
+            f"RSI:      {rsi_txt}\n"
             f"Volumen:  {s['vol_rel']}x media\n"
             f"Score:    {s['score']}/17")
     chart = generate_chart(s['ticker'], s['entry'], s['tp1'], s['tp2'], s['stop'])
@@ -418,7 +549,8 @@ def get_economic_calendar():
             if cal is not None and "Earnings Date" in cal:
                 fecha = str(cal["Earnings Date"][0])[:10]
                 if datetime.now().strftime("%Y-%m") in fecha:
-                    eventos.append({"date": fecha, "country": "US", "title": f"Earnings {nombre(t)}", "impact": "High"})
+                    eventos.append({"date": fecha, "country": "US",
+                                    "title": f"Earnings {nombre(t)}", "impact": "High"})
         except:
             pass
     return eventos
@@ -455,8 +587,7 @@ def scan_explosions(stocks):
         dist_hi = (d["hi52"] - d["price"]) / d["hi52"] * 100
         if d["vol_rel"] >= 1.8 and d["d5"] >= 3.0 and dist_hi <= 8.0:
             out.append({"ticker": t, "nombre": d["nombre"], "d5": d["d5"],
-                        "vol_rel": d["vol_rel"], "dist_hi52": dist_hi,
-                        "price": d["price"], "r1": d["r1"]})
+                        "vol_rel": d["vol_rel"], "price": d["price"], "r1": d["r1"]})
     out.sort(key=lambda x: x["vol_rel"]*x["d5"], reverse=True)
     return out[:5]
 
@@ -465,44 +596,178 @@ def arrow(v):
     return f"{'(+)' if v >= 0 else '(-)'} {v:+.2f}%"
 
 
+def semaforo(estado):
+    if estado == "BULL":   return "[BULL]"
+    if estado == "BEAR":   return "[BEAR]"
+    return "[=]"
+
+
 def main_kb():
     kb = InlineKeyboardMarkup()
     kb.row(InlineKeyboardButton("Noticias", callback_data="noticias"),
            InlineKeyboardButton("Mercados", callback_data="mercados"))
     kb.row(InlineKeyboardButton("Senales EU", callback_data="senales_eu"),
            InlineKeyboardButton("Senales EEUU", callback_data="senales_us"))
+    kb.row(InlineKeyboardButton("ETFs", callback_data="etfs"),
+           InlineKeyboardButton("Sectores", callback_data="sectores"))
+    kb.row(InlineKeyboardButton("Bull Detector", callback_data="bull_detector"),
+           InlineKeyboardButton("Anomalias", callback_data="anomalias"))
+    kb.row(InlineKeyboardButton("Noticias Impacto", callback_data="noticias_impacto"),
+           InlineKeyboardButton("Macro", callback_data="macro"))
     kb.row(InlineKeyboardButton("Oportunidades", callback_data="oportunidades"),
            InlineKeyboardButton("Explosiones", callback_data="explosiones"))
     kb.row(InlineKeyboardButton("Calendario", callback_data="calendario"),
            InlineKeyboardButton("Crypto", callback_data="crypto"))
     kb.row(InlineKeyboardButton("S/R Scanner", callback_data="sr_scan"),
-           InlineKeyboardButton("Macro", callback_data="macro"))
-    kb.row(InlineKeyboardButton("Metales", callback_data="metales"),
-           InlineKeyboardButton("IPOs", callback_data="ipos"))
-    kb.row(InlineKeyboardButton("Backtest", callback_data="backtest"),
-           InlineKeyboardButton("Alertas", callback_data="alertas"))
+           InlineKeyboardButton("Metales", callback_data="metales"))
+    kb.row(InlineKeyboardButton("IPOs", callback_data="ipos"),
+           InlineKeyboardButton("Backtest", callback_data="backtest"))
+    kb.row(InlineKeyboardButton("Alertas", callback_data="alertas"),
+           InlineKeyboardButton("Riesgo", callback_data="riesgo_info"))
     return kb
 
+
+# ── HANDLERS ─────────────────────────────────────────────────────────────────
 
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     if not allowed(msg): return
     bot.send_message(msg.chat.id,
         "Financial Bot - Analisis EU y EEUU\n\n"
-        "/senales_eu - Senales Europa con grafico\n"
-        "/senales_us - Senales EEUU con grafico\n"
-        "/macro - VIX, DXY, tipos interes, petroleo\n"
-        "/backtest - Historico aciertos del sistema\n"
-        "/alerta AAPL 200 - Alerta cuando llegue al precio\n"
-        "/alertas - Ver alertas activas\n"
-        "/borra_alerta 1 - Borrar alerta por numero\n"
-        "/riesgo 10000 2 AAPL 890 865 - Cuantas acciones comprar\n"
-        "/noticias /mercados /oportunidades\n"
-        "/explosiones /calendario /sr\n"
-        "/metales /ipos /analisis TICKER /crypto\n"
+        "NUEVOS COMANDOS:\n"
+        "/etfs - ETFs indices, sectoriales y tematicos\n"
+        "/anomalias - Volumen anomalo 2.5x+ posible rumor\n"
+        "/sectores - Semaforo 11 sectores SP500\n"
+        "/bull_detector - Bull runs nacientes\n"
+        "/noticias_impacto - M&A, earnings sorpresa, FDA\n\n"
+        "COMANDOS BASE:\n"
+        "/senales_eu /senales_us - Senales con grafico\n"
+        "/macro /backtest /calendario\n"
+        "/alerta TICKER PRECIO\n"
+        "/riesgo CAPITAL % TICKER ENTRADA STOP\n"
+        "/analisis TICKER /crypto /metales /ipos\n"
+        "/oportunidades /explosiones /sr\n"
         "Pregunta libre - IA responde",
         reply_markup=main_kb()
     )
+
+
+@bot.message_handler(commands=["etfs"])
+def cmd_etfs(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Escaneando ETFs con RSI + MACD...")
+    todos = ETFS_INDICES + ETFS_TEMATICOS[:6]
+    signals = get_top_signals(todos, n=3)
+    lines_idx, lines_tem = [], []
+    for t in ETFS_INDICES:
+        d = fetch_quote(t, "1mo")
+        if d:
+            lines_idx.append(f"{arrow(d['d1'])} {d['nombre']}: {d['price']} | semana {arrow(d['d5'])} | RSI {d['rsi']}")
+    for t in ETFS_TEMATICOS:
+        d = fetch_quote(t, "1mo")
+        if d:
+            lines_tem.append(f"{arrow(d['d1'])} {d['nombre']}: {d['price']} | semana {arrow(d['d5'])} | RSI {d['rsi']}")
+    snap = "INDICES\n" + "\n".join(lines_idx) + "\n\nTEMATICOS\n" + "\n".join(lines_tem)
+    safe_send(msg.chat.id, f"ETFs {datetime.now().strftime('%d/%m %H:%M')}\n\n{snap}", message_id=m.message_id)
+    if signals:
+        time.sleep(1)
+        safe_send(msg.chat.id, f"MEJORES SETUPS ETF:")
+        for s in signals:
+            send_signal(msg.chat.id, s)
+            time.sleep(1)
+    else:
+        prompt = ("ETFs:\n" + "\n".join(lines_idx[:5]) + "\n\n"
+                  "1. Cual tiene mejor momentum ahora\n"
+                  "2. Cual evitar\n3. Mejor ETF para los proximos 30 dias")
+        texto = ask_ai(prompt)
+        safe_send(msg.chat.id, texto)
+
+
+@bot.message_handler(commands=["anomalias"])
+def cmd_anomalias(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Buscando volumen anomalo 2.5x+... (posibles rumores o insider)")
+    todos = US_STOCKS + EU_STOCKS[:10] + ETFS_ESPECIALES
+    anomalias = scan_anomalias(todos)
+    if not anomalias:
+        safe_send(msg.chat.id, "Sin anomalias de volumen detectadas ahora mismo.", message_id=m.message_id)
+        return
+    rows = [f"{a['nombre']} ({a['ticker']}): vol {a['vol_rel']}x | hoy {a['d1']:+.2f}% | precio {a['price']}"
+            for a in anomalias]
+    bloque = "\n".join(rows)
+    prompt = (f"Acciones con volumen anomalo hoy:\n{bloque}\n\n"
+              "1. Cual es mas sospechosa de tener noticia detras\n"
+              "2. Podria ser rumor de M&A, earnings, FDA o insider?\n"
+              "3. Como operar este tipo de movimiento\n"
+              "4. Cual tiene mejor potencial y cual es trampa")
+    texto = ask_ai(prompt)
+    safe_send(msg.chat.id, f"ANOMALIAS DE VOLUMEN {datetime.now().strftime('%d/%m %H:%M')}\n\n{bloque}\n\n{texto}", message_id=m.message_id)
+
+
+@bot.message_handler(commands=["sectores"])
+def cmd_sectores(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Analizando 11 sectores SP500... (puede tardar 20s)")
+    sectores = analisis_sectores()
+    if not sectores:
+        safe_send(msg.chat.id, "Sin datos de sectores.", message_id=m.message_id)
+        return
+    bulls = [s for s in sectores if s["estado"] == "BULL"]
+    bears = [s for s in sectores if s["estado"] == "BEAR"]
+    neutros = [s for s in sectores if s["estado"] == "NEUTRO"]
+    lines = []
+    for s in sectores:
+        lines.append(f"{semaforo(s['estado'])} {s['sector']}: RSI {s['rsi']} | semana {s['d5']:+.1f}% | {s['sobre_ema']}% sobre EMA20")
+    snap = "\n".join(lines)
+    prompt = (f"Semaforo sectores SP500:\n{snap}\n\n"
+              f"1. Cual es el sector mas fuerte ahora y por que\n"
+              f"2. Hay rotacion sectorial? De donde a donde va el dinero\n"
+              f"3. Que sectores evitar\n"
+              f"4. Mejor ETF sectorial para comprar ahora")
+    texto = ask_ai(prompt)
+    resumen = f"Bulls: {len(bulls)} | Neutros: {len(neutros)} | Bears: {len(bears)}"
+    safe_send(msg.chat.id, f"SECTORES SP500 {datetime.now().strftime('%d/%m %H:%M')}\n{resumen}\n\n{snap}\n\n{texto}", message_id=m.message_id)
+
+
+@bot.message_handler(commands=["bull_detector"])
+def cmd_bull_detector(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Detectando bull runs nacientes... (sectores, ETFs, crypto)")
+    senales = bull_detector()
+    if not senales:
+        safe_send(msg.chat.id, "No se detectan bull runs claros ahora mismo. Mercado en consolidacion.", message_id=m.message_id)
+        return
+    lines = []
+    for s in senales:
+        ticker_txt = f" ({s['ticker']})" if "ticker" in s else ""
+        lines.append(f"[{s['tipo']}] {s['nombre']}{ticker_txt}: {s['detalle']}")
+    bloque = "\n".join(lines)
+    prompt = (f"Posibles bull runs detectados:\n{bloque}\n\n"
+              "1. Cual tiene mas probabilidad de ser bull run real\n"
+              "2. Es bull market general o solo sectorial\n"
+              "3. Como posicionarse: ETF concreto, entrada, stop\n"
+              "4. Que podria truncarlo")
+    texto = ask_ai(prompt)
+    safe_send(msg.chat.id, f"BULL DETECTOR {datetime.now().strftime('%d/%m %H:%M')}\n\n{bloque}\n\n{texto}", message_id=m.message_id)
+
+
+@bot.message_handler(commands=["noticias_impacto"])
+def cmd_noticias_impacto(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Buscando noticias de alto impacto: M&A, earnings, FDA, rumores...")
+    noticias = get_noticias_impacto()
+    if not noticias:
+        safe_send(msg.chat.id, "Sin noticias de alto impacto detectadas ahora mismo.", message_id=m.message_id)
+        return
+    lines = [f"- {n['title']}" for n in noticias[:12]]
+    bloque = "\n".join(lines)
+    prompt = (f"Noticias de alto impacto:\n{bloque}\n\n"
+              "1. Cual tiene mayor impacto en bolsa hoy\n"
+              "2. Hay alguna OPA, fusion o adquisicion relevante\n"
+              "3. Earnings sorpresa o decepcion importante\n"
+              "4. Acciones o sectores directamente afectados y como operar")
+    texto = ask_ai(prompt)
+    safe_send(msg.chat.id, f"NOTICIAS IMPACTO {datetime.now().strftime('%d/%m %H:%M')}\n\n{bloque}\n\n{texto}", message_id=m.message_id)
 
 
 @bot.message_handler(commands=["noticias"])
@@ -512,7 +777,7 @@ def cmd_noticias(msg):
     titulares = get_news(10)
     if titulares:
         bloque = "\n".join(f"- {t}" for t in titulares)
-        prompt = (f"Noticias:\n{bloque}\n\n1. 3 titulares clave y por que\n"
+        prompt = (f"Noticias:\n{bloque}\n\n1. 3 titulares clave\n"
                   "2. Sentimiento mercado\n3. Que esperar EU y EEUU\n4. Sectores a vigilar")
     else:
         prompt = "Estado mercados EU y EEUU hoy, factores clave, sectores con momentum."
@@ -541,10 +806,10 @@ def cmd_senales_eu(msg):
     m = bot.send_message(msg.chat.id, "Escaneando Europa con RSI + MACD + filtros...")
     signals = get_top_signals(EU_STOCKS, n=3)
     if not signals:
-        safe_send(msg.chat.id, "Sin senales validas en Europa ahora mismo.\nFiltros activos: RSI menor 65, volumen mayor 0.8x, score minimo 6/17.", message_id=m.message_id)
+        safe_send(msg.chat.id, "Sin senales validas en Europa ahora mismo.", message_id=m.message_id)
         return
     bot.delete_message(msg.chat.id, m.message_id)
-    safe_send(msg.chat.id, f"SENALES EUROPA {datetime.now().strftime('%d/%m %H:%M')}\n{len(signals)} oportunidades filtradas:")
+    safe_send(msg.chat.id, f"SENALES EUROPA {datetime.now().strftime('%d/%m %H:%M')}\n{len(signals)} oportunidades:")
     for s in signals:
         send_signal(msg.chat.id, s)
         time.sleep(1)
@@ -556,10 +821,10 @@ def cmd_senales_us(msg):
     m = bot.send_message(msg.chat.id, "Escaneando EEUU con RSI + MACD + filtros...")
     signals = get_top_signals(US_STOCKS + list(CRYPTO), n=3)
     if not signals:
-        safe_send(msg.chat.id, "Sin senales validas en EEUU ahora mismo.\nFiltros activos: RSI menor 65, volumen mayor 0.8x, score minimo 6/17.", message_id=m.message_id)
+        safe_send(msg.chat.id, "Sin senales validas en EEUU ahora mismo.", message_id=m.message_id)
         return
     bot.delete_message(msg.chat.id, m.message_id)
-    safe_send(msg.chat.id, f"SENALES EEUU {datetime.now().strftime('%d/%m %H:%M')}\n{len(signals)} oportunidades filtradas:")
+    safe_send(msg.chat.id, f"SENALES EEUU {datetime.now().strftime('%d/%m %H:%M')}\n{len(signals)} oportunidades:")
     for s in signals:
         send_signal(msg.chat.id, s)
         time.sleep(1)
@@ -574,23 +839,20 @@ def cmd_macro(msg):
         d = fetch_quote(t, "1mo")
         if d:
             lines.append(f"{arrow(d['d1'])} {nom}: {d['price']:,.2f} | semana {arrow(d['d5'])}")
-            data_ai.append(f"{nom}: {d['price']:,.2f} ({d['d1']:+.2f}% hoy)")
+            data_ai.append(f"{nom}: {d['price']:,.2f} ({d['d1']:+.2f}%)")
     snap = "\n".join(lines) or "Sin datos"
-    prompt = ("Dashboard macro:\n" + "\n".join(data_ai) + "\n\n"
-              "1. Risk-on o risk-off ahora mismo\n2. Que dice el VIX sobre el mercado\n"
-              "3. Impacto del DXY en bolsas y commodities\n4. Que hacer con esta lectura macro")
-    texto = ask_ai(prompt)
+    texto = ask_ai("Macro:\n" + "\n".join(data_ai) + "\n\n1. Risk-on o risk-off\n2. Que dice el VIX\n3. Impacto DXY\n4. Que hacer")
     safe_send(msg.chat.id, f"MACRO {datetime.now().strftime('%d/%m %H:%M')}\n\n{snap}\n\n{texto}", message_id=m.message_id)
 
 
 @bot.message_handler(commands=["backtest"])
 def cmd_backtest(msg):
     if not allowed(msg): return
-    m = bot.send_message(msg.chat.id, "Ejecutando backtest 3 meses... (puede tardar 30s)")
+    m = bot.send_message(msg.chat.id, "Ejecutando backtest 3 meses... (30s)")
     stocks = US_STOCKS[:8] + [s for s in EU_STOCKS if ".MC" in s or ".PA" in s][:5]
     results = run_backtest(stocks)
     if not results:
-        safe_send(msg.chat.id, "Sin datos suficientes para backtest.", message_id=m.message_id)
+        safe_send(msg.chat.id, "Sin datos.", message_id=m.message_id)
         return
     lines = []
     total_wins = total_ops = 0
@@ -598,10 +860,10 @@ def cmd_backtest(msg):
         total_wins += r["wins"]
         total_ops += r["total"]
         bar = "W"*r["wins"] + "L"*r["losses"]
-        lines.append(f"{r['nombre']} ({r['ticker']}): {r['winrate']}% - {r['wins']}W/{r['losses']}L de {r['total']} ops  {bar}")
+        lines.append(f"{r['nombre']} ({r['ticker']}): {r['winrate']}% - {r['wins']}W/{r['losses']}L  {bar}")
     global_wr = round(total_wins/total_ops*100, 1) if total_ops > 0 else 0
     safe_send(msg.chat.id,
-        f"BACKTEST 3 MESES\nCriterio: RSI menor 45 + cruce MACD alcista\nTP +3% vs SL -2% en 8 sesiones\n\n"
+        f"BACKTEST 3 MESES\nCriterio: RSI<45 + cruce MACD / TP +3% SL -2%\n"
         f"Acierto global: {global_wr}% ({total_wins}W de {total_ops} ops)\n\n" + "\n".join(lines),
         message_id=m.message_id)
 
@@ -626,9 +888,7 @@ def cmd_alerta(msg):
     direction = "sube a" if precio > d["price"] else "baja a"
     ALERTS[msg.chat.id].append({"ticker": ticker, "nombre": d["nombre"], "price": precio, "direction": direction, "triggered": False})
     activas = len([a for a in ALERTS[msg.chat.id] if not a["triggered"]])
-    safe_send(msg.chat.id,
-        f"Alerta creada\n{d['nombre']} ({ticker}) ahora: {d['price']}\n"
-        f"Te aviso cuando {direction} {precio}\nAlertas activas: {activas}")
+    safe_send(msg.chat.id, f"Alerta creada\n{d['nombre']} ({ticker}) ahora: {d['price']}\nTe aviso cuando {direction} {precio}\nAlertas activas: {activas}")
 
 
 @bot.message_handler(commands=["alertas"])
@@ -710,10 +970,9 @@ def cmd_oportunidades(msg):
     for t in (US_STOCKS[:7] + EU_STOCKS[:6]):
         d = fetch_quote(t, "3mo")
         if d:
-            rows.append(f"{d['nombre']} ({t}): precio={d['price']}, RSI={d['rsi']}, MACD={'SI' if d['macd_cross_up'] else 'NO'}, vol={d['vol_rel']}x, 5d={d['d5']}%")
-    prompt = ("Datos tecnicos EU+EEUU:\n" + "\n".join(rows) + "\n\n"
-              "1. 2-3 mejores setups con RSI y momentum\n"
-              "2. Acciones a evitar\n3. Trade concreto con nombre empresa: entrada/objetivo/stop\n4. Riesgo 1-10")
+            rows.append(f"{d['nombre']} ({t}): RSI={d['rsi']}, MACD={'SI' if d['macd_cross_up'] else 'NO'}, vol={d['vol_rel']}x, 5d={d['d5']}%")
+    prompt = ("Datos EU+EEUU:\n" + "\n".join(rows) + "\n\n"
+              "1. 2-3 mejores setups\n2. Acciones a evitar\n3. Trade concreto: entrada/objetivo/stop\n4. Riesgo 1-10")
     texto = ask_ai(prompt)
     safe_send(msg.chat.id, f"Oportunidades\n\n{texto}", message_id=m.message_id)
 
@@ -726,10 +985,9 @@ def cmd_explosiones(msg):
     if not candidates:
         safe_send(msg.chat.id, "Mercado en calma, sin senales de explosion.", message_id=m.message_id)
         return
-    rows = [f"{c['nombre']} ({c['ticker']}): {c['price']} | semana {c['d5']:+.1f}% | vol {c['vol_rel']}x"
-            for c in candidates]
+    rows = [f"{c['nombre']} ({c['ticker']}): {c['price']} | semana {c['d5']:+.1f}% | vol {c['vol_rel']}x" for c in candidates]
     bloque = "\n".join(rows)
-    texto = ask_ai(f"Posibles explosiones:\n{bloque}\n\n1. Por que podria subir cada una\n2. Nivel a superar\n3. Riesgo")
+    texto = ask_ai(f"Posibles explosiones:\n{bloque}\n\n1. Por que podria subir\n2. Nivel a superar\n3. Riesgo")
     safe_send(msg.chat.id, f"Posibles Explosiones\n\n{bloque}\n\n{texto}", message_id=m.message_id)
 
 
@@ -740,15 +998,13 @@ def cmd_calendario(msg):
     eventos = get_economic_calendar()
     if eventos:
         eventos_sorted = sorted(eventos, key=lambda x: x.get("date",""))
-        lines = [f"{e.get('date','')[:10]} [{e.get('country','').upper()}] {e.get('title','')}"
-                 for e in eventos_sorted]
+        lines = [f"{e.get('date','')[:10]} [{e.get('country','').upper()}] {e.get('title','')}" for e in eventos_sorted]
         bloque = "\n".join(lines)
-        prompt = (f"Eventos esta semana:\n{bloque}\n\nTraduce en espanol.\n1. 3 mas importantes\n2. Que esperar\n3. Sectores afectados")
-        texto = ask_ai(prompt)
-        safe_send(msg.chat.id, f"Calendario Esta Semana\n\n{bloque}\n\n{texto}", message_id=m.message_id)
+        texto = ask_ai(f"Eventos:\n{bloque}\n\n1. 3 mas importantes\n2. Que esperar\n3. Sectores afectados")
+        safe_send(msg.chat.id, f"Calendario\n\n{bloque}\n\n{texto}", message_id=m.message_id)
     else:
-        texto = ask_ai("Calendario eventos economicos clave esta semana: Fed, BCE, inflacion, empleo, earnings.")
-        safe_send(msg.chat.id, f"Calendario Economico\n\n{texto}", message_id=m.message_id)
+        texto = ask_ai("Eventos clave esta semana: Fed, BCE, inflacion, empleo, earnings.")
+        safe_send(msg.chat.id, f"Calendario\n\n{texto}", message_id=m.message_id)
 
 
 @bot.message_handler(commands=["sr"])
@@ -758,10 +1014,10 @@ def cmd_sr(msg):
     alerts = scan_sr_alerts(US_STOCKS[:10] + EU_STOCKS[:10])
     if alerts:
         bloque = "\n".join(alerts)
-        texto = ask_ai(f"Acciones en zona S/R:\n{bloque}\n\n1. Rebote o ruptura\n2. Que confirmaria\n3. Operativa concreta")
+        texto = ask_ai(f"S/R:\n{bloque}\n\n1. Rebote o ruptura\n2. Confirmacion\n3. Operativa")
         safe_send(msg.chat.id, f"S/R Scanner\n\n{bloque}\n\n{texto}", message_id=m.message_id)
     else:
-        safe_send(msg.chat.id, "S/R Scanner\n\nNinguna accion en zona critica ahora mismo.", message_id=m.message_id)
+        safe_send(msg.chat.id, "Sin acciones en zona critica ahora mismo.", message_id=m.message_id)
 
 
 @bot.message_handler(commands=["metales"])
@@ -775,10 +1031,7 @@ def cmd_metales(msg):
             lines.append(f"{arrow(d['d1'])} {nom}: {d['price']:,.2f} | semana {arrow(d['d5'])} | RSI {d['rsi']}")
             data_ai.append(f"{nom}: precio={d['price']}, RSI={d['rsi']}, 1d={d['d1']}%, S1={d['s1']}, R1={d['r1']}")
     snap = "\n".join(lines) or "Sin datos"
-    prompt = (f"Metales:\n" + "\n".join(data_ai) + "\n\n"
-              "1. Tendencia y RSI de cada metal\n2. Senal: COMPRAR/VENDER/ESPERAR\n"
-              "3. Entrada, stop, objetivo concretos\n4. Catalizador macro")
-    texto = ask_ai(prompt)
+    texto = ask_ai(f"Metales:\n" + "\n".join(data_ai) + "\n\n1. Tendencia\n2. COMPRAR/VENDER/ESPERAR\n3. Entrada stop objetivo\n4. Catalizador macro")
     safe_send(msg.chat.id, f"Metales {datetime.now().strftime('%d/%m %H:%M')}\n\n{snap}\n\n{texto}", message_id=m.message_id)
 
 
@@ -798,10 +1051,7 @@ def cmd_ipos(msg):
             lines.append(f"{ipo['nombre']} - {ipo['estado']}\n  Sector: {ipo['sector']} | Val: {ipo['valor']}")
     snap = "\n\n".join(lines)
     noticias_txt = "\n".join(f"- {n}" for n in get_ipo_news())
-    prompt = (f"IPOs:\n{snap}\n\nNoticias:\n{noticias_txt}\n\n"
-              "1. Vale la pena entrar? SI/NO/ESPERAR\n2. Riesgo principal\n"
-              "3. Mejor potencial 6-12 meses\n4. Debut o esperar correccion?")
-    texto = ask_ai(prompt)
+    texto = ask_ai(f"IPOs:\n{snap}\n\nNoticias:\n{noticias_txt}\n\n1. SI/NO/ESPERAR\n2. Riesgo\n3. Mejor potencial\n4. Debut o esperar")
     safe_send(msg.chat.id, f"IPOs {datetime.now().strftime('%d/%m %H:%M')}\n\n{snap}\n\n{texto}", message_id=m.message_id)
 
 
@@ -810,7 +1060,7 @@ def cmd_analisis(msg):
     if not allowed(msg): return
     parts = msg.text.split()
     if len(parts) < 2:
-        safe_send(msg.chat.id, "Uso: /analisis TICKER\nEj: /analisis AAPL o /analisis SAN.MC")
+        safe_send(msg.chat.id, "Uso: /analisis TICKER\nEj: /analisis AAPL o /analisis SPY o /analisis SAN.MC")
         return
     ticker = parts[1].upper()
     m = bot.send_message(msg.chat.id, f"Analizando {nombre(ticker)}...")
@@ -818,18 +1068,19 @@ def cmd_analisis(msg):
     if not d:
         safe_send(msg.chat.id, f"Sin datos para {ticker}.", message_id=m.message_id)
         return
-    prompt = (f"Empresa: {d['nombre']} ({ticker})\n"
-              f"Precio: {d['price']} | 1d: {d['d1']}% | 5d: {d['d5']}%\n"
+    prompt = (f"Empresa/ETF: {d['nombre']} ({ticker})\n"
+              f"Precio: {d['price']} | 1d: {d['d1']}% | 5d: {d['d5']}% | 20d: {d['d20']}%\n"
               f"RSI: {d['rsi']} | MACD cruce alcista: {d['macd_cross_up']} | Vol: {d['vol_rel']}x\n"
+              f"Sobre EMA20: {d['sobre_ema20']} (EMA20: {d['ema20']})\n"
               f"R2: {d['r2']} R1: {d['r1']} | Pivot: {d['pivot']} | S1: {d['s1']} S2: {d['s2']}\n"
               f"Max52: {d['hi52']} | Min52: {d['lo52']}\n\n"
-              "1. Posicion tecnica con RSI y MACD\n2. Niveles clave\n"
-              "3. Escenario alcista vs bajista con precios exactos\n"
-              "4. Sesgo operativo claro\n5. Entrada, stop y objetivo si hay setup")
+              "1. Posicion tecnica completa\n2. Niveles clave\n"
+              "3. Escenario alcista vs bajista con precios\n"
+              "4. Sesgo operativo\n5. Entrada, stop y objetivo si hay setup")
     texto = ask_ai(prompt)
     header = (f"{d['nombre']} ({ticker})\n"
-              f"Precio {d['price']} | Hoy {d['d1']:+.2f}% | Semana {d['d5']:+.2f}%\n"
-              f"RSI {d['rsi']} | Vol {d['vol_rel']}x | MACD: {'SI' if d['macd_cross_up'] else 'NO'}\n"
+              f"Precio {d['price']} | Hoy {d['d1']:+.2f}% | Semana {d['d5']:+.2f}% | Mes {d['d20']:+.2f}%\n"
+              f"RSI {d['rsi']} | Vol {d['vol_rel']}x | MACD: {'SI' if d['macd_cross_up'] else 'NO'} | EMA20: {'SOBRE' if d['sobre_ema20'] else 'BAJO'}\n"
               f"R2 {d['r2']} | R1 {d['r1']} | Pivot {d['pivot']} | S1 {d['s1']} | S2 {d['s2']}\n"
               f"Rango 52s: {d['lo52']} - {d['hi52']}\n\n")
     safe_send(msg.chat.id, header + texto, message_id=m.message_id)
@@ -845,7 +1096,7 @@ def cmd_crypto(msg):
         if d:
             lines.append(f"{arrow(d['d1'])} {d['nombre']}: {d['price']:,.0f} | semana {arrow(d['d5'])} | RSI {d['rsi']}")
             data_ai.append(f"{d['nombre']}: {d['price']:,.0f} ({d['d1']:+.2f}%) RSI={d['rsi']} S1={d['s1']} R1={d['r1']}")
-    texto = ask_ai("Crypto:\n" + "\n".join(data_ai) + "\n\n1. Lectura tecnica global\n2. Mejor setup ahora\n3. Niveles criticos Bitcoin")
+    texto = ask_ai("Crypto:\n" + "\n".join(data_ai) + "\n\n1. Lectura tecnica global\n2. Mejor setup\n3. Niveles criticos Bitcoin\n4. Hay altseason?")
     safe_send(msg.chat.id, f"Crypto {datetime.now().strftime('%H:%M')}\n\n" + "\n".join(lines) + f"\n\n{texto}", message_id=m.message_id)
 
 
@@ -863,16 +1114,22 @@ def handle_callback(call):
     handlers = {
         "noticias": cmd_noticias, "mercados": cmd_mercados,
         "senales_eu": cmd_senales_eu, "senales_us": cmd_senales_us,
+        "etfs": cmd_etfs, "sectores": cmd_sectores,
+        "bull_detector": cmd_bull_detector, "anomalias": cmd_anomalias,
+        "noticias_impacto": cmd_noticias_impacto,
         "oportunidades": cmd_oportunidades, "explosiones": cmd_explosiones,
         "calendario": cmd_calendario, "sr_scan": cmd_sr,
         "crypto": cmd_crypto, "macro": cmd_macro,
         "metales": cmd_metales, "ipos": cmd_ipos,
         "backtest": cmd_backtest, "alertas": cmd_alertas,
+        "riesgo_info": lambda m: safe_send(m.chat.id, "Uso: /riesgo CAPITAL RIESGO% TICKER ENTRADA STOP\nEj: /riesgo 10000 2 AAPL 890 865"),
     }
     fn = handlers.get(call.data)
     if fn:
         fn(call.message)
 
+
+# ── JOBS AUTOMATICOS ──────────────────────────────────────────────────────────
 
 def job_senales_eu():
     safe_send(ALLOWED_USER_ID, f"BUENOS DIAS - Senales Europa {datetime.now().strftime('%d/%m')}")
@@ -882,13 +1139,13 @@ def job_senales_eu():
             send_signal(ALLOWED_USER_ID, s)
             time.sleep(2)
     else:
-        safe_send(ALLOWED_USER_ID, "Sin senales validas en Europa esta manana. Filtros RSI y volumen no encuentran setup claro.")
+        safe_send(ALLOWED_USER_ID, "Sin senales validas en Europa esta manana.")
     titulares = get_news(6)
     bloque = "\n".join(f"- {t}" for t in titulares) if titulares else "Sin noticias"
     eventos = get_economic_calendar()
     cal_hoy = [e for e in eventos if datetime.now().strftime("%Y-%m-%d") in e.get("date","")]
-    cal_txt = "\n".join(f"- {e.get('title','')}" for e in cal_hoy) or "Sin eventos clave hoy"
-    texto = ask_ai(f"Briefing {datetime.now().strftime('%A %d/%m')}:\nNoticias:\n{bloque}\nEventos hoy:\n{cal_txt}\n\nResumen del dia, niveles clave DAX e IBEX.")
+    cal_txt = "\n".join(f"- {e.get('title','')}" for e in cal_hoy) or "Sin eventos clave"
+    texto = ask_ai(f"Briefing {datetime.now().strftime('%A %d/%m')}:\nNoticias:\n{bloque}\nEventos:\n{cal_txt}\n\nResumen y niveles clave DAX e IBEX.")
     safe_send(ALLOWED_USER_ID, f"Briefing Manana\n\n{texto}")
 
 
@@ -900,7 +1157,7 @@ def job_senales_us():
             send_signal(ALLOWED_USER_ID, s)
             time.sleep(2)
     else:
-        safe_send(ALLOWED_USER_ID, "Sin senales validas en EEUU para esta sesion. Filtros RSI y volumen no encuentran setup claro.")
+        safe_send(ALLOWED_USER_ID, "Sin senales validas en EEUU para esta sesion.")
 
 
 def job_close_eu():
@@ -911,7 +1168,7 @@ def job_close_eu():
             lines.append(f"{arrow(d['d1'])} {nom}: {d['price']:,.0f}")
             data_ai.append(f"{nom}: {d['d1']:+.2f}%")
     snap = "\n".join(lines)
-    texto = ask_ai("Cierre EU:\n" + "\n".join(data_ai) + "\n\nResumen sesion europea y que esperar de EEUU.")
+    texto = ask_ai("Cierre EU:\n" + "\n".join(data_ai) + "\n\nResumen y que esperar de EEUU.")
     safe_send(ALLOWED_USER_ID, f"Cierre Europa {datetime.now().strftime('%d/%m %H:%M')}\n\n{snap}\n\n{texto}")
 
 
@@ -923,7 +1180,7 @@ def job_close_us():
             lines.append(f"{arrow(d['d1'])} {nom}: {d['price']:,.0f}")
             data_ai.append(f"{nom}: {d['d1']:+.2f}%")
     snap = "\n".join(lines)
-    texto = ask_ai("Cierre EEUU:\n" + "\n".join(data_ai) + "\n\nResumen sesion americana y perspectiva manana.")
+    texto = ask_ai("Cierre EEUU:\n" + "\n".join(data_ai) + "\n\nResumen y perspectiva manana.")
     safe_send(ALLOWED_USER_ID, f"Cierre EEUU {datetime.now().strftime('%d/%m %H:%M')}\n\n{snap}\n\n{texto}")
 
 
@@ -943,10 +1200,50 @@ def job_check_alerts():
                     triggered = True
                 if triggered:
                     alert["triggered"] = True
-                    safe_send(chat_id,
-                        f"ALERTA ACTIVADA\n{alert['nombre']} ({alert['ticker']}) ha {alert['direction']} {alert['price']}\nPrecio actual: {d['price']}")
+                    safe_send(chat_id, f"ALERTA ACTIVADA\n{alert['nombre']} ({alert['ticker']}) ha {alert['direction']} {alert['price']}\nPrecio actual: {d['price']}")
             except Exception as e:
                 log.warning(f"Alert check: {e}")
+
+
+def job_bull_detector():
+    """Cada 4h — detecta bull runs y los envia si hay algo nuevo."""
+    senales = bull_detector()
+    if not senales:
+        return
+    lines = []
+    for s in senales[:4]:
+        ticker_txt = f" ({s['ticker']})" if "ticker" in s else ""
+        lines.append(f"[{s['tipo']}] {s['nombre']}{ticker_txt}: {s['detalle']}")
+    bloque = "\n".join(lines)
+    texto = ask_ai(f"Bull runs detectados:\n{bloque}\n\nEs momento de entrar? Como posicionarse? ETF o accion concreta.")
+    safe_send(ALLOWED_USER_ID, f"BULL DETECTOR {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
+
+
+def job_anomalias_scanner():
+    """Cada 2h — anomalias de volumen."""
+    todos = US_STOCKS + EU_STOCKS[:10] + ETFS_ESPECIALES
+    anomalias = scan_anomalias(todos)
+    if not anomalias:
+        return
+    top = anomalias[:4]
+    rows = [f"{a['nombre']} ({a['ticker']}): vol {a['vol_rel']}x | hoy {a['d1']:+.2f}%" for a in top]
+    bloque = "\n".join(rows)
+    texto = ask_ai(f"Anomalias volumen:\n{bloque}\n\nHay noticia detras? Como operar.")
+    safe_send(ALLOWED_USER_ID, f"ANOMALIA VOLUMEN {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
+
+
+def job_noticias_impacto():
+    """Cada 3h — noticias de alto impacto."""
+    noticias = get_noticias_impacto()
+    if not noticias:
+        return
+    lines = [f"- {n['title']}" for n in noticias[:6]]
+    bloque = "\n".join(lines)
+    prompt = (f"Noticias impacto:\n{bloque}\n\nHay algo importante que afecte a bolsa ahora mismo?\nSi SI: que y como operar.\nSi NO: responde solo SIN NOVEDAD.")
+    texto = ask_ai(prompt)
+    if "SIN NOVEDAD" in texto.upper():
+        return
+    safe_send(ALLOWED_USER_ID, f"NOTICIA IMPACTO {datetime.now().strftime('%H:%M')}\n\n{texto}")
 
 
 def job_sr_scanner():
@@ -954,7 +1251,7 @@ def job_sr_scanner():
     if not alerts:
         return
     bloque = "\n".join(alerts[:6])
-    texto = ask_ai(f"Alertas S/R:\n{bloque}\n\nTop 2 mas interesantes y operativa concreta.")
+    texto = ask_ai(f"S/R:\n{bloque}\n\nTop 2 mas interesantes y operativa.")
     safe_send(ALLOWED_USER_ID, f"Alerta S/R {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
 
 
@@ -964,7 +1261,7 @@ def job_explosion_scanner():
         return
     rows = [f"{c['nombre']} ({c['ticker']}): semana {c['d5']:+.1f}% | vol {c['vol_rel']}x" for c in candidates[:3]]
     bloque = "\n".join(rows)
-    texto = ask_ai(f"Posibles explosiones:\n{bloque}\n\nAnalisis y niveles a vigilar.")
+    texto = ask_ai(f"Explosiones:\n{bloque}\n\nAnalisis y niveles.")
     safe_send(ALLOWED_USER_ID, f"Explosiones {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
 
 
@@ -976,8 +1273,7 @@ def job_metales_scanner():
             data_ai.append(f"{nom}: precio={d['price']}, RSI={d['rsi']}, 1d={d['d1']}%, S1={d['s1']}, R1={d['r1']}")
     if not data_ai:
         return
-    prompt = ("Metales:\n" + "\n".join(data_ai) + "\n\nHay senal clara de entrada o salida?\nSi SI: cual, entrada, stop, objetivo.\nSi NO: responde solo SIN SENAL.")
-    texto = ask_ai(prompt)
+    texto = ask_ai("Metales:\n" + "\n".join(data_ai) + "\n\nHay senal clara? Si SI: cual, entrada, stop, objetivo. Si NO: responde solo SIN SENAL.")
     if "SIN SENAL" in texto.upper():
         return
     safe_send(ALLOWED_USER_ID, f"Alerta Metales {datetime.now().strftime('%H:%M')}\n\n{texto}")
@@ -986,15 +1282,18 @@ def job_metales_scanner():
 if __name__ == "__main__":
     if ALLOWED_USER_ID:
         scheduler = BackgroundScheduler(timezone=MADRID)
-        scheduler.add_job(job_senales_eu, "cron", hour=9, minute=0)
-        scheduler.add_job(job_senales_us, "cron", hour=15, minute=0)
-        scheduler.add_job(job_close_eu, "cron", hour=17, minute=35)
-        scheduler.add_job(job_close_us, "cron", hour=22, minute=5)
-        scheduler.add_job(job_check_alerts, "interval", minutes=5)
-        scheduler.add_job(job_sr_scanner, "interval", hours=2)
+        scheduler.add_job(job_senales_eu,        "cron",     hour=9,  minute=0)
+        scheduler.add_job(job_senales_us,        "cron",     hour=15, minute=0)
+        scheduler.add_job(job_close_eu,          "cron",     hour=17, minute=35)
+        scheduler.add_job(job_close_us,          "cron",     hour=22, minute=5)
+        scheduler.add_job(job_check_alerts,      "interval", minutes=5)
+        scheduler.add_job(job_anomalias_scanner, "interval", hours=2)
+        scheduler.add_job(job_noticias_impacto,  "interval", hours=3)
+        scheduler.add_job(job_bull_detector,     "interval", hours=4)
         scheduler.add_job(job_explosion_scanner, "interval", hours=3)
-        scheduler.add_job(job_metales_scanner, "interval", hours=4)
+        scheduler.add_job(job_metales_scanner,   "interval", hours=4)
+        scheduler.add_job(job_sr_scanner,        "interval", hours=2)
         scheduler.start()
         log.info("Jobs automaticos activados")
-    log.info("Financial Bot arrancado - Version Mejorada")
+    log.info("Financial Bot arrancado - Version Completa")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
