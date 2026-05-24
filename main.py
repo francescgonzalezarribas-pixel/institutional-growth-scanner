@@ -166,24 +166,48 @@ COINGECKO_IDS = {
 }
 
 def get_realtime_price(ticker):
-    """Precio en tiempo real via CoinGecko. Solo para crypto."""
+    """Precio en tiempo real. Intenta Binance primero, luego CoinGecko."""
+    symbol_map = {
+        "BTC-USD": "BTCUSDT",
+        "ETH-USD": "ETHUSDT",
+        "SOL-USD": "SOLUSDT",
+        "BNB-USD": "BNBUSDT",
+    }
+    binance_sym = symbol_map.get(ticker)
+
+    # Intento 1: Binance (sin auth, tiempo real)
+    if binance_sym:
+        try:
+            r = requests.get(
+                f"https://api.binance.com/api/v3/ticker/24hr?symbol={binance_sym}",
+                timeout=6
+            )
+            data = r.json()
+            return {
+                "price": round(float(data["lastPrice"]), 2),
+                "d1": round(float(data["priceChangePercent"]), 2),
+            }
+        except Exception as e:
+            log.warning(f"Binance realtime {ticker}: {e}")
+
+    # Intento 2: CoinGecko (fallback)
     cg_id = COINGECKO_IDS.get(ticker)
-    if not cg_id:
-        return None
-    try:
-        r = requests.get(
-            f"https://api.coingecko.com/api/v3/simple/price"
-            f"?ids={cg_id}&vs_currencies=usd&include_24hr_change=true",
-            timeout=8
-        )
-        data = r.json()[cg_id]
-        return {
-            "price": round(data["usd"], 2),
-            "d1": round(data.get("usd_24h_change", 0), 2),
-        }
-    except Exception as e:
-        log.warning(f"Realtime price {ticker}: {e}")
-        return None
+    if cg_id:
+        try:
+            r = requests.get(
+                f"https://api.coingecko.com/api/v3/simple/price"
+                f"?ids={cg_id}&vs_currencies=usd&include_24hr_change=true",
+                timeout=8
+            )
+            data = r.json()[cg_id]
+            return {
+                "price": round(data["usd"], 2),
+                "d1": round(data.get("usd_24h_change", 0), 2),
+            }
+        except Exception as e:
+            log.warning(f"CoinGecko realtime {ticker}: {e}")
+
+    return None
 
 
 def calc_rsi(series, period=14):
@@ -961,8 +985,8 @@ def cmd_btc(msg):
 
     # Prompt IA con todos los datos
     fg_txt = f"Fear&Greed: {fg['valor']}/100 ({fg['clasificacion']})" if fg else "Fear&Greed: no disponible"
-    dom_txt = f"BTC dominance: {dom['btc_dom']}%, ETH: {dom['eth_dom']}%" if dom else ""
-    usdt_txt = f"USDT dominance: {usdt['usdt_dom']}%" if usdt else ""
+    dom_txt = f"BTC dominance: {dom['btc_dom']}%, ETH: {dom['eth_dom']}%" if dom else "Dominancia: no disponible"
+    usdt_txt = f"USDT dominance: {usdt['usdt_dom']}% (rango normal 5-9%)" if usdt else "USDT dominance: dato no disponible, NO uses este dato en el analisis"
     niveles_txt = " | ".join([f"{n['tipo']} {n['nivel']:,} ({n['dist_pct']:+.1f}%)" for n in niveles[:5]])
 
     prompt = (f"Analisis profundo Bitcoin:\n"
