@@ -1276,6 +1276,7 @@ def semaforo(estado):
     return "[=]"
 
 
+# FIN PARTE 1 - continua en main_parte2.py
 def main_kb():
     kb = InlineKeyboardMarkup()
     kb.row(InlineKeyboardButton("Noticias", callback_data="noticias"),
@@ -2413,4 +2414,143 @@ def job_resumen_domingo():
         lines.append(f"Funding Rate BTC: {deriv['funding']['valor']:+.4f}%")
     snap = "\n".join(lines)
     prompt = (f"Resumen semanal crypto:\n{snap}\n\n"
-              "1. Como ha ido
+              "1. Como ha ido la semana para BTC y altcoins\n"
+              "2. Que dice el Fear and Greed sobre el sentimiento\n"
+              "3. Perspectiva para la proxima semana\n"
+              "4. Nivel clave a vigilar en BTC")
+    texto = ask_ai(prompt)
+    safe_send(ALLOWED_USER_ID, f"{snap}\n\n{texto}")
+
+
+def job_alerta_funding():
+    """Cada hora — Alerta si funding rate extremo."""
+    deriv = get_binance_derivatives("BTCUSDT")
+    if "funding" not in deriv:
+        return
+    fr = deriv["funding"]["valor"]
+    if fr > 0.05:
+        safe_send(ALLOWED_USER_ID,
+            f"ALERTA FUNDING RATE BTC\n"
+            f"Funding: {fr:+.4f}% (muy alto)\n"
+            f"Longs pagando demasiado — posible long squeeze inminente\n"
+            f"Considera reducir posiciones largas")
+    elif fr < -0.02:
+        safe_send(ALLOWED_USER_ID,
+            f"ALERTA FUNDING RATE BTC\n"
+            f"Funding: {fr:+.4f}% (negativo)\n"
+            f"Shorts pagando — posible rebote alcista\n"
+            f"Zona de posible entrada contrarian")
+
+
+def job_alerta_fear_greed():
+    """Cada 6h — Alerta si Fear&Greed extremo."""
+    fg = get_fear_greed()
+    if not fg:
+        return
+    if fg["valor"] <= 15:
+        safe_send(ALLOWED_USER_ID,
+            f"ALERTA CAPITULACION\n"
+            f"Fear&Greed: {fg['valor']}/100 ({fg['clasificacion']})\n"
+            f"Miedo extremo historico — suelos importantes suelen formarse aqui\n"
+            f"Revisar /btc para setup de entrada")
+    elif fg["valor"] >= 85:
+        safe_send(ALLOWED_USER_ID,
+            f"ALERTA EUFORIA\n"
+            f"Fear&Greed: {fg['valor']}/100 ({fg['clasificacion']})\n"
+            f"Codicia extrema — zona de riesgo alto para nuevas entradas\n"
+            f"Considera tomar ganancias parciales")
+
+
+def job_alerta_vix():
+    """Cada 2h dias laborables — Alerta si VIX alto."""
+    if not es_dia_laborable():
+        return
+    d = fetch_quote("^VIX", "1mo")
+    if not d:
+        return
+    if d["price"] > 35:
+        safe_send(ALLOWED_USER_ID,
+            f"ALERTA VIX CRITICO\n"
+            f"VIX: {d['price']:.1f} (panico extremo)\n"
+            f"Mercado en modo sell-off — evitar nuevas entradas\n"
+            f"Historicamente estos niveles preceden rebotes fuertes")
+    elif d["price"] > 25 and d["d1"] > 10:
+        safe_send(ALLOWED_USER_ID,
+            f"AVISO VIX ELEVADO\n"
+            f"VIX: {d['price']:.1f} ({d['d1']:+.1f}% hoy)\n"
+            f"Volatilidad subiendo — reducir tamaño de posiciones")
+
+
+def job_sr_scanner():
+    """Cada 2h dias laborables — S/R."""
+    if not es_dia_laborable():
+        return
+    alerts = scan_sr_alerts(US_STOCKS[:8] + EU_STOCKS[:8])
+    if not alerts:
+        return
+    bloque = "\n".join(alerts[:6])
+    texto = ask_ai(f"S/R:\n{bloque}\n\nTop 2 mas interesantes y operativa.")
+    safe_send(ALLOWED_USER_ID, f"Alerta S/R {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
+
+
+def job_explosion_scanner():
+    """Cada 3h dias laborables — Explosiones."""
+    if not es_dia_laborable():
+        return
+    candidates = scan_explosions(US_STOCKS + EU_STOCKS)
+    if not candidates:
+        return
+    rows = [f"{c['nombre']} ({c['ticker']}): semana {c['d5']:+.1f}% | vol {c['vol_rel']}x" for c in candidates[:3]]
+    bloque = "\n".join(rows)
+    texto = ask_ai(f"Explosiones:\n{bloque}\n\nAnalisis y niveles.")
+    safe_send(ALLOWED_USER_ID, f"Explosiones {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
+
+
+def job_metales_scanner():
+    """Cada 4h — Metales."""
+    data_ai = []
+    for t, nom in METALES.items():
+        d = fetch_quote(t, "3mo")
+        if d:
+            data_ai.append(f"{nom}: precio={d['price']}, RSI={d['rsi']}, 1d={d['d1']}%, S1={d['s1']}, R1={d['r1']}")
+    if not data_ai:
+        return
+    texto = ask_ai("Metales:\n" + "\n".join(data_ai) + "\n\nHay senal clara? Si SI: cual, entrada, stop, objetivo. Si NO: responde solo SIN SENAL.")
+    if "SIN SENAL" in texto.upper():
+        return
+    safe_send(ALLOWED_USER_ID, f"Alerta Metales {datetime.now().strftime('%H:%M')}\n\n{texto}")
+
+
+if __name__ == "__main__":
+    if ALLOWED_USER_ID:
+        scheduler = BackgroundScheduler(timezone=MADRID)
+        # Dias laborables
+        scheduler.add_job(job_senales_eu,        "cron", hour=9,  minute=0)
+        scheduler.add_job(job_senales_us,        "cron", hour=15, minute=0)
+        scheduler.add_job(job_close_eu,          "cron", hour=17, minute=35)
+        scheduler.add_job(job_close_us,          "cron", hour=22, minute=5)
+        # Lunes plan semana
+        scheduler.add_job(job_plan_semana,       "cron", hour=8,  minute=0)
+        # Domingo resumen crypto
+        scheduler.add_job(job_resumen_domingo,   "cron", hour=20, minute=0)
+        # Fin de semana crypto
+        scheduler.add_job(job_crypto_weekend,    "cron", hour=10, minute=0)
+        # Alertas precio siempre
+        scheduler.add_job(job_check_alerts,      "interval", minutes=5)
+        # Alerta funding rate cada hora
+        scheduler.add_job(job_alerta_funding,    "interval", hours=1)
+        # Alerta Fear&Greed cada 6h
+        scheduler.add_job(job_alerta_fear_greed, "interval", hours=6)
+        # Alerta VIX cada 2h laborables
+        scheduler.add_job(job_alerta_vix,        "interval", hours=2)
+        # Scanners
+        scheduler.add_job(job_anomalias_scanner, "interval", hours=2)
+        scheduler.add_job(job_noticias_impacto,  "interval", hours=3)
+        scheduler.add_job(job_bull_detector,     "interval", hours=4)
+        scheduler.add_job(job_explosion_scanner, "interval", hours=3)
+        scheduler.add_job(job_metales_scanner,   "interval", hours=4)
+        scheduler.add_job(job_sr_scanner,        "interval", hours=2)
+        scheduler.start()
+        log.info("Jobs automaticos activados")
+    log.info("Financial Bot arrancado - Version Completa v6")
+    bot.infinity_polling(timeout=60, long_polling_timeout=60)
