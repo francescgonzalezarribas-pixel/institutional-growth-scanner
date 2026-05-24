@@ -2157,10 +2157,17 @@ def cmd_ciclo(msg):
             datos_ia += f"\nFear&Greed BTC: {fg['valor']}/100"
         if vix_val:
             datos_ia += f"\nVIX: {vix_val}"
+        if btc:
+            datos_ia += f"\nBTC precio actual: {btc['price']:,.0f} USD (maximo 52s: {btc['hi52']:,.0f}, minimo 52s: {btc['lo52']:,.0f})"
+        if spx:
+            datos_ia += f"\nSP500 precio actual: {spx['price']:,.0f} (maximo 52s: {spx['hi52']:,.0f})"
+        if dax:
+            datos_ia += f"\nDAX precio actual: {dax['price']:,.0f} (maximo 52s: {dax['hi52']:,.0f})"
         prompt = (f"Ciclo de mercado actual:\n{datos_ia}\n\n"
+                  "IMPORTANTE: usa SOLO los precios actuales indicados arriba. No uses precios de otros años.\n\n"
                   "1. En que fase real estamos en cada mercado y por que\n"
                   "2. Que suele pasar a continuacion segun el ciclo\n"
-                  "3. Que deberia hacer un inversor en esta fase\n"
+                  "3. Que deberia hacer un inversor en esta fase con precios ACTUALES\n"
                   "4. Cuanto tiempo suelen durar estas fases historicamente")
         texto_ia = ask_ai(prompt)
         caption = "\n".join(lines) + texto_ia
