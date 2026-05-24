@@ -157,6 +157,35 @@ IPOS_WATCH = [
 ]
 
 
+# Mapa ticker yfinance -> id CoinGecko para precio real time
+COINGECKO_IDS = {
+    "BTC-USD": "bitcoin",
+    "ETH-USD": "ethereum",
+    "SOL-USD": "solana",
+    "BNB-USD": "binancecoin",
+}
+
+def get_realtime_price(ticker):
+    """Precio en tiempo real via CoinGecko. Solo para crypto."""
+    cg_id = COINGECKO_IDS.get(ticker)
+    if not cg_id:
+        return None
+    try:
+        r = requests.get(
+            f"https://api.coingecko.com/api/v3/simple/price"
+            f"?ids={cg_id}&vs_currencies=usd&include_24hr_change=true",
+            timeout=8
+        )
+        data = r.json()[cg_id]
+        return {
+            "price": round(data["usd"], 2),
+            "d1": round(data.get("usd_24h_change", 0), 2),
+        }
+    except Exception as e:
+        log.warning(f"Realtime price {ticker}: {e}")
+        return None
+
+
 def calc_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -221,6 +250,14 @@ def fetch_quote(ticker, period="3mo"):
             fuerza_relativa = d20 > 2.0
             hi52 = round(h.tail(252).max(), 2) if len(h) >= 252 else round(h.max(), 2)
             lo52 = round(lo.tail(252).min(), 2) if len(lo) >= 252 else round(lo.min(), 2)
+
+            # Para crypto: sobreescribir precio con dato en tiempo real
+            if ticker in COINGECKO_IDS:
+                rt = get_realtime_price(ticker)
+                if rt:
+                    price = rt["price"]
+                    d1 = rt["d1"]
+
             return {
                 "ticker": ticker,
                 "nombre": nombre(ticker),
