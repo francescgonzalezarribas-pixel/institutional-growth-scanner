@@ -311,6 +311,120 @@ def fetch_quote(ticker, period="3mo"):
     return None
 
 
+def get_binance_derivatives(symbol="BTCUSDT"):
+    """Funding rate, open interest, long/short ratio y liquidaciones desde Binance Futures."""
+    resultado = {}
+
+    # 1. Funding Rate
+    try:
+        r = requests.get(
+            f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}",
+            timeout=6
+        )
+        data = r.json()
+        funding = round(float(data["lastFundingRate"]) * 100, 4)
+        if funding > 0.05:
+            funding_señal = "MUY POSITIVO: longs pagando mucho, posible squeeze bajista"
+        elif funding > 0.01:
+            funding_señal = "POSITIVO: mercado alcista con coste"
+        elif funding < -0.01:
+            funding_señal = "NEGATIVO: shorts pagando, posible rebote"
+        else:
+            funding_señal = "NEUTRO: mercado equilibrado"
+        resultado["funding"] = {"valor": funding, "señal": funding_señal}
+    except Exception as e:
+        log.warning(f"Funding rate: {e}")
+
+    # 2. Open Interest
+    try:
+        r = requests.get(
+            f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}",
+            timeout=6
+        )
+        oi = round(float(r.json()["openInterest"]), 0)
+        resultado["open_interest"] = {"btc": oi}
+    except Exception as e:
+        log.warning(f"Open Interest: {e}")
+
+    # 3. Open Interest en USD (historico para ver tendencia)
+    try:
+        r = requests.get(
+            f"https://fapi.binance.com/futures/data/openInterestHist"
+            f"?symbol={symbol}&period=1h&limit=5",
+            timeout=6
+        )
+        hist_oi = r.json()
+        if len(hist_oi) >= 2:
+            oi_actual = float(hist_oi[-1]["sumOpenInterestValue"])
+            oi_anterior = float(hist_oi[-2]["sumOpenInterestValue"])
+            oi_cambio = round((oi_actual - oi_anterior) / oi_anterior * 100, 2)
+            oi_usd_b = round(oi_actual / 1e9, 2)
+            if oi_cambio > 1:
+                oi_señal = "SUBIENDO: mas posiciones abiertas, tendencia se refuerza"
+            elif oi_cambio < -1:
+                oi_señal = "BAJANDO: posiciones cerrando, posible agotamiento"
+            else:
+                oi_señal = "ESTABLE"
+            resultado["open_interest"]["usd_b"] = oi_usd_b
+            resultado["open_interest"]["cambio_pct"] = oi_cambio
+            resultado["open_interest"]["señal"] = oi_señal
+    except Exception as e:
+        log.warning(f"OI hist: {e}")
+
+    # 4. Long/Short Ratio (cuentas globales)
+    try:
+        r = requests.get(
+            f"https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
+            f"?symbol={symbol}&period=1h&limit=2",
+            timeout=6
+        )
+        data = r.json()
+        if data:
+            ratio = round(float(data[-1]["longShortRatio"]), 3)
+            long_pct = round(float(data[-1]["longAccount"]) * 100, 1)
+            short_pct = round(float(data[-1]["shortAccount"]) * 100, 1)
+            if ratio > 1.5:
+                ls_señal = "MUCHOS LONGS: riesgo de long squeeze"
+            elif ratio < 0.7:
+                ls_señal = "MUCHOS SHORTS: posible short squeeze alcista"
+            else:
+                ls_señal = "EQUILIBRADO"
+            resultado["long_short"] = {
+                "ratio": ratio,
+                "long_pct": long_pct,
+                "short_pct": short_pct,
+                "señal": ls_señal,
+            }
+    except Exception as e:
+        log.warning(f"Long/Short ratio: {e}")
+
+    # 5. Liquidaciones ultimas 24h
+    try:
+        r = requests.get(
+            f"https://fapi.binance.com/futures/data/takerlongshortRatio"
+            f"?symbol={symbol}&period=1h&limit=24",
+            timeout=6
+        )
+        # Liquidaciones forzadas via force orders
+        r2 = requests.get(
+            f"https://fapi.binance.com/fapi/v1/allForceOrders?symbol={symbol}&limit=100",
+            timeout=6
+        )
+        orders = r2.json()
+        liq_long = sum(float(o["origQty"]) * float(o["price"])
+                      for o in orders if o.get("side") == "SELL")
+        liq_short = sum(float(o["origQty"]) * float(o["price"])
+                       for o in orders if o.get("side") == "BUY")
+        resultado["liquidaciones"] = {
+            "longs_m": round(liq_long / 1e6, 1),
+            "shorts_m": round(liq_short / 1e6, 1),
+        }
+    except Exception as e:
+        log.warning(f"Liquidaciones: {e}")
+
+    return resultado
+
+
 def get_fear_greed():
     """Obtiene el Fear & Greed Index de crypto."""
     try:
@@ -400,6 +514,10 @@ def analisis_btc_profundo():
     # USDT dominance
     usdt = get_usdt_dominance()
     resultado["usdt"] = usdt
+
+    # Datos Binance Futures: funding, OI, long/short, liquidaciones
+    deriv = get_binance_derivatives("BTCUSDT")
+    resultado["derivados"] = deriv
 
     # Soportes y resistencias clave BTC (niveles psicologicos + tecnicos)
     if btc:
@@ -911,21 +1029,21 @@ def cmd_start(msg):
 @bot.message_handler(commands=["btc"])
 def cmd_btc(msg):
     if not allowed(msg): return
-    m = bot.send_message(msg.chat.id, "Analizando Bitcoin en profundidad... (Fear&Greed, dominancias, S/R, on-chain)")
+    m = bot.send_message(msg.chat.id, "Analizando Bitcoin... precio real + Fear&Greed + dominancias + derivados Binance")
     datos = analisis_btc_profundo()
-    btc = datos.get("btc")
-    fg = datos.get("fear_greed")
-    dom = datos.get("dominancia")
-    usdt = datos.get("usdt")
-    eth = datos.get("eth")
-    sol = datos.get("sol")
+    btc   = datos.get("btc")
+    fg    = datos.get("fear_greed")
+    dom   = datos.get("dominancia")
+    usdt  = datos.get("usdt")
+    eth   = datos.get("eth")
+    sol   = datos.get("sol")
+    deriv = datos.get("derivados", {})
     niveles = datos.get("niveles_psicologicos", [])
 
     if not btc:
         safe_send(msg.chat.id, "Error obteniendo datos de Bitcoin.", message_id=m.message_id)
         return
 
-    # Construir snapshot
     lines = [f"BITCOIN - {datetime.now().strftime('%d/%m %H:%M')}",
              f"Precio:   {btc['price']:,.0f} USD",
              f"Hoy:      {arrow(btc['d1'])}",
@@ -933,16 +1051,16 @@ def cmd_btc(msg):
              f"Mes:      {arrow(btc['d20'])}",
              f"RSI:      {btc['rsi']}",
              f"MACD:     {'Cruce alcista' if btc['macd_cross_up'] else 'Sin cruce'}",
-             f"EMA20:    {'PRECIO SOBRE EMA' if btc['sobre_ema20'] else 'PRECIO BAJO EMA'} ({btc['ema20']:,.0f})",
+             f"EMA20:    {'SOBRE' if btc['sobre_ema20'] else 'BAJO'} ({btc['ema20']:,.0f})",
+             f"EMA50:    {btc['ema50']:,.0f}",
              "",
-             f"SOPORTES Y RESISTENCIAS:",
+             "SOPORTES Y RESISTENCIAS:",
              f"R2: {btc['r2']:,.0f} | R1: {btc['r1']:,.0f}",
              f"Pivot: {btc['pivot']:,.0f}",
              f"S1: {btc['s1']:,.0f} | S2: {btc['s2']:,.0f}",
              f"Rango 52s: {btc['lo52']:,.0f} - {btc['hi52']:,.0f}",
              ""]
 
-    # Niveles psicologicos
     if niveles:
         lines.append("NIVELES PSICOLOGICOS PROXIMOS:")
         for n in niveles[:5]:
@@ -951,31 +1069,48 @@ def cmd_btc(msg):
 
     # Fear & Greed
     if fg:
-        tendencia = "subiendo" if fg["cambio"] > 0 else "bajando"
-        lines.append(f"FEAR & GREED INDEX: {fg['valor']}/100 - {fg['clasificacion']}")
-        lines.append(f"Ayer: {fg['ayer']} (esta {tendencia})")
+        tendencia_fg = "subiendo" if fg["cambio"] > 0 else "bajando"
+        lines.append(f"FEAR & GREED: {fg['valor']}/100 - {fg['clasificacion']}")
+        lines.append(f"Ayer: {fg['ayer']} (esta {tendencia_fg})")
         lines.append("")
 
     # Dominancias
     if dom:
         lines.append(f"DOMINANCIA BTC: {dom['btc_dom']}%")
         lines.append(f"DOMINANCIA ETH: {dom['eth_dom']}%")
-        lines.append(f"Market Cap Total Crypto: {dom['total_mcap_b']:,.0f}B USD")
+        lines.append(f"Market Cap Total: {dom['total_mcap_b']:,.0f}B USD")
         lines.append("")
 
-    # USDT Dominance
     if usdt:
-        usdt_señal = ""
         if usdt["usdt_dom"] > 8.0:
-            usdt_señal = " -> ZONA ALTA: dinero en stablecoins, mercado temeroso"
+            usdt_señal = "ZONA ALTA: dinero en stablecoins, mercado temeroso"
         elif usdt["usdt_dom"] < 4.5:
-            usdt_señal = " -> ZONA BAJA: dinero saliendo de USDT, mercado arriesgado"
+            usdt_señal = "ZONA BAJA: dinero saliendo de USDT hacia crypto"
         else:
-            usdt_señal = " -> ZONA MEDIA: neutral"
-        lines.append(f"USDT DOMINANCE: {usdt['usdt_dom']}%{usdt_señal}")
+            usdt_señal = "ZONA MEDIA: neutral"
+        lines.append(f"USDT DOMINANCE: {usdt['usdt_dom']}% -> {usdt_señal}")
         lines.append("")
 
-    # Altcoins contexto
+    # Derivados Binance
+    lines.append("DERIVADOS BINANCE FUTURES:")
+    if "funding" in deriv:
+        f = deriv["funding"]
+        lines.append(f"Funding Rate: {f['valor']:+.4f}% -> {f['señal']}")
+    if "open_interest" in deriv:
+        oi = deriv["open_interest"]
+        oi_txt = f"OI: {oi.get('usd_b', '?')}B USD"
+        if "cambio_pct" in oi:
+            oi_txt += f" ({oi['cambio_pct']:+.2f}% ultima hora) -> {oi.get('señal','')}"
+        lines.append(oi_txt)
+    if "long_short" in deriv:
+        ls = deriv["long_short"]
+        lines.append(f"Long/Short: {ls['ratio']} ({ls['long_pct']}% longs / {ls['short_pct']}% shorts) -> {ls['señal']}")
+    if "liquidaciones" in deriv:
+        liq = deriv["liquidaciones"]
+        lines.append(f"Liquidaciones recientes: Longs {liq['longs_m']}M | Shorts {liq['shorts_m']}M USD")
+    lines.append("")
+
+    # Altcoins
     if eth:
         lines.append(f"Ethereum: {eth['price']:,.0f} | RSI {eth['rsi']} | semana {eth['d5']:+.2f}%")
     if sol:
@@ -983,24 +1118,41 @@ def cmd_btc(msg):
 
     snap = "\n".join(lines)
 
-    # Prompt IA con todos los datos
-    fg_txt = f"Fear&Greed: {fg['valor']}/100 ({fg['clasificacion']})" if fg else "Fear&Greed: no disponible"
-    dom_txt = f"BTC dominance: {dom['btc_dom']}%, ETH: {dom['eth_dom']}%" if dom else "Dominancia: no disponible"
-    usdt_txt = f"USDT dominance: {usdt['usdt_dom']}% (rango normal 5-9%)" if usdt else "USDT dominance: dato no disponible, NO uses este dato en el analisis"
+    # Construir prompt IA con todos los datos
+    fg_txt    = f"Fear&Greed: {fg['valor']}/100 ({fg['clasificacion']})" if fg else "Fear&Greed: no disponible"
+    dom_txt   = f"BTC dominance: {dom['btc_dom']}%, ETH: {dom['eth_dom']}%" if dom else "Dominancia: no disponible"
+    usdt_txt  = f"USDT dominance: {usdt['usdt_dom']}% (rango normal 5-9%)" if usdt else "USDT dominance: dato no disponible, NO lo uses en el analisis"
     niveles_txt = " | ".join([f"{n['tipo']} {n['nivel']:,} ({n['dist_pct']:+.1f}%)" for n in niveles[:5]])
 
+    funding_txt = ""
+    oi_txt_ai   = ""
+    ls_txt_ai   = ""
+    liq_txt_ai  = ""
+    if "funding" in deriv:
+        funding_txt = f"Funding rate: {deriv['funding']['valor']:+.4f}% ({deriv['funding']['señal']})"
+    if "open_interest" in deriv:
+        oi = deriv["open_interest"]
+        oi_txt_ai = f"Open Interest: {oi.get('usd_b','?')}B USD, cambio ultima hora: {oi.get('cambio_pct','?')}% ({oi.get('señal','')})"
+    if "long_short" in deriv:
+        ls = deriv["long_short"]
+        ls_txt_ai = f"Long/Short ratio: {ls['ratio']} ({ls['long_pct']}% longs) -> {ls['señal']}"
+    if "liquidaciones" in deriv:
+        liq = deriv["liquidaciones"]
+        liq_txt_ai = f"Liquidaciones recientes: longs liquidados {liq['longs_m']}M USD, shorts {liq['shorts_m']}M USD"
+
     prompt = (f"Analisis profundo Bitcoin:\n"
-              f"Precio: {btc['price']:,.0f} | RSI: {btc['rsi']} | MACD cruce: {btc['macd_cross_up']}\n"
+              f"Precio: {btc['price']:,.0f} | RSI: {btc['rsi']} | MACD: {btc['macd_cross_up']}\n"
               f"Hoy: {btc['d1']}% | Semana: {btc['d5']}% | Mes: {btc['d20']}%\n"
-              f"EMA20: {'sobre' if btc['sobre_ema20'] else 'bajo'} ({btc['ema20']:,.0f})\n"
-              f"S/R tecnicos: R1={btc['r1']:,.0f} S1={btc['s1']:,.0f} Pivot={btc['pivot']:,.0f}\n"
-              f"Niveles psicologicos proximos: {niveles_txt}\n"
-              f"{fg_txt}\n{dom_txt}\n{usdt_txt}\n\n"
-              "1. Sesgo actual: alcista o bajista y por que\n"
-              "2. Que dice la USDT dominance: hay dinero listo para entrar en crypto?\n"
-              "3. Que dice la dominancia BTC: altseason cercana o BTC lidera?\n"
-              "4. Niveles clave a vigilar esta semana\n"
-              "5. Setup concreto: entrada, stop, objetivo con precios exactos")
+              f"EMA20: {'sobre' if btc['sobre_ema20'] else 'bajo'} ({btc['ema20']:,.0f}) | EMA50: {btc['ema50']:,.0f}\n"
+              f"S/R: R1={btc['r1']:,.0f} S1={btc['s1']:,.0f} Pivot={btc['pivot']:,.0f}\n"
+              f"Niveles psicologicos: {niveles_txt}\n"
+              f"{fg_txt}\n{dom_txt}\n{usdt_txt}\n"
+              f"{funding_txt}\n{oi_txt_ai}\n{ls_txt_ai}\n{liq_txt_ai}\n\n"
+              "1. Sesgo actual alcista o bajista y por que (usa todos los datos)\n"
+              "2. Que dicen el funding rate y open interest sobre la salud del mercado\n"
+              "3. Que dice el long/short ratio: hay riesgo de squeeze?\n"
+              "4. USDT dominance y dominancia BTC: hay dinero listo para entrar?\n"
+              "5. Setup concreto: entrada, stop y objetivo con precios exactos")
 
     texto = ask_ai(prompt, max_chars=3500)
     safe_send(msg.chat.id, snap, message_id=m.message_id)
