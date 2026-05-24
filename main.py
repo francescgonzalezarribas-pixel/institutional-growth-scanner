@@ -203,8 +203,24 @@ def fetch_quote(ticker, period="3mo"):
                              macd_l.iloc[-2] <= macd_s.iloc[-2])
             avg_vol = vol.tail(20).mean() if len(vol) >= 20 else vol.mean()
             vol_rel = vol.iloc[-1] / avg_vol if avg_vol > 0 else 1.0
-            ema20 = c.ewm(span=20, adjust=False).mean().iloc[-1]
-            sobre_ema20 = price > ema20
+            ema20_s = c.ewm(span=20, adjust=False).mean()
+            ema50_s = c.ewm(span=50, adjust=False).mean()
+            ema20_v = ema20_s.iloc[-1]
+            ema50_v = ema50_s.iloc[-1]
+            sobre_ema20 = price > ema20_v
+            sobre_ema50 = price > ema50_v
+            # EMA20 sobre EMA50 = tendencia alcista
+            tendencia_alcista = ema20_v > ema50_v
+            # EMA20 con pendiente positiva (subiendo)
+            ema20_subiendo = ema20_s.iloc[-1] > ema20_s.iloc[-3] if len(ema20_s) >= 3 else False
+            # Breakout: distancia al maximo de 20 dias
+            max20 = h.tail(20).max()
+            dist_breakout = round((max20 - price) / max20 * 100, 2) if max20 > 0 else 99
+            cerca_breakout = dist_breakout <= 1.5
+            # Fuerza relativa: rendimiento mensual superior al mercado
+            fuerza_relativa = d20 > 2.0
+            hi52 = round(h.tail(252).max(), 2) if len(h) >= 252 else round(h.max(), 2)
+            lo52 = round(lo.tail(252).min(), 2) if len(lo) >= 252 else round(lo.min(), 2)
             return {
                 "ticker": ticker,
                 "nombre": nombre(ticker),
@@ -213,13 +229,20 @@ def fetch_quote(ticker, period="3mo"):
                 "pivot": round(pivot, 2),
                 "r1": round(r1, 2), "r2": round(r2, 2),
                 "s1": round(s1, 2), "s2": round(s2, 2),
-                "hi52": round(h.tail(252).max(), 2) if len(h) >= 252 else round(h.max(), 2),
-                "lo52": round(lo.tail(252).min(), 2) if len(lo) >= 252 else round(lo.min(), 2),
+                "hi52": hi52, "lo52": lo52,
                 "vol_rel": round(vol_rel, 2),
                 "rsi": round(rsi, 1),
                 "macd_cross_up": macd_cross_up,
                 "sobre_ema20": sobre_ema20,
-                "ema20": round(ema20, 2),
+                "sobre_ema50": sobre_ema50,
+                "tendencia_alcista": tendencia_alcista,
+                "ema20_subiendo": ema20_subiendo,
+                "ema20": round(ema20_v, 2),
+                "ema50": round(ema50_v, 2),
+                "cerca_breakout": cerca_breakout,
+                "dist_breakout": dist_breakout,
+                "fuerza_relativa": fuerza_relativa,
+                "max20": round(max20, 2),
             }
         except Exception as e:
             log.warning(f"fetch_quote {ticker} period={p}: {e}")
@@ -268,18 +291,23 @@ def get_btc_dominance():
 
 
 def get_usdt_dominance():
-    """USDT dominance via yfinance — ticker USDT.D no disponible, usamos proxy."""
+    """USDT dominance real: mcap USDT / mcap total crypto. Rango normal 5-9%."""
     try:
-        # Aproximacion: ratio USDT mcap vs total crypto mcap via CoinGecko
-        r = requests.get(
-            "https://api.coingecko.com/api/v3/coins/markets"
-            "?vs_currency=usd&ids=tether&order=market_cap_desc&per_page=1&page=1",
+        r = requests.get("https://api.coingecko.com/api/v3/global", timeout=10)
+        data = r.json()["data"]
+        total_mcap = data["total_market_cap"]["usd"]
+        # USDT mcap separado
+        r2 = requests.get(
+            "https://api.coingecko.com/api/v3/coins/tether"
+            "?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false",
             timeout=10
         )
-        usdt_mcap = r.json()[0]["market_cap"]
-        r2 = requests.get("https://api.coingecko.com/api/v3/global", timeout=10)
-        total_mcap = r2.json()["data"]["total_market_cap"]["usd"]
+        usdt_mcap = r2.json()["market_data"]["market_cap"]["usd"]
         usdt_dom = round(usdt_mcap / total_mcap * 100, 2)
+        # Validacion: si sale fuera de rango 3-15% es error
+        if usdt_dom < 3 or usdt_dom > 15:
+            log.warning(f"USDT dom fuera de rango: {usdt_dom}%, descartado")
+            return None
         return {"usdt_dom": usdt_dom, "usdt_mcap_b": round(usdt_mcap/1e9, 1)}
     except Exception as e:
         log.warning(f"USDT dominance: {e}")
@@ -360,27 +388,88 @@ def get_top_signals(stocks, n=4):
         d = fetch_quote(t, "3mo")
         if not d:
             continue
+
+        # Filtros obligatorios — descarte directo
         if d["rsi"] > 65:
-            continue
+            continue  # sobrecomprado
         if d["vol_rel"] < 0.8:
-            continue
+            continue  # volumen demasiado bajo
+
         score = 0
-        if d["rsi"] < 30:         score += 5
-        elif d["rsi"] < 40:       score += 3
-        elif d["rsi"] < 50:       score += 1
-        if d["macd_cross_up"]:    score += 4
-        if d["vol_rel"] >= 2.0:   score += 4
-        elif d["vol_rel"] >= 1.5: score += 2
-        elif d["vol_rel"] >= 1.0: score += 1
-        if d["d1"] >= 1.5:        score += 2
-        if d["d5"] >= 3.0:        score += 2
+        motivos = []
+
+        # 1. RSI SALUDABLE (max 5pts)
+        # Entre 35-55 es la zona ideal de entrada: no sobrevendido extremo pero con recorrido
+        if d["rsi"] < 30:
+            score += 4
+            motivos.append(f"RSI {d['rsi']} sobreventa")
+        elif d["rsi"] < 40:
+            score += 5  # zona ideal de entrada
+            motivos.append(f"RSI {d['rsi']} zona ideal entrada")
+        elif d["rsi"] < 55:
+            score += 3
+            motivos.append(f"RSI {d['rsi']} saludable")
+        elif d["rsi"] < 65:
+            score += 1
+            motivos.append(f"RSI {d['rsi']} neutral")
+
+        # 2. MACD cruce alcista (4pts)
+        if d["macd_cross_up"]:
+            score += 4
+            motivos.append("MACD cruce alcista")
+
+        # 3. VOLUMEN (max 4pts)
+        if d["vol_rel"] >= 2.0:
+            score += 4
+            motivos.append(f"Volumen {d['vol_rel']}x fuerte")
+        elif d["vol_rel"] >= 1.5:
+            score += 3
+            motivos.append(f"Volumen {d['vol_rel']}x elevado")
+        elif d["vol_rel"] >= 1.0:
+            score += 1
+            motivos.append(f"Volumen {d['vol_rel']}x normal")
+
+        # 4. TENDENCIA EMA (max 4pts)
+        if d["tendencia_alcista"] and d["ema20_subiendo"]:
+            score += 4
+            motivos.append("EMA20 > EMA50 y subiendo")
+        elif d["tendencia_alcista"]:
+            score += 2
+            motivos.append("EMA20 > EMA50")
+        elif d["sobre_ema20"]:
+            score += 1
+            motivos.append("Precio sobre EMA20")
+
+        # 5. CERCANIA BREAKOUT (max 3pts)
+        if d["cerca_breakout"]:
+            score += 3
+            motivos.append(f"Breakout inminente a {d['max20']} ({d['dist_breakout']}%)")
+        elif d["dist_breakout"] <= 3.0:
+            score += 1
+            motivos.append(f"Cerca de maximo 20d ({d['dist_breakout']}%)")
+
+        # 6. FUERZA RELATIVA (2pts)
+        if d["fuerza_relativa"]:
+            score += 2
+            motivos.append(f"Fuerza relativa: +{d['d20']}% mensual")
+
+        # 7. Momentum adicional
+        if d["d1"] >= 1.5:
+            score += 1
+        if d["d5"] >= 3.0:
+            score += 1
+
+        # 8. Cerca de soporte
         for nivel in [d["s1"], d["s2"]]:
             if nivel > 0 and abs(d["price"] - nivel) / nivel * 100 <= 1.5:
-                score += 3
-        if d["hi52"] > 0 and (d["hi52"] - d["price"]) / d["hi52"] * 100 <= 3.0:
-            score += 2
-        if score < 6:
+                score += 2
+                motivos.append(f"Cerca soporte {nivel}")
+                break
+
+        # Umbral minimo: 7/22 para asegurar calidad
+        if score < 7:
             continue
+
         entry = d["price"]
         stop = round(d["s1"] * 0.985, 2)
         risk = entry - stop
@@ -390,10 +479,13 @@ def get_top_signals(stocks, n=4):
         tp1 = round(entry + risk * 1.5, 2)
         tp2 = round(entry + risk * 3.0, 2)
         rr = round((tp1 - entry) / risk, 2) if risk > 0 else 0
+
         candidatos.append({
-            **d, "score": score, "direction": "COMPRAR",
+            **d, "score": score, "motivos": motivos,
+            "direction": "COMPRAR",
             "entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "rr": rr,
         })
+
     candidatos.sort(key=lambda x: x["score"], reverse=True)
     return candidatos[:n]
 
@@ -577,22 +669,42 @@ def safe_send(chat_id, text, message_id=None):
 def send_signal(chat_id, s):
     pct_tp1 = (s['tp1']/s['entry']-1)*100
     pct_tp2 = (s['tp2']/s['entry']-1)*100
-    pct_sl = (s['stop']/s['entry']-1)*100
-    rsi_txt = f"{s['rsi']} (sobreventa - buena entrada)" if s['rsi'] < 40 else f"{s['rsi']}"
+    pct_sl  = (s['stop']/s['entry']-1)*100
+    rsi_txt = (f"{s['rsi']} (zona ideal)" if 35 <= s['rsi'] <= 50
+               else f"{s['rsi']} (sobreventa)" if s['rsi'] < 35
+               else f"{s['rsi']}")
+    tendencia  = "ALCISTA" if s.get("tendencia_alcista") else "LATERAL"
+    ema_txt    = f"EMA20:{s.get('ema20','-')} EMA50:{s.get('ema50','-')}"
+    breakout   = (f"SI a {s.get('max20',0)} ({s.get('dist_breakout',99)}%)"
+                  if s.get("cerca_breakout") else "NO")
+    fuerza_txt = f"SI (+{s['d20']}% mes)" if s.get("fuerza_relativa") else "NO"
+    motivos    = "\n  ".join(s.get("motivos", []))
     text = (f"SENAL: {s['nombre']} ({s['ticker']})\n"
-            f"Accion: {s['direction']}\n"
+            f"Accion:   {s['direction']}\n"
             f"Entrada:  {s['entry']}\n"
             f"TP1:      {s['tp1']} ({pct_tp1:+.1f}%)\n"
             f"TP2:      {s['tp2']} ({pct_tp2:+.1f}%)\n"
             f"Stop:     {s['stop']} ({pct_sl:+.1f}%)\n"
             f"R/R:      {s['rr']}x\n"
-            f"RSI:      {rsi_txt}\n"
-            f"Volumen:  {s['vol_rel']}x media\n"
-            f"Score:    {s['score']}/17")
+            f"Score:    {s['score']}/22\n\n"
+            f"CRITERIOS:\n"
+            f"RSI:           {rsi_txt}\n"
+            f"Volumen:       {s['vol_rel']}x media\n"
+            f"Tendencia EMA: {tendencia} ({ema_txt})\n"
+            f"Breakout:      {breakout}\n"
+            f"Fuerza relat.: {fuerza_txt}\n"
+            f"MACD cruce:    {'SI' if s['macd_cross_up'] else 'NO'}\n\n"
+            f"Por que entra:\n  {motivos}")
+    # Foto con caption corto + texto completo aparte
     chart = generate_chart(s['ticker'], s['entry'], s['tp1'], s['tp2'], s['stop'])
     if chart:
         try:
-            bot.send_photo(chat_id, chart, caption=text)
+            caption = (f"{s['nombre']} | {s['direction']}\n"
+                       f"Entrada:{s['entry']} TP1:{s['tp1']} TP2:{s['tp2']} Stop:{s['stop']}\n"
+                       f"R/R:{s['rr']}x | RSI:{s['rsi']} | Score:{s['score']}/22")
+            bot.send_photo(chat_id, chart, caption=caption)
+            time.sleep(0.5)
+            safe_send(chat_id, text)
             return
         except Exception as e:
             log.warning(f"Photo error: {e}")
