@@ -425,6 +425,8 @@ def get_binance_derivatives(symbol="BTCUSDT"):
             timeout=6
         )
         orders = r2.json()
+        if not isinstance(orders, list):
+            raise ValueError("respuesta no es lista")
         liq_long = sum(float(o["origQty"]) * float(o["price"])
                       for o in orders if o.get("side") == "SELL")
         liq_short = sum(float(o["origQty"]) * float(o["price"])
