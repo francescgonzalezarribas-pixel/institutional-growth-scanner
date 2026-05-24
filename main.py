@@ -550,14 +550,14 @@ def analisis_btc_profundo():
 
 def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
                    sobre_ema20=False, sobre_ema50=False, tendencia_alcista=False,
-                   d20=0, d5=0, funding=None, vol_rel=1.0):
+                   d20=0, d5=0, funding=None, vol_rel=1.0,
+                   dist_desde_maximo=None, recuperacion_desde_minimo=None,
+                   d_anual=None):
     """
-    Detecta la fase del ciclo de mercado basándose en indicadores.
-    Devuelve: fase (0-12), nombre_fase, descripcion, color, emocion
-    El ciclo tiene 13 fases numeradas de 0 a 12:
-    0=Depresion, 1=Incredulidad, 2=Esperanza, 3=Optimismo, 4=Creencia,
-    5=Emocion, 6=Euforia/Cuspide, 7=Complacencia, 8=Ansiedad,
-    9=Negacion, 10=Panico, 11=Capitulacion, 12=Ira
+    Detecta la fase del ciclo de mercado con perspectiva anual.
+    dist_desde_maximo: % caida desde el maximo de 52 semanas (negativo = bajada)
+    recuperacion_desde_minimo: % subida desde el minimo de 52 semanas
+    d_anual: rendimiento anual del activo
     """
     FASES = [
         (0,  "DEPRESION",     "El mercado no tiene fondo. Todo el mundo vendio.",        "#8B0000", "Mi dinero esta perdido. Soy un idiota."),
@@ -575,12 +575,44 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
         (12, "IRA",           "El suelo. Busqueda de culpables.",                        "#FF0000", "Quien vendio en corto? Por que el gobierno lo permite?"),
     ]
 
-    score = 0  # score alto = fase avanzada (bajista/euforia), score bajo = fase temprana
+    score = 0
+
+    # ── PERSPECTIVA ANUAL (mas peso que indicadores cortos) ──────────────────
+
+    # Distancia desde el maximo anual
+    # -5% = cerca del techo (complacencia/ansiedad)
+    # -20% = caida importante (negacion/panico)
+    # -40% = capitulacion/ira
+    # -60%+ = depresion
+    if dist_desde_maximo is not None:
+        if dist_desde_maximo > -5:       score += 4   # cerca del maximo = euforia/complacencia
+        elif dist_desde_maximo > -10:    score += 2   # leve correccion = ansiedad
+        elif dist_desde_maximo > -20:    score -= 1   # correccion moderada = negacion
+        elif dist_desde_maximo > -35:    score -= 3   # caida fuerte = panico
+        elif dist_desde_maximo > -50:    score -= 5   # crash = capitulacion/ira
+        else:                            score -= 7   # destruccion = depresion
+
+    # Recuperacion desde el minimo anual
+    # Si ha rebotado mucho desde minimos = saliendo del suelo (incredulidad/esperanza)
+    if recuperacion_desde_minimo is not None:
+        if recuperacion_desde_minimo > 50:   score += 3  # rebote fuerte = esperanza/optimismo
+        elif recuperacion_desde_minimo > 25: score += 2  # rebote moderado = incredulidad
+        elif recuperacion_desde_minimo > 10: score += 1  # rebote inicial = suelo probable
+
+    # Rendimiento anual
+    if d_anual is not None:
+        if d_anual > 50:    score += 3   # año excelente = euforia
+        elif d_anual > 20:  score += 2   # año bueno = emocion/creencia
+        elif d_anual > 5:   score += 1   # año positivo = optimismo
+        elif d_anual < -30: score -= 3   # año catastrofico = capitulacion/ira
+        elif d_anual < -15: score -= 2   # año malo = panico
+        elif d_anual < -5:  score -= 1   # año negativo = negacion
+
+    # ── INDICADORES TECNICOS (confirmacion) ──────────────────────────────────
 
     # RSI diario
-    if rsi > 75:   score += 3
-    elif rsi > 65: score += 2
-    elif rsi > 55: score += 1
+    if rsi > 75:   score += 2
+    elif rsi > 65: score += 1
     elif rsi < 30: score -= 2
     elif rsi < 40: score -= 1
 
@@ -594,12 +626,11 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
     # EMAs
     if tendencia_alcista and sobre_ema20:  score += 2
     elif sobre_ema20:                      score += 1
-    elif not sobre_ema50:                  score -= 2
+    elif not sobre_ema50:                  score -= 1
 
     # Momentum mensual
-    if d20 > 15:   score += 3
-    elif d20 > 8:  score += 2
-    elif d20 > 3:  score += 1
+    if d20 > 15:    score += 2
+    elif d20 > 8:   score += 1
     elif d20 < -10: score -= 2
     elif d20 < -5:  score -= 1
 
@@ -608,9 +639,8 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
         if fg > 80:   score += 3
         elif fg > 65: score += 2
         elif fg > 50: score += 1
-        elif fg < 20: score -= 3
-        elif fg < 35: score -= 2
-        elif fg < 45: score -= 1
+        elif fg < 20: score -= 2
+        elif fg < 35: score -= 1
 
     # VIX (bolsa)
     if vix:
@@ -626,25 +656,20 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
         elif funding > 0.02:  score += 1
         elif funding < -0.01: score -= 2
 
-    # Volumen
-    if vol_rel > 2.0:  score += 1
-    elif vol_rel < 0.5: score -= 1
-
-    # Mapear score a fase (rango aproximado -10 a +15)
-    score = max(-10, min(15, score))
-    # Distribuir en 13 fases
+    # Mapear score a fase
+    score = max(-12, min(15, score))
     if score >= 12:    fase = 6   # Euforia
     elif score >= 9:   fase = 5   # Emocion
-    elif score >= 7:   fase = 7   # Complacencia
-    elif score >= 5:   fase = 4   # Creencia
+    elif score >= 7:   fase = 4   # Creencia
+    elif score >= 5:   fase = 7   # Complacencia
     elif score >= 3:   fase = 3   # Optimismo
     elif score >= 1:   fase = 2   # Esperanza
-    elif score == 0:   fase = 8   # Ansiedad
-    elif score >= -2:  fase = 9   # Negacion
-    elif score >= -4:  fase = 10  # Panico
-    elif score >= -6:  fase = 11  # Capitulacion
-    elif score >= -8:  fase = 12  # Ira
-    elif score >= -9:  fase = 1   # Incredulidad
+    elif score == 0:   fase = 1   # Incredulidad
+    elif score >= -2:  fase = 8   # Ansiedad
+    elif score >= -4:  fase = 9   # Negacion
+    elif score >= -6:  fase = 10  # Panico
+    elif score >= -8:  fase = 11  # Capitulacion
+    elif score >= -10: fase = 12  # Ira
     else:              fase = 0   # Depresion
 
     return {
@@ -1276,7 +1301,6 @@ def semaforo(estado):
     return "[=]"
 
 
-# FIN PARTE 1 - continua en main_parte2.py
 def main_kb():
     kb = InlineKeyboardMarkup()
     kb.row(InlineKeyboardButton("Noticias", callback_data="noticias"),
@@ -2019,12 +2043,22 @@ def cmd_ciclo(msg):
     mercados_data = []
 
     # BTC
-    btc = fetch_quote("BTC-USD", "3mo")
+    btc = fetch_quote("BTC-USD", "1y")
     fg  = get_fear_greed()
     deriv = get_binance_derivatives("BTCUSDT")
     funding = deriv.get("funding", {}).get("valor") if deriv else None
     if btc:
         fg_val = fg["valor"] if fg else None
+        dist_max_btc = round((btc["price"] - btc["hi52"]) / btc["hi52"] * 100, 1)
+        recup_min_btc = round((btc["price"] - btc["lo52"]) / btc["lo52"] * 100, 1)
+        d_anual_btc = btc.get("d20", 0)  # usamos d20 como proxy si no tenemos anual
+        try:
+            hist_anual = yf.Ticker("BTC-USD").history(period="1y")
+            if not hist_anual.empty and len(hist_anual) > 50:
+                precio_hace_1y = hist_anual["Close"].iloc[0]
+                d_anual_btc = round((btc["price"] - precio_hace_1y) / precio_hace_1y * 100, 1)
+        except:
+            pass
         ciclo_btc = detectar_ciclo(
             "Bitcoin", btc["rsi"],
             fetch_weekly_rsi("BTC-USD"),
@@ -2033,7 +2067,10 @@ def cmd_ciclo(msg):
             sobre_ema50=btc["sobre_ema50"],
             tendencia_alcista=btc["tendencia_alcista"],
             d20=btc["d20"], d5=btc["d5"],
-            vol_rel=btc["vol_rel"]
+            vol_rel=btc["vol_rel"],
+            dist_desde_maximo=dist_max_btc,
+            recuperacion_desde_minimo=recup_min_btc,
+            d_anual=d_anual_btc,
         )
         mercados_data.append({
             "nombre": "BTC",
@@ -2045,10 +2082,20 @@ def cmd_ciclo(msg):
         })
 
     # SP500
-    spx = fetch_quote("^GSPC", "3mo")
+    spx = fetch_quote("^GSPC", "1y")
     vix = fetch_quote("^VIX", "1mo")
     vix_val = vix["price"] if vix else None
     if spx:
+        dist_max_spx = round((spx["price"] - spx["hi52"]) / spx["hi52"] * 100, 1)
+        recup_min_spx = round((spx["price"] - spx["lo52"]) / spx["lo52"] * 100, 1)
+        d_anual_spx = spx.get("d20", 0)
+        try:
+            hist_anual = yf.Ticker("^GSPC").history(period="1y")
+            if not hist_anual.empty and len(hist_anual) > 50:
+                precio_hace_1y = hist_anual["Close"].iloc[0]
+                d_anual_spx = round((spx["price"] - precio_hace_1y) / precio_hace_1y * 100, 1)
+        except:
+            pass
         ciclo_spx = detectar_ciclo(
             "SP500", spx["rsi"],
             fetch_weekly_rsi("^GSPC"),
@@ -2057,7 +2104,10 @@ def cmd_ciclo(msg):
             sobre_ema50=spx["sobre_ema50"],
             tendencia_alcista=spx["tendencia_alcista"],
             d20=spx["d20"], d5=spx["d5"],
-            vol_rel=spx["vol_rel"]
+            vol_rel=spx["vol_rel"],
+            dist_desde_maximo=dist_max_spx,
+            recuperacion_desde_minimo=recup_min_spx,
+            d_anual=d_anual_spx,
         )
         mercados_data.append({
             "nombre": "SP500",
@@ -2068,9 +2118,19 @@ def cmd_ciclo(msg):
             "color": ciclo_spx["color"],
         })
 
-    # DAX (Europa)
-    dax = fetch_quote("^GDAXI", "3mo")
+    # DAX
+    dax = fetch_quote("^GDAXI", "1y")
     if dax:
+        dist_max_dax = round((dax["price"] - dax["hi52"]) / dax["hi52"] * 100, 1)
+        recup_min_dax = round((dax["price"] - dax["lo52"]) / dax["lo52"] * 100, 1)
+        d_anual_dax = dax.get("d20", 0)
+        try:
+            hist_anual = yf.Ticker("^GDAXI").history(period="1y")
+            if not hist_anual.empty and len(hist_anual) > 50:
+                precio_hace_1y = hist_anual["Close"].iloc[0]
+                d_anual_dax = round((dax["price"] - precio_hace_1y) / precio_hace_1y * 100, 1)
+        except:
+            pass
         ciclo_dax = detectar_ciclo(
             "DAX", dax["rsi"],
             fetch_weekly_rsi("^GDAXI"),
@@ -2079,7 +2139,10 @@ def cmd_ciclo(msg):
             sobre_ema50=dax["sobre_ema50"],
             tendencia_alcista=dax["tendencia_alcista"],
             d20=dax["d20"], d5=dax["d5"],
-            vol_rel=dax["vol_rel"]
+            vol_rel=dax["vol_rel"],
+            dist_desde_maximo=dist_max_dax,
+            recuperacion_desde_minimo=recup_min_dax,
+            d_anual=d_anual_dax,
         )
         mercados_data.append({
             "nombre": "DAX",
