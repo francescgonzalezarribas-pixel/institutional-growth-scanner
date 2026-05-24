@@ -548,6 +548,248 @@ def analisis_btc_profundo():
     return resultado
 
 
+def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
+                   sobre_ema20=False, sobre_ema50=False, tendencia_alcista=False,
+                   d20=0, d5=0, funding=None, vol_rel=1.0):
+    """
+    Detecta la fase del ciclo de mercado basándose en indicadores.
+    Devuelve: fase (0-12), nombre_fase, descripcion, color, emocion
+    El ciclo tiene 13 fases numeradas de 0 a 12:
+    0=Depresion, 1=Incredulidad, 2=Esperanza, 3=Optimismo, 4=Creencia,
+    5=Emocion, 6=Euforia/Cuspide, 7=Complacencia, 8=Ansiedad,
+    9=Negacion, 10=Panico, 11=Capitulacion, 12=Ira
+    """
+    FASES = [
+        (0,  "DEPRESION",     "El mercado no tiene fondo. Todo el mundo vendio.",        "#8B0000", "Mi dinero esta perdido. Soy un idiota."),
+        (1,  "INCREDULIDAD",  "Primer rebote pero nadie lo cree.",                       "#B22222", "Este rally fracasara como los demas."),
+        (2,  "ESPERANZA",     "Se empieza a ver luz. Rebotes sostenidos.",               "#CD853F", "Una recuperacion es posible."),
+        (3,  "OPTIMISMO",     "El mercado sube. La gente empieza a entrar.",             "#DAA520", "Este repunte es real."),
+        (4,  "CREENCIA",      "Tendencia alcista confirmada. Todos invierten.",          "#9ACD32", "Es hora de invertir a fondo."),
+        (5,  "EMOCION",       "Ganancias rapidas. FOMO evidente.",                       "#32CD32", "Comprare mas con margen!"),
+        (6,  "EUFORIA",       "MAXIMO. Punto de mayor riesgo.",                          "#00FF00", "Soy un genio! Todos vamos a ser ricos!"),
+        (7,  "COMPLACENCIA",  "Primer bajada ignorada. Solo es una correccion.",         "#7CFC00", "Solo necesitamos calmarnos para el proximo repunte."),
+        (8,  "ANSIEDAD",      "Las caidas se aceleran. Margin calls.",                   "#FFD700", "Por que recibo llamadas de margen?"),
+        (9,  "NEGACION",      "El mercado cae pero la gente aguanta.",                   "#FFA500", "Mis inversiones estan en buenas empresas. Volvera."),
+        (10, "PANICO",        "Venta masiva. Todo el mundo sale.",                       "#FF6347", "Todos estan vendiendo. Necesito salir!"),
+        (11, "CAPITULACION",  "Rendicion total. Ventas al precio que sea.",              "#FF4500", "Estoy perdiendo todo. No puedo mas."),
+        (12, "IRA",           "El suelo. Busqueda de culpables.",                        "#FF0000", "Quien vendio en corto? Por que el gobierno lo permite?"),
+    ]
+
+    score = 0  # score alto = fase avanzada (bajista/euforia), score bajo = fase temprana
+
+    # RSI diario
+    if rsi > 75:   score += 3
+    elif rsi > 65: score += 2
+    elif rsi > 55: score += 1
+    elif rsi < 30: score -= 2
+    elif rsi < 40: score -= 1
+
+    # RSI semanal
+    if rsi_semanal:
+        if rsi_semanal > 70:   score += 2
+        elif rsi_semanal > 60: score += 1
+        elif rsi_semanal < 35: score -= 2
+        elif rsi_semanal < 45: score -= 1
+
+    # EMAs
+    if tendencia_alcista and sobre_ema20:  score += 2
+    elif sobre_ema20:                      score += 1
+    elif not sobre_ema50:                  score -= 2
+
+    # Momentum mensual
+    if d20 > 15:   score += 3
+    elif d20 > 8:  score += 2
+    elif d20 > 3:  score += 1
+    elif d20 < -10: score -= 2
+    elif d20 < -5:  score -= 1
+
+    # Fear & Greed (crypto)
+    if fg:
+        if fg > 80:   score += 3
+        elif fg > 65: score += 2
+        elif fg > 50: score += 1
+        elif fg < 20: score -= 3
+        elif fg < 35: score -= 2
+        elif fg < 45: score -= 1
+
+    # VIX (bolsa)
+    if vix:
+        if vix > 35:   score -= 3
+        elif vix > 25: score -= 2
+        elif vix > 20: score -= 1
+        elif vix < 13: score += 2
+        elif vix < 16: score += 1
+
+    # Funding rate (crypto)
+    if funding is not None:
+        if funding > 0.05:    score += 3
+        elif funding > 0.02:  score += 1
+        elif funding < -0.01: score -= 2
+
+    # Volumen
+    if vol_rel > 2.0:  score += 1
+    elif vol_rel < 0.5: score -= 1
+
+    # Mapear score a fase (rango aproximado -10 a +15)
+    score = max(-10, min(15, score))
+    # Distribuir en 13 fases
+    if score >= 12:    fase = 6   # Euforia
+    elif score >= 9:   fase = 5   # Emocion
+    elif score >= 7:   fase = 7   # Complacencia
+    elif score >= 5:   fase = 4   # Creencia
+    elif score >= 3:   fase = 3   # Optimismo
+    elif score >= 1:   fase = 2   # Esperanza
+    elif score == 0:   fase = 8   # Ansiedad
+    elif score >= -2:  fase = 9   # Negacion
+    elif score >= -4:  fase = 10  # Panico
+    elif score >= -6:  fase = 11  # Capitulacion
+    elif score >= -8:  fase = 12  # Ira
+    elif score >= -9:  fase = 1   # Incredulidad
+    else:              fase = 0   # Depresion
+
+    return {
+        "fase_num": fase,
+        "nombre": FASES[fase][1],
+        "descripcion": FASES[fase][2],
+        "color": FASES[fase][3],
+        "emocion": FASES[fase][4],
+        "score": score,
+    }
+
+
+def generate_cycle_chart(mercados):
+    """
+    Genera imagen del ciclo de mercado con los puntos actuales marcados.
+    mercados: lista de dicts con {nombre, fase_num, color_punto}
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import numpy as np
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    # Generar la curva del ciclo de mercado
+    t = np.linspace(0, 4 * np.pi, 1000)
+    # Curva personalizada: subida suave, bajada brusca, recuperacion lenta
+    y = (np.sin(t - np.pi/2) +
+         0.3 * np.sin(2*t) +
+         0.15 * np.sin(3*t) +
+         0.05 * np.sin(5*t))
+    # Normalizar
+    y = (y - y.min()) / (y.max() - y.min())
+
+    # Colorear la curva por segmentos
+    colores_curva = [
+        '#8B0000','#B22222','#CD853F','#DAA520','#9ACD32',
+        '#32CD32','#00FF00','#7CFC00','#FFD700','#FFA500',
+        '#FF6347','#FF4500','#FF0000'
+    ]
+    segmentos = len(colores_curva)
+    paso = len(t) // segmentos
+    for i in range(segmentos):
+        inicio = i * paso
+        fin = min((i+1) * paso + 1, len(t))
+        ax.plot(t[inicio:fin], y[inicio:fin],
+                color=colores_curva[i], linewidth=4, alpha=0.9)
+
+    # Posiciones aproximadas de cada fase en la curva
+    FASE_POSICION = {
+        0: 0.08,   # Depresion
+        1: 0.12,   # Incredulidad
+        2: 0.18,   # Esperanza
+        3: 0.25,   # Optimismo
+        4: 0.32,   # Creencia
+        5: 0.40,   # Emocion
+        6: 0.50,   # Euforia (cuspide)
+        7: 0.58,   # Complacencia
+        8: 0.65,   # Ansiedad
+        9: 0.72,   # Negacion
+        10: 0.78,  # Panico
+        11: 0.83,  # Capitulacion
+        12: 0.90,  # Ira
+    }
+
+    FASE_NOMBRES = [
+        "DEPRESION","INCREDULIDAD","ESPERANZA","OPTIMISMO","CREENCIA",
+        "EMOCION","EUFORIA","COMPLACENCIA","ANSIEDAD","NEGACION",
+        "PANICO","CAPITULACION","IRA"
+    ]
+
+    # Etiquetas de fases en la curva
+    for fase_n, pos_pct in FASE_POSICION.items():
+        idx = int(pos_pct * len(t))
+        idx = min(idx, len(t)-1)
+        offset_y = 0.06 if fase_n in [6,7] else (-0.08 if fase_n in [11,12,0] else 0.05)
+        ax.annotate(FASE_NOMBRES[fase_n],
+                   xy=(t[idx], y[idx]),
+                   xytext=(t[idx], y[idx] + offset_y),
+                   fontsize=7, color='#888888',
+                   ha='center', va='center',
+                   fontweight='bold')
+
+    # Marcar los mercados actuales
+    colores_mercado = ['#00FFFF', '#FFD700', '#FF69B4', '#7FFF00']
+    for i, m in enumerate(mercados):
+        fase_n = m["fase_num"]
+        pos_pct = FASE_POSICION[fase_n]
+        idx = int(pos_pct * len(t))
+        idx = min(idx, len(t)-1)
+        color_m = colores_mercado[i % len(colores_mercado)]
+
+        # Punto grande
+        ax.plot(t[idx], y[idx], 'o',
+                color=color_m, markersize=18,
+                markeredgecolor='white', markeredgewidth=2,
+                zorder=10)
+
+        # Etiqueta del mercado
+        offset = 0.12 + i * 0.05
+        ax.annotate(f"{m['nombre']}\n{m['fase']}",
+                   xy=(t[idx], y[idx]),
+                   xytext=(t[idx], y[idx] + offset),
+                   fontsize=9, color=color_m,
+                   ha='center', va='bottom',
+                   fontweight='bold',
+                   arrowprops=dict(arrowstyle='->', color=color_m, lw=1.5),
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#1a1a2e',
+                            edgecolor=color_m, alpha=0.9))
+
+    # Etiquetas de zona
+    ax.text(t[int(0.35*len(t))], 0.15, 'EXPANSION', fontsize=11,
+            color='#32CD32', alpha=0.5, ha='center', fontweight='bold')
+    ax.text(t[int(0.75*len(t))], 0.15, 'CONTRACCION', fontsize=11,
+            color='#FF6347', alpha=0.5, ha='center', fontweight='bold')
+
+    ax.set_title('CICLO DE MERCADO - DONDE ESTAMOS AHORA',
+                fontsize=14, color='white', fontweight='bold', pad=15)
+    ax.set_xlabel('TIEMPO', color='#888888', fontsize=10)
+    ax.set_ylabel('PRECIO', color='#888888', fontsize=10)
+    ax.tick_params(colors='#888888')
+    ax.spines['bottom'].set_color('#333333')
+    ax.spines['left'].set_color('#333333')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    # Leyenda
+    legend_elements = [mpatches.Patch(facecolor=colores_mercado[i],
+                       label=m['nombre']) for i, m in enumerate(mercados)]
+    ax.legend(handles=legend_elements, loc='lower right',
+             facecolor='#1a1a2e', edgecolor='#333333',
+             labelcolor='white', fontsize=9)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120,
+                facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+
 def generate_chart(ticker, entry, tp1, tp2, stop):
     try:
         hist = yf.Ticker(ticker).history(period="1mo", interval="1d")
@@ -1056,6 +1298,8 @@ def main_kb():
            InlineKeyboardButton("IPOs", callback_data="ipos"))
     kb.row(InlineKeyboardButton("Backtest", callback_data="backtest"),
            InlineKeyboardButton("Alertas", callback_data="alertas"))
+    kb.row(InlineKeyboardButton("Ciclo Mercado", callback_data="ciclo"),
+           InlineKeyboardButton("Resumen Semana", callback_data="resumen_semana"))
     return kb
 
 
@@ -1766,6 +2010,129 @@ def cmd_resumen_semana(msg):
         message_id=m.message_id)
 
 
+@bot.message_handler(commands=["ciclo"])
+def cmd_ciclo(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Analizando ciclo de mercado... BTC, SP500 y Europa")
+
+    mercados_data = []
+
+    # BTC
+    btc = fetch_quote("BTC-USD", "3mo")
+    fg  = get_fear_greed()
+    deriv = get_binance_derivatives("BTCUSDT")
+    funding = deriv.get("funding", {}).get("valor") if deriv else None
+    if btc:
+        fg_val = fg["valor"] if fg else None
+        ciclo_btc = detectar_ciclo(
+            "Bitcoin", btc["rsi"],
+            fetch_weekly_rsi("BTC-USD"),
+            fg=fg_val, funding=funding,
+            sobre_ema20=btc["sobre_ema20"],
+            sobre_ema50=btc["sobre_ema50"],
+            tendencia_alcista=btc["tendencia_alcista"],
+            d20=btc["d20"], d5=btc["d5"],
+            vol_rel=btc["vol_rel"]
+        )
+        mercados_data.append({
+            "nombre": "BTC",
+            "fase": ciclo_btc["nombre"],
+            "fase_num": ciclo_btc["fase_num"],
+            "descripcion": ciclo_btc["descripcion"],
+            "emocion": ciclo_btc["emocion"],
+            "color": ciclo_btc["color"],
+        })
+
+    # SP500
+    spx = fetch_quote("^GSPC", "3mo")
+    vix = fetch_quote("^VIX", "1mo")
+    vix_val = vix["price"] if vix else None
+    if spx:
+        ciclo_spx = detectar_ciclo(
+            "SP500", spx["rsi"],
+            fetch_weekly_rsi("^GSPC"),
+            vix=vix_val,
+            sobre_ema20=spx["sobre_ema20"],
+            sobre_ema50=spx["sobre_ema50"],
+            tendencia_alcista=spx["tendencia_alcista"],
+            d20=spx["d20"], d5=spx["d5"],
+            vol_rel=spx["vol_rel"]
+        )
+        mercados_data.append({
+            "nombre": "SP500",
+            "fase": ciclo_spx["nombre"],
+            "fase_num": ciclo_spx["fase_num"],
+            "descripcion": ciclo_spx["descripcion"],
+            "emocion": ciclo_spx["emocion"],
+            "color": ciclo_spx["color"],
+        })
+
+    # DAX (Europa)
+    dax = fetch_quote("^GDAXI", "3mo")
+    if dax:
+        ciclo_dax = detectar_ciclo(
+            "DAX", dax["rsi"],
+            fetch_weekly_rsi("^GDAXI"),
+            vix=vix_val,
+            sobre_ema20=dax["sobre_ema20"],
+            sobre_ema50=dax["sobre_ema50"],
+            tendencia_alcista=dax["tendencia_alcista"],
+            d20=dax["d20"], d5=dax["d5"],
+            vol_rel=dax["vol_rel"]
+        )
+        mercados_data.append({
+            "nombre": "DAX",
+            "fase": ciclo_dax["nombre"],
+            "fase_num": ciclo_dax["fase_num"],
+            "descripcion": ciclo_dax["descripcion"],
+            "emocion": ciclo_dax["emocion"],
+            "color": ciclo_dax["color"],
+        })
+
+    if not mercados_data:
+        safe_send(msg.chat.id, "Error obteniendo datos.", message_id=m.message_id)
+        return
+
+    # Generar grafico
+    try:
+        chart = generate_cycle_chart(mercados_data)
+        # Texto resumen
+        lines = [f"CICLO DE MERCADO {datetime.now().strftime('%d/%m %H:%M')}\n"]
+        for md in mercados_data:
+            lines.append(f"{md['nombre']}: {md['fase']}")
+            lines.append(f"  {md['descripcion']}")
+            lines.append(f"  Emocion: {md['emocion']}")
+            lines.append("")
+        # Analisis IA
+        datos_ia = "\n".join([f"{md['nombre']}: fase {md['fase']} - {md['descripcion']}" for md in mercados_data])
+        if fg:
+            datos_ia += f"\nFear&Greed BTC: {fg['valor']}/100"
+        if vix_val:
+            datos_ia += f"\nVIX: {vix_val}"
+        prompt = (f"Ciclo de mercado actual:\n{datos_ia}\n\n"
+                  "1. En que fase real estamos en cada mercado y por que\n"
+                  "2. Que suele pasar a continuacion segun el ciclo\n"
+                  "3. Que deberia hacer un inversor en esta fase\n"
+                  "4. Cuanto tiempo suelen durar estas fases historicamente")
+        texto_ia = ask_ai(prompt)
+        caption = "\n".join(lines) + texto_ia
+        if len(caption) > 1020:
+            bot.send_photo(msg.chat.id, chart,
+                          caption="\n".join(lines[:8]))
+            bot.delete_message(msg.chat.id, m.message_id)
+            safe_send(msg.chat.id, "\n".join(lines) + "\n" + texto_ia)
+        else:
+            bot.delete_message(msg.chat.id, m.message_id)
+            bot.send_photo(msg.chat.id, chart, caption=caption)
+    except Exception as e:
+        log.error(f"Ciclo chart error: {e}")
+        lines = [f"CICLO DE MERCADO {datetime.now().strftime('%d/%m %H:%M')}\n"]
+        for md in mercados_data:
+            lines.append(f"{md['nombre']}: {md['fase']}")
+            lines.append(f"  {md['descripcion']}")
+        safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
+
+
 @bot.message_handler(commands=["ayuda"])
 def cmd_ayuda(msg):
     if not allowed(msg): return
@@ -1839,6 +2206,7 @@ def handle_callback(call):
         "ipos": cmd_ipos, "backtest": cmd_backtest,
         "alertas": cmd_alertas, "seguimiento": cmd_seguimiento,
         "resumen_semana": cmd_resumen_semana, "ayuda": cmd_ayuda,
+        "ciclo": cmd_ciclo,
         "riesgo_info": lambda m: safe_send(m.chat.id, "Uso: /riesgo CAPITAL RIESGO% TICKER ENTRADA STOP\nEj: /riesgo 10000 2 NVDA 890 865"),
     }
     fn = handlers.get(call.data)
@@ -2045,143 +2413,4 @@ def job_resumen_domingo():
         lines.append(f"Funding Rate BTC: {deriv['funding']['valor']:+.4f}%")
     snap = "\n".join(lines)
     prompt = (f"Resumen semanal crypto:\n{snap}\n\n"
-              "1. Como ha ido la semana para BTC y altcoins\n"
-              "2. Que dice el Fear&Greed sobre el sentimiento\n"
-              "3. Perspectiva para la proxima semana\n"
-              "4. Nivel clave a vigilar en BTC")
-    texto = ask_ai(prompt)
-    safe_send(ALLOWED_USER_ID, f"{snap}\n\n{texto}")
-
-
-def job_alerta_funding():
-    """Cada hora — Alerta si funding rate extremo."""
-    deriv = get_binance_derivatives("BTCUSDT")
-    if "funding" not in deriv:
-        return
-    fr = deriv["funding"]["valor"]
-    if fr > 0.05:
-        safe_send(ALLOWED_USER_ID,
-            f"ALERTA FUNDING RATE BTC\n"
-            f"Funding: {fr:+.4f}% (muy alto)\n"
-            f"Longs pagando demasiado — posible long squeeze inminente\n"
-            f"Considera reducir posiciones largas")
-    elif fr < -0.02:
-        safe_send(ALLOWED_USER_ID,
-            f"ALERTA FUNDING RATE BTC\n"
-            f"Funding: {fr:+.4f}% (negativo)\n"
-            f"Shorts pagando — posible rebote alcista\n"
-            f"Zona de posible entrada contrarian")
-
-
-def job_alerta_fear_greed():
-    """Cada 6h — Alerta si Fear&Greed extremo."""
-    fg = get_fear_greed()
-    if not fg:
-        return
-    if fg["valor"] <= 15:
-        safe_send(ALLOWED_USER_ID,
-            f"ALERTA CAPITULACION\n"
-            f"Fear&Greed: {fg['valor']}/100 ({fg['clasificacion']})\n"
-            f"Miedo extremo historico — suelos importantes suelen formarse aqui\n"
-            f"Revisar /btc para setup de entrada")
-    elif fg["valor"] >= 85:
-        safe_send(ALLOWED_USER_ID,
-            f"ALERTA EUFORIA\n"
-            f"Fear&Greed: {fg['valor']}/100 ({fg['clasificacion']})\n"
-            f"Codicia extrema — zona de riesgo alto para nuevas entradas\n"
-            f"Considera tomar ganancias parciales")
-
-
-def job_alerta_vix():
-    """Cada 2h dias laborables — Alerta si VIX alto."""
-    if not es_dia_laborable():
-        return
-    d = fetch_quote("^VIX", "1mo")
-    if not d:
-        return
-    if d["price"] > 35:
-        safe_send(ALLOWED_USER_ID,
-            f"ALERTA VIX CRITICO\n"
-            f"VIX: {d['price']:.1f} (panico extremo)\n"
-            f"Mercado en modo sell-off — evitar nuevas entradas\n"
-            f"Historicamente estos niveles preceden rebotes fuertes")
-    elif d["price"] > 25 and d["d1"] > 10:
-        safe_send(ALLOWED_USER_ID,
-            f"AVISO VIX ELEVADO\n"
-            f"VIX: {d['price']:.1f} ({d['d1']:+.1f}% hoy)\n"
-            f"Volatilidad subiendo — reducir tamaño de posiciones")
-
-
-def job_sr_scanner():
-    """Cada 2h dias laborables — S/R."""
-    if not es_dia_laborable():
-        return
-    alerts = scan_sr_alerts(US_STOCKS[:8] + EU_STOCKS[:8])
-    if not alerts:
-        return
-    bloque = "\n".join(alerts[:6])
-    texto = ask_ai(f"S/R:\n{bloque}\n\nTop 2 mas interesantes y operativa.")
-    safe_send(ALLOWED_USER_ID, f"Alerta S/R {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
-
-
-def job_explosion_scanner():
-    """Cada 3h dias laborables — Explosiones."""
-    if not es_dia_laborable():
-        return
-    candidates = scan_explosions(US_STOCKS + EU_STOCKS)
-    if not candidates:
-        return
-    rows = [f"{c['nombre']} ({c['ticker']}): semana {c['d5']:+.1f}% | vol {c['vol_rel']}x" for c in candidates[:3]]
-    bloque = "\n".join(rows)
-    texto = ask_ai(f"Explosiones:\n{bloque}\n\nAnalisis y niveles.")
-    safe_send(ALLOWED_USER_ID, f"Explosiones {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
-
-
-def job_metales_scanner():
-    """Cada 4h — Metales."""
-    data_ai = []
-    for t, nom in METALES.items():
-        d = fetch_quote(t, "3mo")
-        if d:
-            data_ai.append(f"{nom}: precio={d['price']}, RSI={d['rsi']}, 1d={d['d1']}%, S1={d['s1']}, R1={d['r1']}")
-    if not data_ai:
-        return
-    texto = ask_ai("Metales:\n" + "\n".join(data_ai) + "\n\nHay senal clara? Si SI: cual, entrada, stop, objetivo. Si NO: responde solo SIN SENAL.")
-    if "SIN SENAL" in texto.upper():
-        return
-    safe_send(ALLOWED_USER_ID, f"Alerta Metales {datetime.now().strftime('%H:%M')}\n\n{texto}")
-
-
-if __name__ == "__main__":
-    if ALLOWED_USER_ID:
-        scheduler = BackgroundScheduler(timezone=MADRID)
-        # Dias laborables
-        scheduler.add_job(job_senales_eu,        "cron", hour=9,  minute=0)
-        scheduler.add_job(job_senales_us,        "cron", hour=15, minute=0)
-        scheduler.add_job(job_close_eu,          "cron", hour=17, minute=35)
-        scheduler.add_job(job_close_us,          "cron", hour=22, minute=5)
-        # Lunes plan semana
-        scheduler.add_job(job_plan_semana,       "cron", hour=8,  minute=0)
-        # Domingo resumen crypto
-        scheduler.add_job(job_resumen_domingo,   "cron", hour=20, minute=0)
-        # Fin de semana crypto
-        scheduler.add_job(job_crypto_weekend,    "cron", hour=10, minute=0)
-        # Alertas precio siempre
-        scheduler.add_job(job_check_alerts,      "interval", minutes=5)
-        # Alerta funding rate cada hora
-        scheduler.add_job(job_alerta_funding,    "interval", hours=1)
-        # Alerta Fear&Greed cada 6h
-        scheduler.add_job(job_alerta_fear_greed, "interval", hours=6)
-        # Alerta VIX cada 2h laborables
-        scheduler.add_job(job_alerta_vix,        "interval", hours=2)
-        # Scanners
-        scheduler.add_job(job_anomalias_scanner, "interval", hours=2)
-        scheduler.add_job(job_noticias_impacto,  "interval", hours=3)
-        scheduler.add_job(job_bull_detector,     "interval", hours=4)
-        scheduler.add_job(job_explosion_scanner, "interval", hours=3)
-        scheduler.add_job(job_metales_scanner,   "interval", hours=4)
-        scheduler.add_job(job_sr_scanner,        "interval", hours=2)
-        scheduler.start()
-        log.info("Jobs automaticos activados")
-    log.info("Financial Bot arrancado - Version Completa v6")
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+              "1. Como ha ido
