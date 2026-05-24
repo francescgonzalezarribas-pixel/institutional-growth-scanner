@@ -2110,6 +2110,9 @@ def job_alerta_vix():
             f"AVISO VIX ELEVADO\n"
             f"VIX: {d['price']:.1f} ({d['d1']:+.1f}% hoy)\n"
             f"Volatilidad subiendo — reducir tamaño de posiciones")
+
+
+def job_sr_scanner():
     """Cada 2h dias laborables — S/R."""
     if not es_dia_laborable():
         return
