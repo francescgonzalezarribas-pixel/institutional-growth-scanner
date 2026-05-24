@@ -577,6 +577,10 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
         (12, "IRA",           "El suelo. Busqueda de culpables.",                        "#FF0000", "Quien vendio en corto? Por que el gobierno lo permite?"),
     ]
 
+    # Inicializar fase por defecto
+    score = 0
+    fase = 8  # Ansiedad por defecto
+
     # ── LOGICA DIRECTA - distancia desde maximo es el factor principal ────────
     # Mapeo directo: donde estás en el ciclo depende de cuanto has caido desde el techo
 
