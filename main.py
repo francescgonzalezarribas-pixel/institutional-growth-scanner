@@ -579,64 +579,50 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
 
     score = 0
 
-    # ── PERSPECTIVA ANUAL (mas peso que indicadores cortos) ──────────────────
+    # ── PERSPECTIVA ANUAL - FACTOR PRINCIPAL ─────────────────────────────────
+    # La distancia desde el maximo es el indicador mas fiable del ciclo
 
-    # Distancia desde el maximo anual
-    # -5% = cerca del techo (complacencia/ansiedad)
-    # -20% = caida importante (negacion/panico)
-    # -40% = capitulacion/ira
-    # -60%+ = depresion
+    # Distancia desde maximo anual (peso alto - define la fase principal)
     if dist_desde_maximo is not None:
-        if dist_desde_maximo > -5:       score += 4   # cerca del maximo = euforia/complacencia
-        elif dist_desde_maximo > -10:    score += 2   # leve correccion = ansiedad
-        elif dist_desde_maximo > -20:    score -= 1   # correccion moderada = negacion
-        elif dist_desde_maximo > -35:    score -= 3   # caida fuerte = panico
-        elif dist_desde_maximo > -50:    score -= 5   # crash = capitulacion/ira
-        else:                            score -= 7   # destruccion = depresion
+        if dist_desde_maximo > -3:        score += 6   # EN el maximo = euforia
+        elif dist_desde_maximo > -8:      score += 4   # cerca del techo = complacencia
+        elif dist_desde_maximo > -15:     score += 1   # correccion leve = ansiedad
+        elif dist_desde_maximo > -25:     score -= 2   # correccion moderada = negacion
+        elif dist_desde_maximo > -40:     score -= 5   # caida fuerte = panico
+        elif dist_desde_maximo > -55:     score -= 7   # crash = capitulacion/ira
+        else:                             score -= 9   # destruccion = depresion
 
-    # Recuperacion desde el minimo anual
-    # Si ha rebotado mucho desde minimos = saliendo del suelo (incredulidad/esperanza)
+    # Recuperacion desde minimo (confirma si ya reboto o sigue cayendo)
     if recuperacion_desde_minimo is not None:
-        if recuperacion_desde_minimo > 50:   score += 3  # rebote fuerte = esperanza/optimismo
-        elif recuperacion_desde_minimo > 25: score += 2  # rebote moderado = incredulidad
-        elif recuperacion_desde_minimo > 10: score += 1  # rebote inicial = suelo probable
+        if recuperacion_desde_minimo > 60:   score += 3  # gran rebote = esperanza/optimismo
+        elif recuperacion_desde_minimo > 30: score += 2  # rebote moderado = incredulidad
+        elif recuperacion_desde_minimo > 15: score += 1  # rebote inicial
 
-    # Rendimiento anual
+    # Rendimiento anual (peso reducido - complementario)
     if d_anual is not None:
-        if d_anual > 50:    score += 3   # año excelente = euforia
-        elif d_anual > 20:  score += 2   # año bueno = emocion/creencia
-        elif d_anual > 5:   score += 1   # año positivo = optimismo
-        elif d_anual < -30: score -= 3   # año catastrofico = capitulacion/ira
-        elif d_anual < -15: score -= 2   # año malo = panico
-        elif d_anual < -5:  score -= 1   # año negativo = negacion
+        if d_anual > 80:    score += 2   # año excepcional
+        elif d_anual > 40:  score += 1   # año muy bueno
+        elif d_anual < -40: score -= 2   # año catastrofico
+        elif d_anual < -20: score -= 1   # año malo
 
-    # ── INDICADORES TECNICOS (confirmacion) ──────────────────────────────────
+    # ── INDICADORES TECNICOS - CONFIRMACION ──────────────────────────────────
 
-    # RSI diario
-    if rsi > 75:   score += 2
-    elif rsi > 65: score += 1
-    elif rsi < 30: score -= 2
-    elif rsi < 40: score -= 1
-
-    # RSI semanal
+    # RSI semanal (mas relevante que el diario para el ciclo)
     if rsi_semanal:
-        if rsi_semanal > 70:   score += 2
-        elif rsi_semanal > 60: score += 1
+        if rsi_semanal > 75:   score += 2
+        elif rsi_semanal > 65: score += 1
         elif rsi_semanal < 35: score -= 2
         elif rsi_semanal < 45: score -= 1
 
-    # EMAs
-    if tendencia_alcista and sobre_ema20:  score += 2
-    elif sobre_ema20:                      score += 1
-    elif not sobre_ema50:                  score -= 1
+    # RSI diario (solo confirmacion leve)
+    if rsi > 70:   score += 1
+    elif rsi < 35: score -= 1
 
-    # Momentum mensual
-    if d20 > 15:    score += 2
-    elif d20 > 8:   score += 1
-    elif d20 < -10: score -= 2
-    elif d20 < -5:  score -= 1
+    # Tendencia EMA
+    if tendencia_alcista and sobre_ema20: score += 1
+    elif not sobre_ema50:                 score -= 1
 
-    # Fear & Greed (crypto)
+    # Fear & Greed (crypto - peso significativo)
     if fg:
         if fg > 80:   score += 3
         elif fg > 65: score += 2
@@ -644,9 +630,10 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
         elif fg < 20: score -= 2
         elif fg < 35: score -= 1
 
-    # VIX (bolsa)
+    # VIX (bolsa - peso significativo)
     if vix:
-        if vix > 35:   score -= 3
+        if vix > 40:   score -= 4
+        elif vix > 30: score -= 3
         elif vix > 25: score -= 2
         elif vix > 20: score -= 1
         elif vix < 13: score += 2
@@ -654,25 +641,25 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
 
     # Funding rate (crypto)
     if funding is not None:
-        if funding > 0.05:    score += 3
+        if funding > 0.05:    score += 2
         elif funding > 0.02:  score += 1
-        elif funding < -0.01: score -= 2
+        elif funding < -0.01: score -= 1
 
-    # Mapear score a fase
+    # Mapear score a fase — rango aproximado -12 a +15
     score = max(-12, min(15, score))
-    if score >= 12:    fase = 6   # Euforia
-    elif score >= 9:   fase = 5   # Emocion
-    elif score >= 7:   fase = 4   # Creencia
-    elif score >= 5:   fase = 7   # Complacencia
-    elif score >= 3:   fase = 3   # Optimismo
-    elif score >= 1:   fase = 2   # Esperanza
-    elif score == 0:   fase = 1   # Incredulidad
-    elif score >= -2:  fase = 8   # Ansiedad
-    elif score >= -4:  fase = 9   # Negacion
-    elif score >= -6:  fase = 10  # Panico
-    elif score >= -8:  fase = 11  # Capitulacion
-    elif score >= -10: fase = 12  # Ira
-    else:              fase = 0   # Depresion
+    if score >= 11:    fase = 6   # Euforia (muy cerca del maximo, todo sube)
+    elif score >= 8:   fase = 5   # Emocion (subida rapida, FOMO)
+    elif score >= 6:   fase = 4   # Creencia (tendencia alcista clara)
+    elif score >= 4:   fase = 7   # Complacencia (bajada leve ignorada)
+    elif score >= 2:   fase = 3   # Optimismo (mercado sube, gente entra)
+    elif score >= 0:   fase = 8   # Ansiedad (caidas se aceleran)
+    elif score >= -2:  fase = 2   # Esperanza (rebote desde suelos)
+    elif score >= -4:  fase = 1   # Incredulidad (rebote pero nadie lo cree)
+    elif score >= -5:  fase = 9   # Negacion (cae pero aguantan)
+    elif score >= -7:  fase = 10  # Panico (venta masiva)
+    elif score >= -9:  fase = 11  # Capitulacion (rendicion total)
+    elif score >= -11: fase = 12  # Ira (busqueda de culpables)
+    else:              fase = 0   # Depresion (suelo absoluto)
 
     return {
         "fase_num": fase,
