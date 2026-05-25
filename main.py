@@ -82,6 +82,40 @@ NOMBRES = {
 def nombre(ticker):
     return NOMBRES.get(ticker, ticker)
 
+def es_festivo_eeuu():
+    """Detecta si hoy es festivo en EEUU comprobando si el SP500 tiene datos de hoy."""
+    try:
+        hist = yf.Ticker("^GSPC").history(period="2d")
+        if hist.empty:
+            return True
+        ultimo_dia = hist.index[-1].date()
+        hoy = datetime.now(MADRID).date()
+        # Si el ultimo dato es de antes de hoy = mercado cerrado hoy
+        return ultimo_dia < hoy
+    except:
+        return False
+
+
+def es_mercado_us_cerrado():
+    """Mercado EEUU cerrado: fin de semana o festivo."""
+    if not es_dia_laborable():
+        return True
+    return es_festivo_eeuu()
+
+
+def es_festivo_eu():
+    """Detecta si hoy es festivo en Europa comprobando el DAX."""
+    try:
+        hist = yf.Ticker("^GDAXI").history(period="2d")
+        if hist.empty:
+            return True
+        ultimo_dia = hist.index[-1].date()
+        hoy = datetime.now(MADRID).date()
+        return ultimo_dia < hoy
+    except:
+        return False
+
+
 def es_dia_laborable():
     """Lunes=0 ... Viernes=4. Sabado=5, Domingo=6."""
     return datetime.now(MADRID).weekday() < 5
@@ -2275,6 +2309,9 @@ def job_senales_eu():
     """9:00 lunes-viernes — Senales Europa."""
     if not es_dia_laborable():
         return
+    if es_festivo_eu():
+        safe_send(ALLOWED_USER_ID, f"Buenos dias — Mercado europeo cerrado por festivo hoy {datetime.now().strftime('%d/%m')}.")
+        return
     safe_send(ALLOWED_USER_ID, f"BUENOS DIAS - Senales Europa {datetime.now().strftime('%d/%m')}")
     signals = get_top_signals(EU_STOCKS, n=3)
     if signals:
@@ -2288,13 +2325,27 @@ def job_senales_eu():
     eventos = get_economic_calendar()
     cal_hoy = [e for e in eventos if datetime.now().strftime("%Y-%m-%d") in e.get("date","")]
     cal_txt = "\n".join(f"- {e.get('title','')}" for e in cal_hoy) or "Sin eventos clave"
-    texto = ask_ai(f"Briefing {datetime.now().strftime('%A %d/%m')}:\nNoticias:\n{bloque}\nEventos:\n{cal_txt}\n\nResumen y niveles clave DAX e IBEX.")
+    # Indices con precios reales
+    indices_txt = ""
+    for t, nom in list(INDICES.items())[3:6]:
+        d = fetch_quote(t, "1mo")
+        if d:
+            indices_txt += f"{nom}: {d['price']:,.0f} (RSI {d['rsi']}, semana {d['d5']:+.1f}%)\n"
+    prompt = (f"Briefing {datetime.now().strftime('%A %d/%m/%Y')}:\n"
+              f"Indices actuales:\n{indices_txt}"
+              f"Noticias:\n{bloque}\nEventos hoy:\n{cal_txt}\n\n"
+              "USA SOLO los precios indicados arriba. No uses precios de otros años.\n"
+              "1. Resumen del dia\n2. Niveles clave DAX e IBEX hoy\n3. Sectores a vigilar")
+    texto = ask_ai(prompt)
     safe_send(ALLOWED_USER_ID, f"Briefing Manana\n\n{texto}")
 
 
 def job_senales_us():
     """15:00 lunes-viernes — Senales EEUU."""
     if not es_dia_laborable():
+        return
+    if es_mercado_us_cerrado():
+        safe_send(ALLOWED_USER_ID, f"Premercado EEUU {datetime.now().strftime('%d/%m')} — Mercado cerrado por festivo.")
         return
     safe_send(ALLOWED_USER_ID, f"PREMERCADO EEUU {datetime.now().strftime('%d/%m %H:%M')}")
     signals = get_top_signals(US_STOCKS + list(CRYPTO), n=3)
@@ -2310,14 +2361,25 @@ def job_close_eu():
     """17:35 lunes-viernes — Cierre Europa."""
     if not es_dia_laborable():
         return
+    if es_festivo_eu():
+        safe_send(ALLOWED_USER_ID, f"Cierre Europa {datetime.now().strftime('%d/%m')} — Mercado cerrado por festivo.")
+        return
     lines, data_ai = [], []
     for t, nom in list(INDICES.items())[3:]:
         d = fetch_quote(t, "5d")
         if d:
             lines.append(f"{arrow(d['d1'])} {nom}: {d['price']:,.0f}")
-            data_ai.append(f"{nom}: {d['d1']:+.2f}%")
+            data_ai.append(f"{nom}: precio actual {d['price']:,.0f}, variacion hoy {d['d1']:+.2f}%, semana {d['d5']:+.2f}%, RSI {d['rsi']}")
+    if not lines:
+        return
     snap = "\n".join(lines)
-    texto = ask_ai("Cierre EU:\n" + "\n".join(data_ai) + "\n\nResumen y que esperar de EEUU.")
+    prompt = (f"Cierre Europa hoy {datetime.now().strftime('%d/%m/%Y')}:\n"
+              + "\n".join(data_ai) +
+              "\n\nUSA SOLO estos precios actuales. No uses precios de otros años.\n"
+              "1. Resumen de la sesion europea de hoy\n"
+              "2. Que esperar de EEUU esta tarde\n"
+              "3. Niveles clave manana en DAX e IBEX")
+    texto = ask_ai(prompt)
     safe_send(ALLOWED_USER_ID, f"Cierre Europa {datetime.now().strftime('%d/%m %H:%M')}\n\n{snap}\n\n{texto}")
 
 
@@ -2325,14 +2387,25 @@ def job_close_us():
     """22:05 lunes-viernes — Cierre EEUU."""
     if not es_dia_laborable():
         return
+    if es_mercado_us_cerrado():
+        safe_send(ALLOWED_USER_ID, f"Cierre EEUU {datetime.now().strftime('%d/%m')} — Mercado cerrado por festivo.")
+        return
     lines, data_ai = [], []
     for t, nom in list(INDICES.items())[:3]:
         d = fetch_quote(t, "5d")
         if d:
             lines.append(f"{arrow(d['d1'])} {nom}: {d['price']:,.0f}")
-            data_ai.append(f"{nom}: {d['d1']:+.2f}%")
+            data_ai.append(f"{nom}: precio actual {d['price']:,.0f}, variacion hoy {d['d1']:+.2f}%, semana {d['d5']:+.2f}%, RSI {d['rsi']}")
+    if not lines:
+        return
     snap = "\n".join(lines)
-    texto = ask_ai("Cierre EEUU:\n" + "\n".join(data_ai) + "\n\nResumen y perspectiva manana.")
+    prompt = (f"Cierre EEUU hoy {datetime.now().strftime('%d/%m/%Y')}:\n"
+              + "\n".join(data_ai) +
+              "\n\nUSA SOLO estos precios actuales. No uses precios de otros años.\n"
+              "1. Resumen de la sesion americana de hoy\n"
+              "2. Sectores que lideraron y cuales quedaron atras\n"
+              "3. Perspectiva para manana y niveles clave SP500 y Nasdaq")
+    texto = ask_ai(prompt)
     safe_send(ALLOWED_USER_ID, f"Cierre EEUU {datetime.now().strftime('%d/%m %H:%M')}\n\n{snap}\n\n{texto}")
 
 
