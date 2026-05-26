@@ -83,18 +83,21 @@ def nombre(ticker):
     return NOMBRES.get(ticker, ticker)
 
 def es_festivo_eeuu():
-    """Detecta si hoy es festivo en EEUU comprobando si el SP500 tiene datos de hoy."""
+    """Detecta si hoy es festivo en EEUU comprobando si el SP500 tuvo actividad hoy."""
     try:
-        # Solo comprobar festivo despues de las 17:00 Madrid (mercado EEUU ya deberia tener datos)
-        hora_actual = datetime.now(MADRID).hour
-        if hora_actual < 17:
-            return False  # Demasiado pronto para saberlo
-        hist = yf.Ticker("^GSPC").history(period="2d")
+        hist = yf.Ticker("^GSPC").history(period="5d")
         if hist.empty:
             return True
         ultimo_dia = hist.index[-1].date()
         hoy = datetime.now(MADRID).date()
-        return ultimo_dia < hoy
+        if ultimo_dia < hoy:
+            return True
+        # Si el ultimo dato es de hoy pero la variacion es 0 = no hubo mercado
+        if ultimo_dia == hoy:
+            ultimo_vol = hist["Volume"].iloc[-1]
+            if ultimo_vol == 0:
+                return True
+        return False
     except:
         return False
 
@@ -109,16 +112,18 @@ def es_mercado_us_cerrado():
 def es_festivo_eu():
     """Detecta si hoy es festivo en Europa comprobando el DAX."""
     try:
-        # Solo comprobar festivo despues de las 11:00 Madrid (mercado EU ya deberia tener datos)
-        hora_actual = datetime.now(MADRID).hour
-        if hora_actual < 11:
-            return False  # Demasiado pronto para saberlo
-        hist = yf.Ticker("^GDAXI").history(period="2d")
+        hist = yf.Ticker("^GDAXI").history(period="5d")
         if hist.empty:
             return True
         ultimo_dia = hist.index[-1].date()
         hoy = datetime.now(MADRID).date()
-        return ultimo_dia < hoy
+        if ultimo_dia < hoy:
+            return True
+        if ultimo_dia == hoy:
+            ultimo_vol = hist["Volume"].iloc[-1]
+            if ultimo_vol == 0:
+                return True
+        return False
     except:
         return False
 
@@ -1993,10 +1998,24 @@ def cmd_oportunidades(msg):
     for t in (US_STOCKS[:7] + EU_STOCKS[:6]):
         d = fetch_quote(t, "3mo")
         if d:
-            rows.append(f"{d['nombre']} ({t}): RSI={d['rsi']}, MACD={'SI' if d['macd_cross_up'] else 'NO'}, vol={d['vol_rel']}x, 5d={d['d5']}%")
-    prompt = "Datos:\n" + "\n".join(rows) + "\n\n1. 2-3 mejores setups\n2. Acciones a evitar\n3. Trade concreto entrada/objetivo/stop\n4. Riesgo 1-10"
+            rows.append(
+                f"{d['nombre']} ({t}): precio={d['price']}, RSI={d['rsi']}, "
+                f"MACD={'SI' if d['macd_cross_up'] else 'NO'}, vol={d['vol_rel']}x, "
+                f"hoy={d['d1']:+.2f}%, semana={d['d5']:+.2f}%, "
+                f"EMA20={d['ema20']} ({'sobre' if d['sobre_ema20'] else 'bajo'}), "
+                f"S1={d['s1']}, R1={d['r1']}"
+            )
+    prompt = (
+        f"Datos de mercado actuales {datetime.now().strftime('%d/%m/%Y')}:\n"
+        + "\n".join(rows) +
+        "\n\nUSA SOLO los precios indicados arriba. No uses precios de otros años ni inventes valores.\n\n"
+        "1. 2-3 mejores setups con entrada, stop y objetivo usando los precios actuales\n"
+        "2. Acciones a evitar y por que\n"
+        "3. Trade concreto con precio de entrada exacto del listado\n"
+        "4. Riesgo general del mercado ahora mismo 1-10"
+    )
     texto = ask_ai(prompt)
-    safe_send(msg.chat.id, f"Oportunidades\n\n{texto}", message_id=m.message_id)
+    safe_send(msg.chat.id, f"Oportunidades {datetime.now().strftime('%d/%m %H:%M')}\n\n{texto}", message_id=m.message_id)
 
 
 @bot.message_handler(commands=["explosiones"])
