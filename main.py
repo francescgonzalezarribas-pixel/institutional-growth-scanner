@@ -83,21 +83,14 @@ def nombre(ticker):
     return NOMBRES.get(ticker, ticker)
 
 def es_festivo_eeuu():
-    """Detecta si hoy es festivo en EEUU comprobando si el SP500 tuvo actividad hoy."""
+    """Detecta si hoy es festivo en EEUU."""
     try:
         hist = yf.Ticker("^GSPC").history(period="5d")
         if hist.empty:
             return True
         ultimo_dia = hist.index[-1].date()
         hoy = datetime.now(MADRID).date()
-        if ultimo_dia < hoy:
-            return True
-        # Si el ultimo dato es de hoy pero la variacion es 0 = no hubo mercado
-        if ultimo_dia == hoy:
-            ultimo_vol = hist["Volume"].iloc[-1]
-            if ultimo_vol == 0:
-                return True
-        return False
+        return ultimo_dia < hoy
     except:
         return False
 
@@ -110,20 +103,14 @@ def es_mercado_us_cerrado():
 
 
 def es_festivo_eu():
-    """Detecta si hoy es festivo en Europa comprobando el DAX."""
+    """Detecta si hoy es festivo en Europa."""
     try:
         hist = yf.Ticker("^GDAXI").history(period="5d")
         if hist.empty:
             return True
         ultimo_dia = hist.index[-1].date()
         hoy = datetime.now(MADRID).date()
-        if ultimo_dia < hoy:
-            return True
-        if ultimo_dia == hoy:
-            ultimo_vol = hist["Volume"].iloc[-1]
-            if ultimo_vol == 0:
-                return True
-        return False
+        return ultimo_dia < hoy
     except:
         return False
 
@@ -1792,7 +1779,20 @@ def cmd_noticias_impacto(msg):
         return
     lines = [f"- {n['title']}" for n in noticias[:12]]
     bloque = "\n".join(lines)
-    prompt = (f"Noticias impacto:\n{bloque}\n\n1. Mayor impacto en bolsa\n2. OPA o fusion relevante\n3. Earnings sorpresa\n4. Acciones afectadas y como operar")
+
+    # Inyectar precios reales de acciones clave para que Mistral no invente
+    precios_txt = ""
+    for t in ["AZN.L","AMZN","NVDA","META","GOOGL","JPM","PFE","JNJ","MSFT","AAPL"]:
+        d = fetch_quote(t, "1mo")
+        if d:
+            precios_txt += f"{d['nombre']} ({t}): {d['price']} USD\n"
+
+    prompt = (f"Noticias de alto impacto hoy {datetime.now().strftime('%d/%m/%Y')}:\n{bloque}\n\n"
+              f"Precios actuales de referencia (USA SOLO ESTOS, no inventes otros):\n{precios_txt}\n"
+              "1. Noticia de mayor impacto en bolsa hoy\n"
+              "2. OPA o fusion relevante si la hay\n"
+              "3. Earnings sorpresa si los hay\n"
+              "4. Acciones afectadas con precio actual y como operar")
     texto = ask_ai(prompt)
     safe_send(msg.chat.id, f"NOTICIAS IMPACTO {datetime.now().strftime('%d/%m %H:%M')}\n\n{bloque}\n\n{texto}", message_id=m.message_id)
 
@@ -2610,20 +2610,20 @@ def job_senales_eu():
 
 
 def job_senales_us():
-    """15:00 lunes-viernes — Senales EEUU."""
+    """15:00 lunes-viernes — Senales EEUU solo acciones."""
     if not es_dia_laborable():
         return
     if es_mercado_us_cerrado():
         safe_send(ALLOWED_USER_ID, f"Premercado EEUU {datetime.now().strftime('%d/%m')} — Mercado cerrado por festivo.")
         return
     safe_send(ALLOWED_USER_ID, f"PREMERCADO EEUU {datetime.now().strftime('%d/%m %H:%M')}")
-    signals = get_top_signals(US_STOCKS + list(CRYPTO), n=3)
+    signals = get_top_signals(US_STOCKS, n=3)
     if signals:
         for s in signals:
             send_signal(ALLOWED_USER_ID, s)
             time.sleep(2)
     else:
-        safe_send(ALLOWED_USER_ID, "Sin senales validas en EEUU para esta sesion.")
+        safe_send(ALLOWED_USER_ID, "Sin senales validas en acciones EEUU para esta sesion.")
 
 
 def job_close_eu():
