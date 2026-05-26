@@ -85,12 +85,15 @@ def nombre(ticker):
 def es_festivo_eeuu():
     """Detecta si hoy es festivo en EEUU comprobando si el SP500 tiene datos de hoy."""
     try:
+        # Solo comprobar festivo despues de las 17:00 Madrid (mercado EEUU ya deberia tener datos)
+        hora_actual = datetime.now(MADRID).hour
+        if hora_actual < 17:
+            return False  # Demasiado pronto para saberlo
         hist = yf.Ticker("^GSPC").history(period="2d")
         if hist.empty:
             return True
         ultimo_dia = hist.index[-1].date()
         hoy = datetime.now(MADRID).date()
-        # Si el ultimo dato es de antes de hoy = mercado cerrado hoy
         return ultimo_dia < hoy
     except:
         return False
@@ -106,6 +109,10 @@ def es_mercado_us_cerrado():
 def es_festivo_eu():
     """Detecta si hoy es festivo en Europa comprobando el DAX."""
     try:
+        # Solo comprobar festivo despues de las 11:00 Madrid (mercado EU ya deberia tener datos)
+        hora_actual = datetime.now(MADRID).hour
+        if hora_actual < 11:
+            return False  # Demasiado pronto para saberlo
         hist = yf.Ticker("^GDAXI").history(period="2d")
         if hist.empty:
             return True
@@ -158,6 +165,48 @@ MACRO_TICKERS = {
 ETFS_INDICES = ["SPY","QQQ","IWM","DIA","VTI","VEA","EWG","EZU"]
 ETFS_TEMATICOS = ["GLD","SLV","USO","ARKK","BOTZ","ICLN","HACK","SOXX","EEM","MCHI"]
 ETFS_ESPECIALES = ["LUNR","RKLB","ASTS","ACHR","JOBY"]
+
+# Universo ampliado para /infravaloradas
+INFRA_NOMBRES = {
+    # IA infraestructura
+    "PLTR":"Palantir","NET":"Cloudflare","SNOW":"Snowflake","DDOG":"Datadog",
+    "MDB":"MongoDB","CRWD":"CrowdStrike","ZS":"Zscaler","OKTA":"Okta",
+    # Uranium / Nuclear
+    "CCJ":"Cameco","NXE":"NexGen Energy","URA":"Uranium ETF","NUKZ":"Nuclear ETF",
+    "DNN":"Denison Mines","URG":"Ur-Energy",
+    # Espacio
+    "RKLB":"Rocket Lab","ASTS":"AST SpaceMobile","LUNR":"Intuitive Machines",
+    "MNTS":"Momentus","SPCE":"Virgin Galactic",
+    # DeFi / Crypto
+    "AAVE-USD":"Aave","UNI-USD":"Uniswap","MKR-USD":"Maker","COMP-USD":"Compound",
+    "ARB-USD":"Arbitrum","OP-USD":"Optimism","MATIC-USD":"Polygon",
+    "LDO-USD":"Lido","SNX-USD":"Synthetix",
+    # Biotech / Salud infravalorada
+    "MRNA":"Moderna","BNTX":"BioNTech","BEAM":"Beam Therapeutics",
+    "CRSP":"CRISPR Therapeutics","NTLA":"Intellia Therapeutics",
+    # Fintech
+    "AFRM":"Affirm","UPST":"Upstart","SOFI":"SoFi Technologies",
+    "NU":"Nu Holdings","PYPL":"PayPal",
+    # Semiconductores ciclo bajo
+    "INTC":"Intel","MCHP":"Microchip Tech","ON":"ON Semiconductor",
+    "WOLF":"Wolfspeed","CREE":"Cree",
+    # Value en corrección
+    "BABA":"Alibaba","JD":"JD.com","PDD":"PDD Holdings",
+    "PINS":"Pinterest","SNAP":"Snap","RBLX":"Roblox",
+}
+
+# Crypto DeFi para infravaloradas (usar yfinance con -USD)
+DEFI_CRYPTO = [
+    "AAVE-USD","UNI-USD","MKR-USD","COMP-USD",
+    "ARB-USD","OP-USD","MATIC-USD","LDO-USD",
+]
+
+INFRA_UNIVERSE = (
+    list(INFRA_NOMBRES.keys()) +
+    US_STOCKS +
+    EU_STOCKS[:15] +
+    ["BTC-USD","ETH-USD","SOL-USD","BNB-USD"]
+)
 
 SECTORES_SP500 = {
     "Tecnologia": ["AAPL","MSFT","NVDA","AMD","INTC","CRM","ORCL","XLK"],
@@ -881,6 +930,138 @@ def fetch_weekly_rsi(ticker):
         return None
 
 
+def scan_infravaloradas(stocks, max_results=6):
+    """
+    Busca activos infravalorados con potencial de rebote:
+    - Caida fuerte desde maximos (-25% o mas)
+    - RSI en zona de rebote (25-50)
+    - Volumen empezando a crecer
+    - Primer signo de recuperacion (d5 > 0 o cerca de soporte)
+    """
+    candidatos = []
+    nombres_ext = {**NOMBRES, **INFRA_NOMBRES}
+
+    for t in stocks:
+        try:
+            d = fetch_quote(t, "1y")
+            if not d:
+                continue
+
+            # Caida desde maximo anual
+            dist_max = round((d["price"] - d["hi52"]) / d["hi52"] * 100, 1)
+            recup_min = round((d["price"] - d["lo52"]) / d["lo52"] * 100, 1)
+
+            # Filtros principales
+            if dist_max > -20:
+                continue  # No ha caido suficiente
+            if d["rsi"] > 55:
+                continue  # Ya ha rebotado demasiado
+            if d["rsi"] < 20:
+                continue  # Caida libre, esperar suelo
+
+            score = 0
+            motivos = []
+
+            # 1. Magnitud de la caida (cuanto mas caida con RSI bajo, mejor)
+            if dist_max < -50:
+                score += 4
+                motivos.append(f"Caida brutal {dist_max}% desde maximos")
+            elif dist_max < -35:
+                score += 3
+                motivos.append(f"Caida fuerte {dist_max}% desde maximos")
+            elif dist_max < -25:
+                score += 2
+                motivos.append(f"Correccion significativa {dist_max}% desde maximos")
+
+            # 2. RSI en zona ideal de rebote
+            if 25 <= d["rsi"] <= 35:
+                score += 4
+                motivos.append(f"RSI {d['rsi']} zona de sobreventa extrema")
+            elif 35 < d["rsi"] <= 45:
+                score += 3
+                motivos.append(f"RSI {d['rsi']} zona de rebote ideal")
+            elif 45 < d["rsi"] <= 55:
+                score += 1
+                motivos.append(f"RSI {d['rsi']} recuperandose")
+
+            # 3. Recuperacion desde minimos (ya reboto algo = señal positiva)
+            if recup_min > 20:
+                score += 3
+                motivos.append(f"Rebote {recup_min:.0f}% desde minimos — suelo formado")
+            elif recup_min > 10:
+                score += 2
+                motivos.append(f"Primer rebote {recup_min:.0f}% desde minimos")
+            elif recup_min > 5:
+                score += 1
+                motivos.append(f"Inicio rebote {recup_min:.0f}% desde minimos")
+
+            # 4. Semana positiva (momentum inicial)
+            if d["d5"] > 3:
+                score += 3
+                motivos.append(f"Semana +{d['d5']}% momentum naciente")
+            elif d["d5"] > 1:
+                score += 2
+                motivos.append(f"Semana +{d['d5']}% rebote iniciado")
+            elif d["d5"] > 0:
+                score += 1
+                motivos.append(f"Semana positiva +{d['d5']}%")
+
+            # 5. Volumen creciente (acumulacion silenciosa)
+            if d["vol_rel"] >= 1.5:
+                score += 3
+                motivos.append(f"Volumen {d['vol_rel']}x — acumulacion detectada")
+            elif d["vol_rel"] >= 1.1:
+                score += 1
+                motivos.append(f"Volumen {d['vol_rel']}x ligeramente elevado")
+
+            # 6. Cerca de soporte
+            for nivel in [d["s1"], d["s2"]]:
+                if nivel > 0 and abs(d["price"] - nivel) / nivel * 100 <= 2.0:
+                    score += 2
+                    motivos.append(f"En zona de soporte {nivel}")
+                    break
+
+            # 7. MACD cruce alcista — señal de cambio de tendencia
+            if d["macd_cross_up"]:
+                score += 3
+                motivos.append("MACD cruce alcista — cambio tendencia")
+
+            # Umbral minimo
+            if score < 6:
+                continue
+
+            nom = nombres_ext.get(t, t)
+            candidatos.append({
+                **d,
+                "nombre": nom,
+                "score_intra": score,
+                "motivos_intra": motivos,
+                "dist_max": dist_max,
+                "recup_min": recup_min,
+            })
+
+        except Exception as e:
+            log.warning(f"Infravaloradas {t}: {e}")
+
+    candidatos.sort(key=lambda x: x["score_intra"], reverse=True)
+    return candidatos[:max_results]
+
+
+def get_noticias_ticker(ticker, nombre_empresa):
+    """Busca noticias recientes de un ticker especifico via RSS."""
+    try:
+        url = f"https://news.google.com/rss/search?q={nombre_empresa}+stock+2026&hl=en&gl=US&ceid=US:en"
+        feed = feedparser.parse(url)
+        titulares = []
+        for entry in feed.entries[:3]:
+            title = entry.get("title","").strip()
+            if title:
+                titulares.append(title)
+        return titulares
+    except:
+        return []
+
+
 def get_top_signals(stocks, n=4):
     mercado_ok = mercado_en_tendencia_alcista()
     candidatos = []
@@ -1343,6 +1524,8 @@ def main_kb():
            InlineKeyboardButton("Alertas", callback_data="alertas"))
     kb.row(InlineKeyboardButton("Ciclo Mercado", callback_data="ciclo"),
            InlineKeyboardButton("Resumen Semana", callback_data="resumen_semana"))
+    kb.row(InlineKeyboardButton("Infravaloradas", callback_data="infravaloradas"),
+           InlineKeyboardButton("Ayuda", callback_data="ayuda"))
     return kb
 
 
@@ -2222,6 +2405,73 @@ def cmd_ciclo(msg):
         safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
 
 
+@bot.message_handler(commands=["infravaloradas"])
+def cmd_infravaloradas(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id,
+        "Buscando activos infravalorados con potencial...\n"
+        "Escaneando 80+ activos (puede tardar 30-40s)")
+
+    candidatos = scan_infravaloradas(INFRA_UNIVERSE, max_results=5)
+
+    if not candidatos:
+        safe_send(msg.chat.id,
+            "No se encontraron activos infravalorados claros ahora mismo.\n"
+            "El mercado puede estar en tendencia alcista general sin grandes correcciones.",
+            message_id=m.message_id)
+        return
+
+    # Construir snapshot
+    lines = [f"ACTIVOS INFRAVALORADOS {datetime.now().strftime('%d/%m %H:%M')}\n"]
+    datos_ia = []
+
+    for i, c in enumerate(candidatos, 1):
+        motivos_txt = " | ".join(c["motivos_intra"][:3])
+        lines.append(
+            f"{i}. {c['nombre']} ({c['ticker']})\n"
+            f"   Precio: {c['price']} | RSI: {c['rsi']}\n"
+            f"   Desde maximo: {c['dist_max']}% | Rebote minimo: +{c['recup_min']:.0f}%\n"
+            f"   Semana: {c['d5']:+.1f}% | Vol: {c['vol_rel']}x\n"
+            f"   Score: {c['score_intra']}/18\n"
+            f"   {motivos_txt}\n"
+        )
+        datos_ia.append(
+            f"{c['nombre']} ({c['ticker']}): precio {c['price']}, "
+            f"caida {c['dist_max']}% desde maximos, RSI {c['rsi']}, "
+            f"semana {c['d5']:+.1f}%, rebote desde minimos {c['recup_min']:.0f}%"
+        )
+
+    # Buscar noticias del top 2
+    noticias_txt = ""
+    for c in candidatos[:2]:
+        noticias = get_noticias_ticker(c["ticker"], c["nombre"])
+        if noticias:
+            noticias_txt += f"\n{c['nombre']}:\n"
+            noticias_txt += "\n".join(f"  - {n}" for n in noticias)
+
+    snap = "\n".join(lines)
+
+    # Prompt IA con contexto completo
+    prompt = (
+        f"Activos infravalorados detectados hoy {datetime.now().strftime('%d/%m/%Y')}:\n\n"
+        + "\n".join(datos_ia) +
+        (f"\n\nNoticias recientes:\n{noticias_txt}" if noticias_txt else "") +
+        "\n\nUSA SOLO los precios indicados. No uses precios de otros años.\n\n"
+        "Para cada activo analiza:\n"
+        "1. Por que cayo tanto y si el problema esta resuelto o en vias\n"
+        "2. Si los fundamentales del negocio siguen intactos\n"
+        "3. Cual tiene mas potencial de rebote y por que\n"
+        "4. Entrada concreta, stop y objetivo con precios actuales\n"
+        "5. Riesgo real: trampa de valor o oportunidad genuina"
+    )
+
+    texto = ask_ai(prompt, max_chars=4000)
+
+    safe_send(msg.chat.id, snap, message_id=m.message_id)
+    time.sleep(1)
+    safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto}")
+
+
 @bot.message_handler(commands=["ayuda"])
 def cmd_ayuda(msg):
     if not allowed(msg): return
@@ -2295,7 +2545,7 @@ def handle_callback(call):
         "ipos": cmd_ipos, "backtest": cmd_backtest,
         "alertas": cmd_alertas, "seguimiento": cmd_seguimiento,
         "resumen_semana": cmd_resumen_semana, "ayuda": cmd_ayuda,
-        "ciclo": cmd_ciclo,
+        "ciclo": cmd_ciclo, "infravaloradas": cmd_infravaloradas,
         "riesgo_info": lambda m: safe_send(m.chat.id, "Uso: /riesgo CAPITAL RIESGO% TICKER ENTRADA STOP\nEj: /riesgo 10000 2 NVDA 890 865"),
     }
     fn = handlers.get(call.data)
