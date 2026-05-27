@@ -1,208 +1,245 @@
 import feedparser
-import logging
+import re
 from datetime import datetime
 
-from config import RSS_FEEDS
+# ─────────────────────────────────────────────────────────────
+# FUENTES RSS GRATUITAS PREMIUM
+# ─────────────────────────────────────────────────────────────
 
-log = logging.getLogger(__name__)
+RSS_FEEDS = [
+    # Yahoo Finance
+    "https://finance.yahoo.com/rss/topstories",
 
-# =========================================================
-# KEYWORDS IMPORTANTES
-# =========================================================
+    # Reuters Markets
+    "https://feeds.reuters.com/reuters/businessNews",
 
-IMPORTANT_KEYWORDS = [
-    "earnings",
-    "guidance",
-    "upgrade",
-    "downgrade",
-    "fda",
-    "acquisition",
-    "merger",
-    "ai",
-    "artificial intelligence",
-    "defense",
-    "military",
-    "space",
-    "nuclear",
-    "quantum",
-    "contract",
-    "breakthrough",
-    "bankruptcy",
-    "insider",
+    # CNBC
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+
+    # MarketWatch
+    "http://feeds.marketwatch.com/marketwatch/topstories/",
+
+    # Investing
+    "https://www.investing.com/rss/news.rss",
+
+    # Nasdaq
+    "https://www.nasdaq.com/feed/rssoutbound?category=Markets",
+
+    # Benzinga
+    "https://www.benzinga.com/feed",
+
+    # TheStreet
+    "https://www.thestreet.com/.rss/full/",
+
+    # CoinDesk
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+
+    # Seeking Alpha
+    "https://seekingalpha.com/feed.xml",
 ]
 
-# =========================================================
-# RSS NEWS
-# =========================================================
+# ─────────────────────────────────────────────────────────────
+# FILTROS
+# ─────────────────────────────────────────────────────────────
 
-def get_news(limit=30):
+GOOD_KEYWORDS = [
+    "stock",
+    "stocks",
+    "market",
+    "markets",
+    "nasdaq",
+    "dow",
+    "sp500",
+    "s&p",
+    "fed",
+    "federal reserve",
+    "interest rates",
+    "inflation",
+    "earnings",
+    "guidance",
+    "ipo",
+    "merger",
+    "acquisition",
+    "buyback",
+    "semiconductor",
+    "ai",
+    "artificial intelligence",
+    "nvidia",
+    "microsoft",
+    "apple",
+    "amazon",
+    "google",
+    "meta",
+    "tesla",
+    "bitcoin",
+    "crypto",
+    "ethereum",
+    "etf",
+    "oil",
+    "gold",
+    "bank",
+    "biotech",
+    "fda",
+    "bull",
+    "bear",
+    "rally",
+    "crash",
+    "surge",
+]
 
-    news = []
+BAD_KEYWORDS = [
+    "social security",
+    "retirement",
+    "mortgage",
+    "credit card",
+    "travel",
+    "recipe",
+    "celebrity",
+    "shopping",
+    "insurance",
+    "personal finance",
+    "dating",
+    "lifestyle",
+]
 
-    seen = set()
+# ─────────────────────────────────────────────────────────────
+# DETECTAR TICKERS
+# ─────────────────────────────────────────────────────────────
 
-    for feed_url in RSS_FEEDS:
-
-        try:
-
-            feed = feedparser.parse(feed_url)
-
-            for entry in feed.entries:
-
-                title = entry.get("title", "").strip()
-
-                if not title:
-                    continue
-
-                clean = title.lower()
-
-                if clean in seen:
-                    continue
-
-                seen.add(clean)
-
-                news.append({
-                    "title": title,
-                    "source": feed.feed.get("title", "RSS"),
-                    "link": entry.get("link", ""),
-                    "published": entry.get("published", ""),
-                    "important": is_important(title),
-                    "score": news_score(title),
-                })
-
-        except Exception as e:
-
-            log.warning(f"RSS error {feed_url}: {e}")
-
-    # ordenar por score
-    news.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
-
-    return news[:limit]
+def detect_tickers(text):
+    tickers = re.findall(r"\b[A-Z]{2,5}\b", text)
+    blacklist = {
+        "USA", "EU", "ETF", "FED", "CEO",
+        "USD", "GDP", "AI", "IPO", "SEC",
+        "FDA", "BTC"
+    }
+    return [t for t in tickers if t not in blacklist]
 
 
-# =========================================================
-# IMPORTANCE
-# =========================================================
+# ─────────────────────────────────────────────────────────────
+# IMPACTO
+# ─────────────────────────────────────────────────────────────
 
-def is_important(title):
-
+def detect_impact(title):
     t = title.lower()
 
-    for kw in IMPORTANT_KEYWORDS:
+    bullish = [
+        "beats",
+        "surges",
+        "jumps",
+        "buyback",
+        "acquisition",
+        "approval",
+        "bull",
+        "record revenue",
+        "strong guidance",
+    ]
 
-        if kw in t:
-            return True
+    bearish = [
+        "misses",
+        "falls",
+        "crash",
+        "lawsuit",
+        "downgrade",
+        "bear",
+        "investigation",
+        "weak guidance",
+    ]
+
+    for k in bullish:
+        if k in t:
+            return "BULLISH"
+
+    for k in bearish:
+        if k in t:
+            return "BEARISH"
+
+    return "NEUTRAL"
+
+
+# ─────────────────────────────────────────────────────────────
+# FILTRADO PRINCIPAL
+# ─────────────────────────────────────────────────────────────
+
+def valid_news(title):
+    t = title.lower()
+
+    if any(bad in t for bad in BAD_KEYWORDS):
+        return False
+
+    if any(good in t for good in GOOD_KEYWORDS):
+        return True
 
     return False
 
 
-# =========================================================
-# NEWS SCORE
-# =========================================================
+# ─────────────────────────────────────────────────────────────
+# MOTOR PRINCIPAL
+# ─────────────────────────────────────────────────────────────
 
-def news_score(title):
+def get_market_news(limit=25):
+    news = []
+    seen = set()
 
-    t = title.lower()
+    for url in RSS_FEEDS:
+        try:
+            feed = feedparser.parse(url)
 
-    score = 0
+            for entry in feed.entries[:20]:
 
-    for kw in IMPORTANT_KEYWORDS:
+                title = entry.title.strip()
 
-        if kw in t:
-            score += 2
+                if title in seen:
+                    continue
 
-    # IA y space pesan más
-    if "ai" in t:
-        score += 3
+                if not valid_news(title):
+                    continue
 
-    if "space" in t:
-        score += 3
+                seen.add(title)
 
-    if "nuclear" in t:
-        score += 2
+                summary = getattr(entry, "summary", "")
+                link = getattr(entry, "link", "")
 
-    if "quantum" in t:
-        score += 2
+                tickers = detect_tickers(title)
 
-    return score
+                impact = detect_impact(title)
 
+                news.append({
+                    "title": title,
+                    "summary": summary[:300],
+                    "link": link,
+                    "tickers": tickers,
+                    "impact": impact,
+                    "source": feed.feed.get("title", "Unknown"),
+                    "time": datetime.now().strftime("%H:%M"),
+                })
 
-# =========================================================
-# HOT NEWS
-# =========================================================
+        except Exception as e:
+            print(f"[NEWS ERROR] {url} -> {e}")
 
-def get_hot_news(limit=10):
-
-    news = get_news(100)
-
-    hot = [
-        n for n in news
-        if n["important"]
-    ]
-
-    hot.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
-
-    return hot[:limit]
-
-
-# =========================================================
-# TRENDING THEMES
-# =========================================================
-
-def trending_themes():
-
-    news = get_news(100)
-
-    themes = {
-        "AI": 0,
-        "SPACE": 0,
-        "NUCLEAR": 0,
-        "DEFENSE": 0,
-        "QUANTUM": 0,
+    # Ordenar
+    priority = {
+        "BULLISH": 0,
+        "BEARISH": 1,
+        "NEUTRAL": 2,
     }
 
-    for n in news:
+    news.sort(key=lambda x: priority.get(x["impact"], 99))
 
-        t = n["title"].lower()
-
-        if "ai" in t or "artificial intelligence" in t:
-            themes["AI"] += 1
-
-        if "space" in t:
-            themes["SPACE"] += 1
-
-        if "nuclear" in t:
-            themes["NUCLEAR"] += 1
-
-        if "defense" in t or "military" in t:
-            themes["DEFENSE"] += 1
-
-        if "quantum" in t:
-            themes["QUANTUM"] += 1
-
-    return themes
+    return news[:limit]
 
 
-# =========================================================
+# ─────────────────────────────────────────────────────────────
 # TEST
-# =========================================================
+# ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
 
-    print("\n======================")
-    print("HOT NEWS")
-    print("======================\n")
+    noticias = get_market_news()
 
-    news = get_hot_news()
+    for n in noticias[:10]:
 
-    for n in news:
-
-        print(f"[{n['score']}] {n['title']}")
-        print(f"Source: {n['source']}")
-        print()
+        print("\n━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"[{n['impact']}] {n['title']}")
+        print(f"Fuente: {n['source']}")
+        print(f"Tickers: {n['tickers']}")
