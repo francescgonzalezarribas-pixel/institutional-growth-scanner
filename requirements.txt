@@ -13,3 +13,4 @@ yfinance
 pandas
 numpy
 pytz
+feedparser
