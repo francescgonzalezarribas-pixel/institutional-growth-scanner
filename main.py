@@ -186,13 +186,13 @@ def fetch_quote(ticker, period="3mo"):
         l = hist["Low"]
         v = hist["Volume"]
 
-        price = float(c.iloc[-1])
+        price = float(c.iloc[-1].item())
 
         d1 = ((price - c.iloc[-2]) / c.iloc[-2]) * 100
         d5 = ((price - c.iloc[-6]) / c.iloc[-6]) * 100
         d20 = ((price - c.iloc[-21]) / c.iloc[-21]) * 100
 
-        rsi = calc_rsi(c).iloc[-1]
+        rsi = float(calc_rsi(c).iloc[-1].item())
 
         macd, signal = calc_macd(c)
 
@@ -201,8 +201,8 @@ def fetch_quote(ticker, period="3mo"):
             and macd.iloc[-2] <= signal.iloc[-2]
         )
 
-        ema20 = c.ewm(span=20).mean().iloc[-1]
-        ema50 = c.ewm(span=50).mean().iloc[-1]
+        ema20 = float(c.ewm(span=20).mean().iloc[-1].item())
+        ema50 = float(c.ewm(span=50).mean().iloc[-1].item())
 
         vol_avg = v.tail(20).mean()
         vol_rel = v.iloc[-1] / vol_avg if vol_avg > 0 else 1
@@ -211,8 +211,8 @@ def fetch_quote(ticker, period="3mo"):
         r1 = 2 * pivot - l.iloc[-1]
         s1 = 2 * pivot - h.iloc[-1]
 
-        hi52 = h.max()
-        lo52 = l.min()
+        hi52 = float(h.max().item())
+        lo52 = float(l.min().item())
 
         data = {
             "ticker": ticker,
@@ -281,7 +281,12 @@ def get_top_signals(tickers, n=3):
         if d["d5"] > 2:
             score += 1
 
-        if score >= 4:
+        # Señales mucho más fiables
+        tendencia_fuerte = d["d5"] > 3
+        volumen_fuerte = d["vol_rel"] > 1.8
+        momentum_ok = d["rsi"] > 55 and d["rsi"] < 72
+
+        if score >= 4 and tendencia_fuerte and volumen_fuerte and momentum_ok:
 
             d["score"] = score
             out.append(d)
@@ -309,6 +314,9 @@ def scan_explosions(tickers):
             and d["rsi"] < 75
         ):
             out.append(d)
+
+    # Orden por fuerza real
+    out.sort(key=lambda x: (x['vol_rel'] * x['d5']), reverse=True)
 
     return out[:5]
 
