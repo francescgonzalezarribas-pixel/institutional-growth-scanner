@@ -1024,7 +1024,7 @@ def get_intraday_signals(stocks, n=4):
 
 def generate_chart(ticker, entry, tp1, tp2, stop):
     try:
-        hist = yf.Ticker(ticker).history(period="1mo", interval="1d")
+        hist = yf.Ticker(ticker).history(period="2mo", interval="1d")
         if hist.empty or len(hist) < 5:
             return None
         hist.index = pd.to_datetime(hist.index)
@@ -1037,28 +1037,36 @@ def generate_chart(ticker, entry, tp1, tp2, stop):
         typical = (h + lo + c) / 3
         vwap_vals = (typical * vol).cumsum() / vol.cumsum()
 
-        # Bollinger Bands (20, 2)
-        bb_mid = c.rolling(20).mean()
-        bb_std = c.rolling(20).std()
-        bb_up  = bb_mid + 2 * bb_std
-        bb_dn  = bb_mid - 2 * bb_std
-
+        # Bollinger Bands (20, 2) — solo si hay suficientes datos
         ap = [
             mpf.make_addplot([entry]*len(hist), color='cyan',  linestyle='dashed', width=1.5),
             mpf.make_addplot([tp1]*len(hist),   color='lime',  linestyle='dashed', width=1.5),
             mpf.make_addplot([tp2]*len(hist),   color='green', linestyle='dashed', width=1.5),
             mpf.make_addplot([stop]*len(hist),  color='red',   linestyle='dashed', width=1.5),
-            mpf.make_addplot(vwap_vals,          color='yellow', width=1.2),
-            mpf.make_addplot(bb_up,              color='#888888', linestyle='dotted', width=0.8),
-            mpf.make_addplot(bb_dn,              color='#888888', linestyle='dotted', width=0.8),
-            mpf.make_addplot(bb_mid,             color='#555555', linestyle='dotted', width=0.8),
+            mpf.make_addplot(vwap_vals,          color='yellow', width=1.5, label='VWAP'),
         ]
+
+        if len(c) >= 20:
+            bb_mid = c.rolling(20).mean()
+            bb_std = c.rolling(20).std()
+            bb_up  = bb_mid + 2 * bb_std
+            bb_dn  = bb_mid - 2 * bb_std
+            ap.append(mpf.make_addplot(bb_up, color='#666666', linestyle='dotted', width=0.8))
+            ap.append(mpf.make_addplot(bb_dn, color='#666666', linestyle='dotted', width=0.8))
+
         s = mpf.make_mpf_style(base_mpf_style='nightclouds', gridstyle='')
         buf = io.BytesIO()
-        titulo = f'\n{nombre(ticker)} | Entrada:{entry} TP1:{tp1} TP2:{tp2} Stop:{stop} | VWAP:{round(vwap_vals.iloc[-1],2)}'
-        mpf.plot(hist, type='candle', style=s, figsize=(12, 6),
-                title=titulo, addplot=ap, volume=True,
-                savefig=dict(fname=buf, dpi=110, bbox_inches='tight'))
+        titulo = f'{nombre(ticker)} | E:{entry} TP1:{tp1} TP2:{tp2} SL:{stop} | VWAP:{round(vwap_vals.iloc[-1],2)}'
+        fig, axes = mpf.plot(
+            hist, type='candle', style=s,
+            figsize=(10, 6), title=f'\n{titulo}',
+            addplot=ap, volume=True,
+            returnfig=True
+        )
+        fig.savefig(buf, format='png', dpi=110,
+                   bbox_inches='tight', facecolor='#0d1117')
+        import matplotlib.pyplot as plt
+        plt.close(fig)
         buf.seek(0)
         return buf
     except Exception as e:
@@ -3156,3 +3164,4 @@ if __name__ == "__main__":
         log.info("Jobs automaticos activados")
     log.info("Financial Bot arrancado - Version Completa v6")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
+
