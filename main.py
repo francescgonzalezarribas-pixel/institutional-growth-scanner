@@ -127,18 +127,49 @@ def es_mercado_us_abierto():
     now = datetime.now(MADRID)
     return es_dia_laborable() and 15 <= now.hour < 23
 
-IBEX = ["SAN.MC","BBVA.MC","ITX.MC","REP.MC","TEF.MC","IBE.MC","ELE.MC","AMS.MC"]
-CAC = ["OR.PA","BNP.PA","AIR.PA","MC.PA","TTE.PA","LVMH.PA","BN.PA"]
-DAX_S = ["BMW.DE","BAS.DE","DTE.DE","VOW3.DE","SIE.DE","SAP"]
-FTSE_S = ["HSBA.L","BP.L","SHEL.L","AZN.L","RIO.L"]
-OTHER_EU = ["ASML","NESN.SW","NOVO-B.CO"]
+# IBEX 35 completo
+IBEX = [
+    "SAN.MC","BBVA.MC","ITX.MC","REP.MC","TEF.MC","IBE.MC","ELE.MC","AMS.MC",
+    "ACX.MC","ACS.MC","CABK.MC","CIE.MC","COL.MC","ENG.MC","FER.MC","GRF.MC",
+    "IAG.MC","MAP.MC","MEL.MC","MRL.MC","NTGY.MC","PHM.MC","RED.MC","SGRE.MC",
+    "VIS.MC","AENA.MC","ALM.MC","BKT.MC","CLNX.MC","FDR.MC","LOG.MC","MTS.MC",
+    "ROVI.MC","SAB.MC","UNI.MC",
+]
+CAC = ["OR.PA","BNP.PA","AIR.PA","MC.PA","TTE.PA","LVMH.PA","BN.PA",
+       "SU.PA","AI.PA","DSY.PA","VIE.PA","SGO.PA","RMS.PA","KER.PA"]
+DAX_S = ["BMW.DE","BAS.DE","DTE.DE","VOW3.DE","SIE.DE","SAP",
+         "ALV.DE","MUV2.DE","DBK.DE","ADS.DE","MBG.DE","BAYN.DE","ENR.DE"]
+FTSE_S = ["HSBA.L","BP.L","SHEL.L","AZN.L","RIO.L",
+          "ULVR.L","GSK.L","LSEG.L","BA.L","LLOY.L"]
+OTHER_EU = ["ASML","NESN.SW","NOVO-B.CO","HEIA.AS","PHIA.AS","UNA.AS"]
 EU_STOCKS = IBEX + CAC + DAX_S + FTSE_S + OTHER_EU
 
-US_STOCKS = [
+# US large caps
+US_LARGE = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AMD","INTC","CRM","ORCL",
     "JPM","GS","BAC","V","MA","JNJ","UNH","PFE","XOM","CVX",
     "WMT","HD","MCD","KO","PEP","BA","CAT","NFLX","DIS",
 ]
+
+# US mid caps y especulativas con potencial
+US_MID_SPEC = [
+    # IA e infraestructura
+    "PLTR","NET","SNOW","DDOG","MDB","CRWD","ZS","OKTA","PATH","AI",
+    # Fintech especulativo
+    "COIN","HOOD","AFRM","UPST","SOFI","NU","PYPL","SQ","MSTR",
+    # EV y movilidad
+    "RIVN","LCID","NIO","XPEV","LI","FSR",
+    # Espacio y defensa
+    "RKLB","ASTS","LUNR","ACHR","JOBY","SPCE",
+    # Biotech especulativo
+    "MRNA","BNTX","CRSP","BEAM","NTLA","RXRX",
+    # Nuclear y energia
+    "CCJ","NXE","SMR","OKLO","LEU",
+    # Otros especulativos
+    "RBLX","SNAP","PINS","OPEN","HIMS","DUOL","APP","CELH",
+]
+
+US_STOCKS = US_LARGE + US_MID_SPEC
 
 CRYPTO = ["BTC-USD","ETH-USD","SOL-USD","BNB-USD"]
 METALES = {"GC=F":"Oro","SI=F":"Plata","PL=F":"Platino","HG=F":"Cobre","PA=F":"Paladio"}
@@ -160,34 +191,27 @@ ETFS_ESPECIALES = ["LUNR","RKLB","ASTS","ACHR","JOBY"]
 
 # Universo ampliado para /infravaloradas
 INFRA_NOMBRES = {
-    # IA infraestructura
     "PLTR":"Palantir","NET":"Cloudflare","SNOW":"Snowflake","DDOG":"Datadog",
     "MDB":"MongoDB","CRWD":"CrowdStrike","ZS":"Zscaler","OKTA":"Okta",
-    # Uranium / Nuclear
     "CCJ":"Cameco","NXE":"NexGen Energy","URA":"Uranium ETF","NUKZ":"Nuclear ETF",
     "DNN":"Denison Mines","URG":"Ur-Energy",
-    # Espacio
     "RKLB":"Rocket Lab","ASTS":"AST SpaceMobile","LUNR":"Intuitive Machines",
     "MNTS":"Momentus","SPCE":"Virgin Galactic",
-    # DeFi / Crypto
     "AAVE-USD":"Aave","UNI-USD":"Uniswap","MKR-USD":"Maker","COMP-USD":"Compound",
     "ARB-USD":"Arbitrum","OP-USD":"Optimism","MATIC-USD":"Polygon",
     "LDO-USD":"Lido","SNX-USD":"Synthetix",
-    # Biotech / Salud infravalorada
     "MRNA":"Moderna","BNTX":"BioNTech","BEAM":"Beam Therapeutics",
     "CRSP":"CRISPR Therapeutics","NTLA":"Intellia Therapeutics",
-    # Fintech
     "AFRM":"Affirm","UPST":"Upstart","SOFI":"SoFi Technologies",
     "NU":"Nu Holdings","PYPL":"PayPal",
-    # Semiconductores ciclo bajo
     "INTC":"Intel","MCHP":"Microchip Tech","ON":"ON Semiconductor",
-    "WOLF":"Wolfspeed","CREE":"Cree",
-    # Value en corrección
     "BABA":"Alibaba","JD":"JD.com","PDD":"PDD Holdings",
     "PINS":"Pinterest","SNAP":"Snap","RBLX":"Roblox",
+    "COIN":"Coinbase","HOOD":"Robinhood","MSTR":"MicroStrategy",
+    "RIVN":"Rivian","LCID":"Lucid","NIO":"NIO","XPEV":"XPeng",
+    "SMR":"NuScale Power","OKLO":"Oklo","APP":"AppLovin","CELH":"Celsius",
 }
 
-# Crypto DeFi para infravaloradas (usar yfinance con -USD)
 DEFI_CRYPTO = [
     "AAVE-USD","UNI-USD","MKR-USD","COMP-USD",
     "ARB-USD","OP-USD","MATIC-USD","LDO-USD",
@@ -196,7 +220,7 @@ DEFI_CRYPTO = [
 INFRA_UNIVERSE = (
     list(INFRA_NOMBRES.keys()) +
     US_STOCKS +
-    EU_STOCKS[:15] +
+    EU_STOCKS[:20] +
     ["BTC-USD","ETH-USD","SOL-USD","BNB-USD"]
 )
 
@@ -215,6 +239,8 @@ SECTORES_SP500 = {
 }
 
 RSS_FEEDS = [
+    "https://feeds.bloomberg.com/markets/news.rss",
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "https://feeds.marketwatch.com/marketwatch/topstories/",
     "https://news.google.com/rss/search?q=stock+market+europe+usa&hl=en&gl=US&ceid=US:en",
     "https://feeds.reuters.com/reuters/businessNews",
@@ -344,6 +370,11 @@ def fetch_quote(ticker, period="3mo"):
             tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
             atr = tr.ewm(span=14, adjust=False).mean().iloc[-1]
 
+            # VWAP (precio ponderado por volumen - ultimos 20 dias)
+            typical_price = (h + lo + c) / 3
+            vwap = (typical_price * vol).tail(20).sum() / vol.tail(20).sum() if vol.tail(20).sum() > 0 else price
+            sobre_vwap = price > vwap
+
             ema20_s = c.ewm(span=20, adjust=False).mean()
             ema50_s = c.ewm(span=50, adjust=False).mean()
             ema20_v = ema20_s.iloc[-1]
@@ -393,6 +424,8 @@ def fetch_quote(ticker, period="3mo"):
                 "fuerza_relativa": fuerza_relativa,
                 "max20": round(max20, 2),
                 "atr": round(atr, 2),
+                "vwap": round(vwap, 2),
+                "sobre_vwap": sobre_vwap,
             }
         except Exception as e:
             log.warning(f"fetch_quote {ticker} period={p}: {e}")
@@ -874,6 +907,121 @@ def generate_cycle_chart(mercados):
     return buf
 
 
+def fetch_intraday(ticker):
+    """Datos intradía 5min para señales rápidas."""
+    try:
+        hist = yf.Ticker(ticker).history(period="5d", interval="15m")
+        if hist.empty or len(hist) < 20:
+            return None
+        c, h, lo, vol = hist["Close"], hist["High"], hist["Low"], hist["Volume"]
+        price = c.iloc[-1]
+        d1 = (price - c.iloc[-2]) / c.iloc[-2] * 100 if len(c) > 1 else 0
+        rsi = calc_rsi(c).iloc[-1] if len(c) >= 14 else 50
+        macd_l, macd_s = calc_macd(c)
+        macd_cross_up = (len(macd_l) >= 2 and
+                         macd_l.iloc[-1] > macd_s.iloc[-1] and
+                         macd_l.iloc[-2] <= macd_s.iloc[-2])
+        avg_vol = vol.tail(20).mean() if len(vol) >= 20 else vol.mean()
+        vol_rel = vol.iloc[-1] / avg_vol if avg_vol > 0 else 1.0
+        typical_price = (h + lo + c) / 3
+        vwap = (typical_price * vol).tail(20).sum() / vol.tail(20).sum() if vol.tail(20).sum() > 0 else price
+        ema9 = c.ewm(span=9, adjust=False).mean().iloc[-1]
+        ema21 = c.ewm(span=21, adjust=False).mean().iloc[-1]
+        high_low = h - lo
+        high_close = (h - c.shift()).abs()
+        low_close = (lo - c.shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        atr = tr.ewm(span=14, adjust=False).mean().iloc[-1]
+        s1 = round(2 * (h.iloc[-1] + lo.iloc[-1] + c.iloc[-1]) / 3 - h.iloc[-1], 2)
+        r1 = round(2 * (h.iloc[-1] + lo.iloc[-1] + c.iloc[-1]) / 3 - lo.iloc[-1], 2)
+        return {
+            "ticker": ticker,
+            "nombre": nombre(ticker),
+            "price": round(price, 2),
+            "d1": round(d1, 2),
+            "rsi": round(rsi, 1),
+            "macd_cross_up": macd_cross_up,
+            "vol_rel": round(vol_rel, 2),
+            "vwap": round(vwap, 2),
+            "sobre_vwap": price > vwap,
+            "ema9": round(ema9, 2),
+            "ema21": round(ema21, 2),
+            "tendencia_alcista": ema9 > ema21,
+            "atr": round(atr, 2),
+            "s1": s1, "r1": r1,
+        }
+    except Exception as e:
+        log.warning(f"fetch_intraday {ticker}: {e}")
+        return None
+
+
+def get_intraday_signals(stocks, n=4):
+    """Señales intradía basadas en 15min."""
+    candidatos = []
+    for t in stocks:
+        d = fetch_intraday(t)
+        if not d:
+            continue
+        if d["vol_rel"] < 1.2:
+            continue
+        if d["rsi"] > 70 or d["rsi"] < 25:
+            continue
+        score = 0
+        motivos = []
+        # VWAP — clave para intradía
+        if d["sobre_vwap"]:
+            score += 4
+            motivos.append(f"Precio sobre VWAP {d['vwap']} — momentum institucional")
+        # RSI
+        if 40 <= d["rsi"] <= 60:
+            score += 3
+            motivos.append(f"RSI {d['rsi']} zona momentum")
+        elif d["rsi"] < 40:
+            score += 2
+            motivos.append(f"RSI {d['rsi']} rebote potencial")
+        # MACD
+        if d["macd_cross_up"]:
+            score += 4
+            motivos.append("MACD cruce alcista 15min")
+        # Volumen
+        if d["vol_rel"] >= 2.0:
+            score += 3
+            motivos.append(f"Volumen {d['vol_rel']}x — aceleracion")
+        elif d["vol_rel"] >= 1.5:
+            score += 2
+            motivos.append(f"Volumen {d['vol_rel']}x elevado")
+        elif d["vol_rel"] >= 1.2:
+            score += 1
+        # EMA9 > EMA21
+        if d["tendencia_alcista"]:
+            score += 2
+            motivos.append("EMA9 > EMA21 tendencia alcista")
+        # Momentum del dia
+        if d["d1"] >= 1.5:
+            score += 2
+            motivos.append(f"Hoy +{d['d1']}% momentum")
+        elif d["d1"] >= 0.5:
+            score += 1
+        if score < 10:
+            continue
+        entry = d["price"]
+        atr = d["atr"]
+        stop = round(entry - atr * 1.0, 2)
+        risk = entry - stop
+        if risk <= 0:
+            continue
+        tp1 = round(entry + risk * 1.0, 2)
+        tp2 = round(entry + risk * 2.0, 2)
+        rr = round((tp1 - entry) / risk, 2)
+        candidatos.append({
+            **d, "score": score, "motivos": motivos,
+            "direction": "COMPRAR", "modo": "intraday",
+            "entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "rr": rr,
+        })
+    candidatos.sort(key=lambda x: x["score"], reverse=True)
+    return candidatos[:n]
+
+
 def generate_chart(ticker, entry, tp1, tp2, stop):
     try:
         hist = yf.Ticker(ticker).history(period="1mo", interval="1d")
@@ -882,18 +1030,35 @@ def generate_chart(ticker, entry, tp1, tp2, stop):
         hist.index = pd.to_datetime(hist.index)
         if hist.index.tz is not None:
             hist.index = hist.index.tz_localize(None)
+
+        c, h, lo, vol = hist["Close"], hist["High"], hist["Low"], hist["Volume"]
+
+        # VWAP
+        typical = (h + lo + c) / 3
+        vwap_vals = (typical * vol).cumsum() / vol.cumsum()
+
+        # Bollinger Bands (20, 2)
+        bb_mid = c.rolling(20).mean()
+        bb_std = c.rolling(20).std()
+        bb_up  = bb_mid + 2 * bb_std
+        bb_dn  = bb_mid - 2 * bb_std
+
         ap = [
-            mpf.make_addplot([entry]*len(hist), color='cyan', linestyle='dashed', width=1.5),
-            mpf.make_addplot([tp1]*len(hist), color='lime', linestyle='dashed', width=1.5),
-            mpf.make_addplot([tp2]*len(hist), color='green', linestyle='dashed', width=1.5),
-            mpf.make_addplot([stop]*len(hist), color='red', linestyle='dashed', width=1.5),
+            mpf.make_addplot([entry]*len(hist), color='cyan',  linestyle='dashed', width=1.5),
+            mpf.make_addplot([tp1]*len(hist),   color='lime',  linestyle='dashed', width=1.5),
+            mpf.make_addplot([tp2]*len(hist),   color='green', linestyle='dashed', width=1.5),
+            mpf.make_addplot([stop]*len(hist),  color='red',   linestyle='dashed', width=1.5),
+            mpf.make_addplot(vwap_vals,          color='yellow', width=1.2),
+            mpf.make_addplot(bb_up,              color='#888888', linestyle='dotted', width=0.8),
+            mpf.make_addplot(bb_dn,              color='#888888', linestyle='dotted', width=0.8),
+            mpf.make_addplot(bb_mid,             color='#555555', linestyle='dotted', width=0.8),
         ]
         s = mpf.make_mpf_style(base_mpf_style='nightclouds', gridstyle='')
         buf = io.BytesIO()
-        titulo = f'\n{nombre(ticker)} ({ticker})  Entrada:{entry}  TP1:{tp1}  TP2:{tp2}  Stop:{stop}'
-        mpf.plot(hist, type='candle', style=s, figsize=(10, 5),
-                title=titulo, addplot=ap,
-                savefig=dict(fname=buf, dpi=100, bbox_inches='tight'))
+        titulo = f'\n{nombre(ticker)} | Entrada:{entry} TP1:{tp1} TP2:{tp2} Stop:{stop} | VWAP:{round(vwap_vals.iloc[-1],2)}'
+        mpf.plot(hist, type='candle', style=s, figsize=(12, 6),
+                title=titulo, addplot=ap, volume=True,
+                savefig=dict(fname=buf, dpi=110, bbox_inches='tight'))
         buf.seek(0)
         return buf
     except Exception as e:
@@ -1054,7 +1219,11 @@ def get_noticias_ticker(ticker, nombre_empresa):
         return []
 
 
-def get_top_signals(stocks, n=4):
+def get_top_signals(stocks, n=4, modo="swing"):
+    """
+    modo='swing': señales swing 1-4 semanas, score minimo 12
+    modo='intraday': señales intradía, score minimo 10, criterios distintos
+    """
     mercado_ok = mercado_en_tendencia_alcista()
     candidatos = []
     for t in stocks:
@@ -1063,58 +1232,77 @@ def get_top_signals(stocks, n=4):
             continue
 
         # Filtros obligatorios
-        if d["rsi"] > 65:
+        if d["rsi"] > 68:
             continue
-        if d["vol_rel"] < 0.8:
+        if d["vol_rel"] < 0.7:
             continue
-
-        # Filtro mercado: si mercado bajista, solo señales con RSI muy bajo
-        if not mercado_ok and d["rsi"] > 40:
+        if not mercado_ok and d["rsi"] > 45:
             continue
 
         score = 0
         motivos = []
 
-        # 1. RSI
-        if d["rsi"] < 30:
+        # 1. RSI diario (max 5pts)
+        if d["rsi"] < 25:
             score += 5
-            motivos.append(f"RSI {d['rsi']} sobreventa fuerte")
-        elif d["rsi"] < 40:
+            motivos.append(f"RSI {d['rsi']} sobreventa extrema")
+        elif d["rsi"] < 35:
             score += 4
+            motivos.append(f"RSI {d['rsi']} sobreventa")
+        elif d["rsi"] < 45:
+            score += 3
             motivos.append(f"RSI {d['rsi']} zona ideal entrada")
         elif d["rsi"] < 55:
-            score += 3
+            score += 2
             motivos.append(f"RSI {d['rsi']} saludable")
-        elif d["rsi"] < 65:
+        elif d["rsi"] < 68:
             score += 1
             motivos.append(f"RSI {d['rsi']} neutral")
 
-        # 2. Confirmacion RSI semanal
+        # 2. RSI semanal confirmacion (max 3pts)
         rsi_w = fetch_weekly_rsi(t)
         if rsi_w is not None:
-            if rsi_w < 50:
+            if rsi_w < 40:
+                score += 3
+                motivos.append(f"RSI semanal {rsi_w} confirma ambos TF")
+            elif rsi_w < 50:
                 score += 2
-                motivos.append(f"RSI semanal {rsi_w} confirma (2 timeframes)")
+                motivos.append(f"RSI semanal {rsi_w} confirma")
             elif rsi_w < 60:
                 score += 1
 
-        # 3. MACD cruce alcista
+        # 3. MACD cruce alcista (4pts)
         if d["macd_cross_up"]:
             score += 4
-            motivos.append("MACD cruce alcista")
+            motivos.append("MACD cruce alcista confirmado")
 
-        # 4. Volumen
-        if d["vol_rel"] >= 2.0:
-            score += 4
-            motivos.append(f"Volumen {d['vol_rel']}x fuerte")
-        elif d["vol_rel"] >= 1.5:
+        # 4. VWAP (3pts) — precio sobre VWAP = fuerza real
+        if d.get("sobre_vwap"):
             score += 3
+            motivos.append(f"Precio sobre VWAP ({d.get('vwap',0)}) — fuerza institucional")
+        else:
+            # Bajo VWAP pero muy cerca = posible rebote
+            if d.get("vwap", 0) > 0:
+                dist_vwap = (d["price"] - d["vwap"]) / d["vwap"] * 100
+                if dist_vwap > -2:
+                    score += 1
+                    motivos.append(f"Cerca de VWAP ({d.get('vwap',0)}) rebote potencial")
+
+        # 5. Volumen (max 4pts)
+        if d["vol_rel"] >= 2.5:
+            score += 4
+            motivos.append(f"Volumen {d['vol_rel']}x excepcional")
+        elif d["vol_rel"] >= 1.8:
+            score += 3
+            motivos.append(f"Volumen {d['vol_rel']}x muy elevado")
+        elif d["vol_rel"] >= 1.3:
+            score += 2
             motivos.append(f"Volumen {d['vol_rel']}x elevado")
         elif d["vol_rel"] >= 1.0:
             score += 1
             motivos.append(f"Volumen {d['vol_rel']}x normal")
 
-        # 5. Tendencia EMA
+        # 6. Tendencia EMA (max 4pts)
         if d["tendencia_alcista"] and d["ema20_subiendo"]:
             score += 4
             motivos.append("EMA20 > EMA50 y subiendo")
@@ -1125,43 +1313,40 @@ def get_top_signals(stocks, n=4):
             score += 1
             motivos.append("Precio sobre EMA20")
 
-        # 6. Breakout
+        # 7. Breakout (max 3pts)
         if d["cerca_breakout"]:
             score += 3
-            motivos.append(f"Breakout inminente a {d['max20']} ({d['dist_breakout']}%)")
+            motivos.append(f"Breakout inminente {d['max20']} ({d['dist_breakout']}%)")
         elif d["dist_breakout"] <= 3.0:
             score += 1
-            motivos.append(f"Cerca maximo 20d ({d['dist_breakout']}%)")
 
-        # 7. Fuerza relativa
+        # 8. Fuerza relativa (2pts)
         if d["fuerza_relativa"]:
             score += 2
-            motivos.append(f"Fuerza relativa: +{d['d20']}% mensual")
+            motivos.append(f"Fuerza relativa +{d['d20']}% mensual")
 
-        # 8. Momentum
-        if d["d1"] >= 1.5:
+        # 9. Momentum (max 2pts)
+        if d["d1"] >= 2.0:
             score += 1
-        if d["d5"] >= 3.0:
+        if d["d5"] >= 4.0:
             score += 1
 
-        # 9. Soporte cercano
+        # 10. Soporte cercano (2pts)
         for nivel in [d["s1"], d["s2"]]:
             if nivel > 0 and abs(d["price"] - nivel) / nivel * 100 <= 1.5:
                 score += 2
-                motivos.append(f"Cerca soporte {nivel}")
+                motivos.append(f"En zona soporte {nivel}")
                 break
 
-        # Umbral minimo
-        if score < 7:
+        # Umbral minimo segun modo
+        umbral = 12 if modo == "swing" else 10
+        if score < umbral:
             continue
 
         entry = d["price"]
         atr = d.get("atr", entry * 0.02)
-
-        # Stop loss dinamico basado en ATR (1.5x ATR)
-        stop_atr  = round(entry - atr * 1.5, 2)
-        stop_sr   = round(d["s1"] * 0.985, 2)
-        # Usar el stop mas cercano al precio (mas conservador)
+        stop_atr = round(entry - atr * 1.5, 2)
+        stop_sr  = round(d["s1"] * 0.985, 2)
         stop = max(stop_atr, stop_sr) if stop_sr > 0 else stop_atr
         if stop <= 0 or entry - stop > entry * 0.08:
             stop = round(entry * 0.97, 2)
@@ -1170,16 +1355,20 @@ def get_top_signals(stocks, n=4):
         if risk <= 0:
             continue
 
-        tp1 = round(entry + risk * 1.5, 2)
-        tp2 = round(entry + risk * 3.0, 2)
+        # Modo swing: TP mas alejados
+        # Modo intraday: TP mas cercanos
+        mult_tp1 = 1.5 if modo == "swing" else 1.0
+        mult_tp2 = 3.0 if modo == "swing" else 2.0
+        tp1 = round(entry + risk * mult_tp1, 2)
+        tp2 = round(entry + risk * mult_tp2, 2)
         rr  = round((tp1 - entry) / risk, 2)
 
         if not mercado_ok:
-            motivos.insert(0, "AVISO: mercado general bajista, operar con cautela")
+            motivos.insert(0, "AVISO: mercado bajista, operar con cautela")
 
         candidatos.append({
             **d, "score": score, "motivos": motivos,
-            "direction": "COMPRAR",
+            "direction": "COMPRAR", "modo": modo,
             "entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "rr": rr,
             "atr": round(atr, 2), "rsi_semanal": rsi_w,
         })
@@ -1368,8 +1557,9 @@ def send_signal(chat_id, s):
     pct_tp1 = (s['tp1']/s['entry']-1)*100
     pct_tp2 = (s['tp2']/s['entry']-1)*100
     pct_sl  = (s['stop']/s['entry']-1)*100
-    rsi_txt = (f"{s['rsi']} (zona ideal)" if 35 <= s['rsi'] <= 50
-               else f"{s['rsi']} (sobreventa)" if s['rsi'] < 35
+    rsi_txt = (f"{s['rsi']} (sobreventa)" if s['rsi'] < 35
+               else f"{s['rsi']} (zona ideal)" if s['rsi'] < 45
+               else f"{s['rsi']} (saludable)" if s['rsi'] < 55
                else f"{s['rsi']}")
     tendencia  = "ALCISTA" if s.get("tendencia_alcista") else "LATERAL"
     ema_txt    = f"EMA20:{s.get('ema20','-')} EMA50:{s.get('ema50','-')}"
@@ -1377,18 +1567,21 @@ def send_signal(chat_id, s):
                   if s.get("cerca_breakout") else "NO")
     fuerza_txt = f"SI (+{s['d20']}% mes)" if s.get("fuerza_relativa") else "NO"
     rsi_w_txt  = f"{s['rsi_semanal']}" if s.get("rsi_semanal") else "N/D"
+    vwap_txt   = f"{s.get('vwap','-')} ({'SOBRE' if s.get('sobre_vwap') else 'BAJO'})"
+    modo_txt   = "INTRADÍA" if s.get("modo") == "intraday" else "SWING"
     motivos    = "\n  ".join(s.get("motivos", []))
-    text = (f"SENAL: {s['nombre']} ({s['ticker']})\n"
+    text = (f"SENAL {modo_txt}: {s['nombre']} ({s['ticker']})\n"
             f"Accion:   {s['direction']}\n"
             f"Entrada:  {s['entry']}\n"
             f"TP1:      {s['tp1']} ({pct_tp1:+.1f}%)\n"
             f"TP2:      {s['tp2']} ({pct_tp2:+.1f}%)\n"
             f"Stop:     {s['stop']} ({pct_sl:+.1f}%) [ATR:{s.get('atr','-')}]\n"
             f"R/R:      {s['rr']}x\n"
-            f"Score:    {s['score']}/24\n\n"
+            f"Score:    {s['score']}/28\n\n"
             f"CRITERIOS:\n"
             f"RSI diario:    {rsi_txt}\n"
             f"RSI semanal:   {rsi_w_txt}\n"
+            f"VWAP:          {vwap_txt}\n"
             f"Volumen:       {s['vol_rel']}x media\n"
             f"Tendencia EMA: {tendencia} ({ema_txt})\n"
             f"Breakout:      {breakout}\n"
@@ -1398,9 +1591,9 @@ def send_signal(chat_id, s):
     chart = generate_chart(s['ticker'], s['entry'], s['tp1'], s['tp2'], s['stop'])
     if chart:
         try:
-            caption = (f"{s['nombre']} | {s['direction']}\n"
+            caption = (f"{s['nombre']} | {modo_txt} | {s['direction']}\n"
                        f"Entrada:{s['entry']} TP1:{s['tp1']} TP2:{s['tp2']} Stop:{s['stop']}\n"
-                       f"R/R:{s['rr']}x | RSI:{s['rsi']} | Score:{s['score']}/24")
+                       f"R/R:{s['rr']}x | RSI:{s['rsi']} | VWAP:{vwap_txt} | Score:{s['score']}/28")
             bot.send_photo(chat_id, chart, caption=caption)
             time.sleep(0.5)
             safe_send(chat_id, text)
@@ -1518,6 +1711,8 @@ def main_kb():
            InlineKeyboardButton("Resumen Semana", callback_data="resumen_semana"))
     kb.row(InlineKeyboardButton("Infravaloradas", callback_data="infravaloradas"),
            InlineKeyboardButton("Ayuda", callback_data="ayuda"))
+    kb.row(InlineKeyboardButton("Intraday", callback_data="intraday"),
+           InlineKeyboardButton("Seguimiento", callback_data="seguimiento"))
     return kb
 
 
@@ -2424,6 +2619,28 @@ def cmd_ciclo(msg):
         safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
 
 
+@bot.message_handler(commands=["intraday"])
+def cmd_intraday(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Buscando señales intradía (15min)... RSI+MACD+VWAP+Volumen")
+    stocks = US_LARGE + IBEX[:10] + ["BTC-USD","ETH-USD","SOL-USD","BNB-USD"]
+    signals = get_intraday_signals(stocks, n=3)
+    if not signals:
+        safe_send(msg.chat.id,
+            "Sin señales intradía claras ahora mismo.\n"
+            "Busca momentum fuerte + VWAP + volumen elevado.",
+            message_id=m.message_id)
+        return
+    bot.delete_message(msg.chat.id, m.message_id)
+    safe_send(msg.chat.id,
+        f"SEÑALES INTRADÍA {datetime.now().strftime('%d/%m %H:%M')}\n"
+        f"Timeframe: 15min | TP ajustados para el día\n"
+        f"{len(signals)} oportunidades:")
+    for s in signals:
+        send_signal(msg.chat.id, s)
+        time.sleep(1)
+
+
 @bot.message_handler(commands=["infravaloradas"])
 def cmd_infravaloradas(msg):
     if not allowed(msg): return
@@ -2565,6 +2782,7 @@ def handle_callback(call):
         "alertas": cmd_alertas, "seguimiento": cmd_seguimiento,
         "resumen_semana": cmd_resumen_semana, "ayuda": cmd_ayuda,
         "ciclo": cmd_ciclo, "infravaloradas": cmd_infravaloradas,
+        "intraday": cmd_intraday, "seguimiento": cmd_seguimiento,
         "riesgo_info": lambda m: safe_send(m.chat.id, "Uso: /riesgo CAPITAL RIESGO% TICKER ENTRADA STOP\nEj: /riesgo 10000 2 NVDA 890 865"),
     }
     fn = handlers.get(call.data)
@@ -2577,9 +2795,6 @@ def handle_callback(call):
 def job_senales_eu():
     """9:00 lunes-viernes — Senales Europa."""
     if not es_dia_laborable():
-        return
-    if es_festivo_eu():
-        safe_send(ALLOWED_USER_ID, f"Buenos dias — Mercado europeo cerrado por festivo hoy {datetime.now().strftime('%d/%m')}.")
         return
     safe_send(ALLOWED_USER_ID, f"BUENOS DIAS - Senales Europa {datetime.now().strftime('%d/%m')}")
     signals = get_top_signals(EU_STOCKS, n=3)
@@ -2613,9 +2828,6 @@ def job_senales_us():
     """15:00 lunes-viernes — Senales EEUU solo acciones."""
     if not es_dia_laborable():
         return
-    if es_mercado_us_cerrado():
-        safe_send(ALLOWED_USER_ID, f"Premercado EEUU {datetime.now().strftime('%d/%m')} — Mercado cerrado por festivo.")
-        return
     safe_send(ALLOWED_USER_ID, f"PREMERCADO EEUU {datetime.now().strftime('%d/%m %H:%M')}")
     signals = get_top_signals(US_STOCKS, n=3)
     if signals:
@@ -2629,9 +2841,6 @@ def job_senales_us():
 def job_close_eu():
     """17:35 lunes-viernes — Cierre Europa."""
     if not es_dia_laborable():
-        return
-    if es_festivo_eu():
-        safe_send(ALLOWED_USER_ID, f"Cierre Europa {datetime.now().strftime('%d/%m')} — Mercado cerrado por festivo.")
         return
     lines, data_ai = [], []
     for t, nom in list(INDICES.items())[3:]:
@@ -2655,9 +2864,6 @@ def job_close_eu():
 def job_close_us():
     """22:05 lunes-viernes — Cierre EEUU."""
     if not es_dia_laborable():
-        return
-    if es_mercado_us_cerrado():
-        safe_send(ALLOWED_USER_ID, f"Cierre EEUU {datetime.now().strftime('%d/%m')} — Mercado cerrado por festivo.")
         return
     lines, data_ai = [], []
     for t, nom in list(INDICES.items())[:3]:
