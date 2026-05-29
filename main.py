@@ -131,17 +131,17 @@ def es_mercado_us_abierto():
 IBEX = [
     "SAN.MC","BBVA.MC","ITX.MC","REP.MC","TEF.MC","IBE.MC","ELE.MC","AMS.MC",
     "ACX.MC","ACS.MC","CABK.MC","CIE.MC","COL.MC","ENG.MC","FER.MC","GRF.MC",
-    "IAG.MC","MAP.MC","MEL.MC","MRL.MC","NTGY.MC","PHM.MC","RED.MC","SGRE.MC",
-    "VIS.MC","AENA.MC","ALM.MC","BKT.MC","CLNX.MC","FDR.MC","LOG.MC","MTS.MC",
+    "IAG.MC","MAP.MC","MEL.MC","MRL.MC","NTGY.MC","PHM.MC","RED.MC",
+    "VIS.MC","AENA.MC","ALM.MC","BKT.MC","CLNX.MC","LOG.MC","MTS.MC",
     "ROVI.MC","SAB.MC","UNI.MC",
 ]
-CAC = ["OR.PA","BNP.PA","AIR.PA","MC.PA","TTE.PA","LVMH.PA","BN.PA",
-       "SU.PA","AI.PA","DSY.PA","VIE.PA","SGO.PA","RMS.PA","KER.PA"]
+CAC = ["OR.PA","BNP.PA","AIR.PA","MC.PA","TTE.PA","BN.PA",
+       "SU.PA","AI.PA","DSY.PA","VIE.PA","SGO.PA","RMS.PA"]
 DAX_S = ["BMW.DE","BAS.DE","DTE.DE","VOW3.DE","SIE.DE","SAP",
-         "ALV.DE","MUV2.DE","DBK.DE","ADS.DE","MBG.DE","BAYN.DE","ENR.DE"]
+         "ALV.DE","MUV2.DE","DBK.DE","ADS.DE","MBG.DE","BAYN.DE"]
 FTSE_S = ["HSBA.L","BP.L","SHEL.L","AZN.L","RIO.L",
-          "ULVR.L","GSK.L","LSEG.L","BA.L","LLOY.L"]
-OTHER_EU = ["ASML","NESN.SW","NOVO-B.CO","HEIA.AS","PHIA.AS","UNA.AS"]
+          "ULVR.L","GSK.L","LSEG.L","LLOY.L"]
+OTHER_EU = ["ASML","NESN.SW","NOVO-B.CO","HEIA.AS","PHIA.AS"]
 EU_STOCKS = IBEX + CAC + DAX_S + FTSE_S + OTHER_EU
 
 # US large caps
@@ -1290,6 +1290,8 @@ def get_top_signals(stocks, n=4, modo="swing"):
                 continue
             if trend_w["dist_max_w"] < -40 and trend_w["rsi_w"] > 40:
                 continue
+
+        score = 0
         motivos = []
 
         # 1. RSI diario (max 5pts)
