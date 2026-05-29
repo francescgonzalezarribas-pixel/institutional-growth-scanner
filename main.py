@@ -1038,12 +1038,18 @@ def generate_chart(ticker, entry, tp1, tp2, stop):
         vwap_vals = (typical * vol).cumsum() / vol.cumsum()
 
         # Bollinger Bands (20, 2) — solo si hay suficientes datos
+        # EMA20 y EMA50
+        ema20_line = c.ewm(span=20, adjust=False).mean()
+        ema50_line = c.ewm(span=50, adjust=False).mean()
+
         ap = [
-            mpf.make_addplot([entry]*len(hist), color='cyan',  linestyle='dashed', width=1.5),
-            mpf.make_addplot([tp1]*len(hist),   color='lime',  linestyle='dashed', width=1.5),
-            mpf.make_addplot([tp2]*len(hist),   color='green', linestyle='dashed', width=1.5),
-            mpf.make_addplot([stop]*len(hist),  color='red',   linestyle='dashed', width=1.5),
-            mpf.make_addplot(vwap_vals,          color='yellow', width=1.5, label='VWAP'),
+            mpf.make_addplot([entry]*len(hist), color='cyan',   linestyle='dashed', width=1.5),
+            mpf.make_addplot([tp1]*len(hist),   color='lime',   linestyle='dashed', width=1.5),
+            mpf.make_addplot([tp2]*len(hist),   color='green',  linestyle='dashed', width=1.5),
+            mpf.make_addplot([stop]*len(hist),  color='red',    linestyle='dashed', width=1.5),
+            mpf.make_addplot(vwap_vals,          color='yellow', width=1.5),
+            mpf.make_addplot(ema20_line,         color='#00BFFF', width=1.2),
+            mpf.make_addplot(ema50_line,         color='#FF8C00', width=1.2),
         ]
 
         if len(c) >= 20:
@@ -1056,7 +1062,9 @@ def generate_chart(ticker, entry, tp1, tp2, stop):
 
         s = mpf.make_mpf_style(base_mpf_style='nightclouds', gridstyle='')
         buf = io.BytesIO()
-        titulo = f'{nombre(ticker)} | E:{entry} TP1:{tp1} TP2:{tp2} SL:{stop} | VWAP:{round(vwap_vals.iloc[-1],2)}'
+        titulo = (f'{nombre(ticker)} | E:{entry} TP1:{tp1} SL:{stop} | '
+                  f'VWAP:{round(vwap_vals.iloc[-1],2)} '
+                  f'EMA20:{round(ema20_line.iloc[-1],2)} EMA50:{round(ema50_line.iloc[-1],2)}')
         fig, axes = mpf.plot(
             hist, type='candle', style=s,
             figsize=(10, 6), title=f'\n{titulo}',
@@ -1084,13 +1092,30 @@ def mercado_en_tendencia_alcista():
     return alcistas >= 1  # Al menos uno alcista para dar señales
 
 
-def fetch_weekly_rsi(ticker):
-    """RSI semanal para confirmacion 2 timeframes."""
+def fetch_weekly_trend(ticker):
+    """Tendencia semanal: EMA20 semanal vs EMA50 semanal y pendiente."""
     try:
-        hist = yf.Ticker(ticker).history(period="1y", interval="1wk")
-        if hist.empty or len(hist) < 14:
+        hist = yf.Ticker(ticker).history(period="2y", interval="1wk")
+        if hist.empty or len(hist) < 20:
             return None
-        return round(calc_rsi(hist["Close"]).iloc[-1], 1)
+        c = hist["Close"]
+        ema20w = c.ewm(span=20, adjust=False).mean()
+        ema50w = c.ewm(span=50, adjust=False).mean()
+        rsi_w = calc_rsi(c).iloc[-1]
+        tendencia_alcista_w = ema20w.iloc[-1] > ema50w.iloc[-1]
+        # Pendiente EMA20 semanal (subiendo o bajando)
+        ema20w_subiendo = ema20w.iloc[-1] > ema20w.iloc[-4] if len(ema20w) >= 4 else False
+        # Caida semanal fuerte: precio cayo mas del 20% desde maximo 52s
+        hi52w = c.tail(52).max()
+        dist_max_w = round((c.iloc[-1] - hi52w) / hi52w * 100, 1)
+        return {
+            "tendencia_alcista_w": tendencia_alcista_w,
+            "ema20w_subiendo": ema20w_subiendo,
+            "rsi_w": round(rsi_w, 1),
+            "dist_max_w": dist_max_w,
+            "ema20w": round(ema20w.iloc[-1], 2),
+            "ema50w": round(ema50w.iloc[-1], 2),
+        }
     except:
         return None
 
@@ -1227,7 +1252,15 @@ def get_noticias_ticker(ticker, nombre_empresa):
         return []
 
 
-def get_top_signals(stocks, n=4, modo="swing"):
+def fetch_weekly_rsi(ticker):
+    """RSI semanal para confirmacion 2 timeframes."""
+    try:
+        hist = yf.Ticker(ticker).history(period="1y", interval="1wk")
+        if hist.empty or len(hist) < 14:
+            return None
+        return round(calc_rsi(hist["Close"]).iloc[-1], 1)
+    except:
+        return None
     """
     modo='swing': señales swing 1-4 semanas, score minimo 12
     modo='intraday': señales intradía, score minimo 10, criterios distintos
@@ -1247,7 +1280,13 @@ def get_top_signals(stocks, n=4, modo="swing"):
         if not mercado_ok and d["rsi"] > 45:
             continue
 
-        score = 0
+        # Filtro tendencia semanal — no entrar contra tendencia bajista fuerte
+        trend_w = fetch_weekly_trend(t)
+        if trend_w:
+            if trend_w["dist_max_w"] < -25 and not trend_w["tendencia_alcista_w"] and not trend_w["ema20w_subiendo"]:
+                continue
+            if trend_w["dist_max_w"] < -40 and trend_w["rsi_w"] > 40:
+                continue
         motivos = []
 
         # 1. RSI diario (max 5pts)
@@ -1559,7 +1598,6 @@ def safe_send(chat_id, text, message_id=None):
             bot.send_message(chat_id, text)
     except Exception as e:
         log.error(f"Send error: {e}")
-
 
 def send_signal(chat_id, s):
     pct_tp1 = (s['tp1']/s['entry']-1)*100
