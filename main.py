@@ -1261,6 +1261,9 @@ def fetch_weekly_rsi(ticker):
         return round(calc_rsi(hist["Close"]).iloc[-1], 1)
     except:
         return None
+
+
+def get_top_signals(stocks, n=4, modo="swing"):
     """
     modo='swing': señales swing 1-4 semanas, score minimo 12
     modo='intraday': señales intradía, score minimo 10, criterios distintos
@@ -1598,6 +1601,7 @@ def safe_send(chat_id, text, message_id=None):
             bot.send_message(chat_id, text)
     except Exception as e:
         log.error(f"Send error: {e}")
+
 
 def send_signal(chat_id, s):
     pct_tp1 = (s['tp1']/s['entry']-1)*100
@@ -3202,4 +3206,3 @@ if __name__ == "__main__":
         log.info("Jobs automaticos activados")
     log.info("Financial Bot arrancado - Version Completa v6")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
-
