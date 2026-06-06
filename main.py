@@ -153,20 +153,26 @@ US_LARGE = [
 
 # US mid caps y especulativas con potencial
 US_MID_SPEC = [
-    # IA e infraestructura
+    # Infraestructura IA — los proximos Marvell
+    "MRVL","SMCI","ANET","PSTG","CRDO","CIEN","FORM","COHR","VIAV","LITE",
+    "PENG","VRT","DELL","HPE","WDC","STX","NTAP",
+    # IA software e infraestructura
     "PLTR","NET","SNOW","DDOG","MDB","CRWD","ZS","OKTA","PATH","AI",
+    "GTLB","CFLT","MNDY","BILL","HUBS","SMAR","COUP",
+    # Semiconductores ciclo
+    "MCHP","ON","SWKS","QRVO","WOLF","MPWR","ALGM","ACLS","ONTO",
     # Fintech especulativo
-    "COIN","HOOD","AFRM","UPST","SOFI","NU","PYPL","SQ","MSTR",
+    "COIN","HOOD","AFRM","UPST","SOFI","NU","PYPL","SQ",
     # EV y movilidad
-    "RIVN","LCID","NIO","XPEV","LI","FSR",
+    "RIVN","LCID","NIO","XPEV","LI",
     # Espacio y defensa
-    "RKLB","ASTS","LUNR","ACHR","JOBY","SPCE",
+    "RKLB","ASTS","LUNR","ACHR","JOBY",
     # Biotech especulativo
-    "MRNA","BNTX","CRSP","BEAM","NTLA","RXRX",
-    # Nuclear y energia
-    "CCJ","NXE","SMR","OKLO","LEU",
-    # Otros especulativos
-    "RBLX","SNAP","PINS","OPEN","HIMS","DUOL","APP","CELH",
+    "MRNA","BNTX","CRSP","BEAM","NTLA","RXRX","EXAS","PCVX",
+    # Nuclear y energia limpia
+    "CCJ","NXE","SMR","OKLO","LEU","UUUU","DNN",
+    # Otros especulativos con momentum
+    "RBLX","HIMS","DUOL","APP","CELH","CVNA","SHOP","SPOT",
 ]
 
 US_STOCKS = US_LARGE + US_MID_SPEC
@@ -191,25 +197,36 @@ ETFS_ESPECIALES = ["LUNR","RKLB","ASTS","ACHR","JOBY"]
 
 # Universo ampliado para /infravaloradas
 INFRA_NOMBRES = {
+    # Infraestructura IA
+    "MRVL":"Marvell Technology","SMCI":"Super Micro Computer","ANET":"Arista Networks",
+    "PSTG":"Pure Storage","CRDO":"Credo Technology","CIEN":"Ciena",
+    "FORM":"FormFactor","COHR":"Coherent","VRT":"Vertiv","DELL":"Dell",
+    "HPE":"HP Enterprise","NTAP":"NetApp","WDC":"Western Digital",
+    # IA software
     "PLTR":"Palantir","NET":"Cloudflare","SNOW":"Snowflake","DDOG":"Datadog",
     "MDB":"MongoDB","CRWD":"CrowdStrike","ZS":"Zscaler","OKTA":"Okta",
-    "CCJ":"Cameco","NXE":"NexGen Energy","URA":"Uranium ETF","NUKZ":"Nuclear ETF",
-    "DNN":"Denison Mines","URG":"Ur-Energy",
+    "GTLB":"GitLab","CFLT":"Confluent","MNDY":"Monday.com",
+    # Uranium / Nuclear
+    "CCJ":"Cameco","NXE":"NexGen Energy","URA":"Uranium ETF",
+    "DNN":"Denison Mines","UUUU":"Energy Fuels","SMR":"NuScale","OKLO":"Oklo",
+    # Espacio
     "RKLB":"Rocket Lab","ASTS":"AST SpaceMobile","LUNR":"Intuitive Machines",
-    "MNTS":"Momentus","SPCE":"Virgin Galactic",
-    "AAVE-USD":"Aave","UNI-USD":"Uniswap","MKR-USD":"Maker","COMP-USD":"Compound",
-    "ARB-USD":"Arbitrum","OP-USD":"Optimism","MATIC-USD":"Polygon",
-    "LDO-USD":"Lido","SNX-USD":"Synthetix",
-    "MRNA":"Moderna","BNTX":"BioNTech","BEAM":"Beam Therapeutics",
-    "CRSP":"CRISPR Therapeutics","NTLA":"Intellia Therapeutics",
-    "AFRM":"Affirm","UPST":"Upstart","SOFI":"SoFi Technologies",
-    "NU":"Nu Holdings","PYPL":"PayPal",
-    "INTC":"Intel","MCHP":"Microchip Tech","ON":"ON Semiconductor",
+    # Biotech infravalorado
+    "MRNA":"Moderna","BNTX":"BioNTech","CRSP":"CRISPR Therapeutics",
+    "BEAM":"Beam Therapeutics","NTLA":"Intellia","RXRX":"Recursion",
+    # Fintech
+    "AFRM":"Affirm","UPST":"Upstart","SOFI":"SoFi","NU":"Nu Holdings","PYPL":"PayPal",
+    # Semiconductores ciclo bajo
+    "INTC":"Intel","MCHP":"Microchip Tech","ON":"ON Semiconductor","WOLF":"Wolfspeed",
+    # Value en correccion
     "BABA":"Alibaba","JD":"JD.com","PDD":"PDD Holdings",
-    "PINS":"Pinterest","SNAP":"Snap","RBLX":"Roblox",
-    "COIN":"Coinbase","HOOD":"Robinhood","MSTR":"MicroStrategy",
+    "RBLX":"Roblox","SNAP":"Snap","PINS":"Pinterest",
+    # Energia limpia
+    "ENPH":"Enphase","SEDG":"SolarEdge","FSLR":"First Solar","RUN":"Sunrun",
+    # EV
     "RIVN":"Rivian","LCID":"Lucid","NIO":"NIO","XPEV":"XPeng",
-    "SMR":"NuScale Power","OKLO":"Oklo","APP":"AppLovin","CELH":"Celsius",
+    # Otros
+    "APP":"AppLovin","CELH":"Celsius","CVNA":"Carvana","HIMS":"Hims",
 }
 
 DEFI_CRYPTO = [
@@ -220,8 +237,7 @@ DEFI_CRYPTO = [
 INFRA_UNIVERSE = (
     list(INFRA_NOMBRES.keys()) +
     US_STOCKS +
-    EU_STOCKS[:20] +
-    ["BTC-USD","ETH-USD","SOL-USD","BNB-USD"]
+    EU_STOCKS[:20]
 )
 
 SECTORES_SP500 = {
@@ -1122,16 +1138,18 @@ def fetch_weekly_trend(ticker):
 
 def scan_infravaloradas(stocks, max_results=6):
     """
-    Busca activos infravalorados con potencial de rebote:
-    - Caida fuerte desde maximos (-25% o mas)
-    - RSI en zona de rebote (25-50)
-    - Volumen empezando a crecer
-    - Primer signo de recuperacion (d5 > 0 o cerca de soporte)
+    Busca activos infravalorados con potencial de rebote.
+    Solo acciones — sin crypto.
+    Detecta acumulacion silenciosa: volumen creciendo sin subida de precio.
     """
     candidatos = []
     nombres_ext = {**NOMBRES, **INFRA_NOMBRES}
 
     for t in stocks:
+        # Filtrar crypto
+        if "-USD" in t or "-EUR" in t:
+            continue
+
         try:
             d = fetch_quote(t, "1y")
             if not d:
@@ -1143,14 +1161,30 @@ def scan_infravaloradas(stocks, max_results=6):
 
             # Filtros principales
             if dist_max > -20:
-                continue  # No ha caido suficiente
+                continue
             if d["rsi"] > 55:
-                continue  # Ya ha rebotado demasiado
+                continue
             if d["rsi"] < 20:
-                continue  # Caida libre, esperar suelo
+                continue
 
             score = 0
             motivos = []
+
+            # Detectar acumulacion silenciosa (volumen creciendo 3 semanas sin subida fuerte)
+            acumulacion = False
+            try:
+                hist_w = yf.Ticker(t).history(period="3mo", interval="1wk")
+                if len(hist_w) >= 3:
+                    vols = hist_w["Volume"].tail(3).values
+                    precios = hist_w["Close"].tail(3).values
+                    vol_creciendo = vols[-1] > vols[-2] > vols[-3] * 0.8
+                    precio_lateral = abs(precios[-1] - precios[-3]) / precios[-3] < 0.05
+                    if vol_creciendo and precio_lateral:
+                        acumulacion = True
+                        score += 4
+                        motivos.append("ACUMULACION SILENCIOSA: volumen creciendo sin subida de precio")
+            except:
+                pass
 
             # 1. Magnitud de la caida (cuanto mas caida con RSI bajo, mejor)
             if dist_max < -50:
