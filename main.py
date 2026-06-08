@@ -2390,18 +2390,38 @@ def cmd_analisis(msg):
     if not d:
         safe_send(msg.chat.id, f"Sin datos para {ticker}.\nComprueba el ticker: NVDA, AAPL, BTC-USD, SAN.MC", message_id=m.message_id)
         return
-    prompt = (f"Empresa/ETF: {d['nombre']} ({ticker})\n"
-              f"Precio: {d['price']} | 1d: {d['d1']}% | 5d: {d['d5']}% | 20d: {d['d20']}%\n"
-              f"RSI: {d['rsi']} | MACD cruce alcista: {d['macd_cross_up']} | Vol: {d['vol_rel']}x\n"
-              f"EMA20: {d['ema20']} ({'sobre' if d['sobre_ema20'] else 'bajo'})\n"
-              f"R2: {d['r2']} R1: {d['r1']} | Pivot: {d['pivot']} | S1: {d['s1']} S2: {d['s2']}\n"
-              f"Max52: {d['hi52']} | Min52: {d['lo52']}\n\n"
-              "1. Posicion tecnica\n2. Niveles clave\n3. Escenario alcista vs bajista\n4. Sesgo operativo\n5. Entrada, stop y objetivo")
-    texto = ask_ai(prompt)
-    header = (f"{d['nombre']} ({ticker})\n"
-              f"Precio {d['price']} | Hoy {d['d1']:+.2f}% | Semana {d['d5']:+.2f}% | Mes {d['d20']:+.2f}%\n"
+
+    # Para crypto usar precio en tiempo real de Binance
+    precio_real = d["price"]
+    if ticker in COINGECKO_IDS:
+        rt = get_realtime_price(ticker)
+        if rt:
+            precio_real = rt["price"]
+            d["d1"] = rt["d1"]
+
+    fecha_hoy = datetime.now().strftime('%d/%m/%Y %H:%M')
+    vwap_txt = f"VWAP: {d.get('vwap','-')} ({'SOBRE' if d.get('sobre_vwap') else 'BAJO'})"
+
+    prompt = (f"Analisis de {d['nombre']} ({ticker}) — datos en tiempo real {fecha_hoy}:\n"
+              f"Precio ACTUAL: {precio_real} | Hoy: {d['d1']:+.2f}% | Semana: {d['d5']:+.2f}% | Mes: {d['d20']:+.2f}%\n"
+              f"RSI: {d['rsi']} | MACD cruce: {d['macd_cross_up']} | Volumen: {d['vol_rel']}x\n"
+              f"EMA20: {d['ema20']} ({'SOBRE' if d['sobre_ema20'] else 'BAJO'}) | EMA50: {d['ema50']}\n"
+              f"{vwap_txt}\n"
+              f"R2: {d['r2']} | R1: {d['r1']} | Pivot: {d['pivot']} | S1: {d['s1']} | S2: {d['s2']}\n"
+              f"Max 52s: {d['hi52']} | Min 52s: {d['lo52']} | ATR: {d.get('atr','-')}\n\n"
+              f"IMPORTANTE: El precio actual es {precio_real}. USA SOLO este precio, no uses precios de otros periodos.\n\n"
+              "1. Posicion tecnica actual\n"
+              "2. Niveles clave a vigilar\n"
+              "3. Escenario alcista vs bajista\n"
+              "4. Sesgo operativo\n"
+              "5. Entrada concreta, stop y objetivo con precios exactos basados en el precio actual")
+
+    texto = ask_ai(prompt, max_chars=3500)
+    header = (f"{d['nombre']} ({ticker}) — {fecha_hoy}\n"
+              f"Precio: {precio_real} | Hoy {d['d1']:+.2f}% | Semana {d['d5']:+.2f}% | Mes {d['d20']:+.2f}%\n"
               f"RSI {d['rsi']} | Vol {d['vol_rel']}x | MACD: {'SI' if d['macd_cross_up'] else 'NO'}\n"
-              f"EMA20: {'SOBRE' if d['sobre_ema20'] else 'BAJO'} ({d['ema20']})\n"
+              f"EMA20: {'SOBRE' if d['sobre_ema20'] else 'BAJO'} ({d['ema20']}) | EMA50: {d['ema50']}\n"
+              f"{vwap_txt}\n"
               f"R2 {d['r2']} | R1 {d['r1']} | Pivot {d['pivot']} | S1 {d['s1']} | S2 {d['s2']}\n"
               f"Rango 52s: {d['lo52']} - {d['hi52']}\n\n")
     safe_send(msg.chat.id, header + texto, message_id=m.message_id)
