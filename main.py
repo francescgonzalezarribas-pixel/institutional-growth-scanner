@@ -1474,12 +1474,20 @@ def scan_anomalias(stocks):
             c = hist["Close"]
             avg_vol = vol.tail(20).mean()
             vol_rel = vol.iloc[-1] / avg_vol if avg_vol > 0 else 1.0
-            d1 = (c.iloc[-1] - c.iloc[-2]) / c.iloc[-2] * 100
+            # Fix NaN: si no hay precio anterior valido, d1=0
+            if len(c) > 1 and c.iloc[-2] > 0:
+                d1 = (c.iloc[-1] - c.iloc[-2]) / c.iloc[-2] * 100
+            else:
+                d1 = 0.0
+            # Descartar si precio es NaN o 0
+            if c.iloc[-1] != c.iloc[-1] or c.iloc[-1] == 0:
+                continue
             if vol_rel >= 2.5:
                 anomalias.append({
                     "ticker": t, "nombre": nombre(t),
                     "vol_rel": round(vol_rel, 1),
-                    "d1": round(d1, 2), "price": round(c.iloc[-1], 2),
+                    "d1": round(d1, 2) if d1 == d1 else 0.0,
+                    "price": round(c.iloc[-1], 2),
                 })
         except:
             pass
@@ -3042,9 +3050,21 @@ def job_anomalias_scanner():
     if not anomalias:
         return
     top = anomalias[:4]
-    rows = [f"{a['nombre']} ({a['ticker']}): vol {a['vol_rel']}x | hoy {a['d1']:+.2f}%" for a in top]
+    fecha = datetime.now().strftime('%d/%m/%Y %H:%M')
+    rows = []
+    datos_ai = []
+    for a in top:
+        d1 = a['d1'] if not (a['d1'] != a['d1']) else 0.0  # fix NaN
+        rows.append(f"{a['nombre']} ({a['ticker']}): vol {a['vol_rel']}x | hoy {d1:+.2f}% | precio {a['price']}")
+        datos_ai.append(f"{a['nombre']} ({a['ticker']}): precio actual {a['price']} USD, volumen {a['vol_rel']}x la media, variacion hoy {d1:+.2f}%")
     bloque = "\n".join(rows)
-    texto = ask_ai(f"Anomalias volumen:\n{bloque}\n\nHay noticia detras? Como operar.")
+    prompt = (f"Anomalias de volumen detectadas hoy {fecha}:\n"
+              + "\n".join(datos_ai) +
+              "\n\nUSA SOLO los precios indicados. No uses precios de otros años.\n"
+              "1. Hay noticia detras de cada anomalia?\n"
+              "2. Cual es la mas interesante y por que\n"
+              "3. Como operar con precio exacto, stop y objetivo")
+    texto = ask_ai(prompt)
     safe_send(ALLOWED_USER_ID, f"ANOMALIA VOLUMEN {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
 
 
@@ -3197,7 +3217,13 @@ def job_sr_scanner():
     if not alerts:
         return
     bloque = "\n".join(alerts[:6])
-    texto = ask_ai(f"S/R:\n{bloque}\n\nTop 2 mas interesantes y operativa.")
+    fecha = datetime.now().strftime('%d/%m/%Y %H:%M')
+    prompt = (f"Alertas S/R detectadas {fecha}:\n{bloque}\n\n"
+              "Los precios mostrados son los precios actuales reales.\n"
+              "1. Las 2 mas interesantes para operar\n"
+              "2. Rebote o ruptura y como confirmarlo\n"
+              "3. Entrada, stop y objetivo con precios exactos del listado")
+    texto = ask_ai(prompt)
     safe_send(ALLOWED_USER_ID, f"Alerta S/R {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
 
 
@@ -3208,9 +3234,15 @@ def job_explosion_scanner():
     candidates = scan_explosions(US_STOCKS + EU_STOCKS)
     if not candidates:
         return
-    rows = [f"{c['nombre']} ({c['ticker']}): semana {c['d5']:+.1f}% | vol {c['vol_rel']}x" for c in candidates[:3]]
+    fecha = datetime.now().strftime('%d/%m/%Y %H:%M')
+    rows = [f"{c['nombre']} ({c['ticker']}): precio {c['price']} | semana {c['d5']:+.1f}% | vol {c['vol_rel']}x | R1:{c['r1']}" for c in candidates[:3]]
     bloque = "\n".join(rows)
-    texto = ask_ai(f"Explosiones:\n{bloque}\n\nAnalisis y niveles.")
+    prompt = (f"Posibles explosiones de precio detectadas {fecha}:\n{bloque}\n\n"
+              "USA SOLO los precios indicados arriba.\n"
+              "1. Por que podria seguir subiendo cada una\n"
+              "2. Nivel clave a superar con precio exacto\n"
+              "3. Entrada, stop y objetivo usando el precio actual")
+    texto = ask_ai(prompt)
     safe_send(ALLOWED_USER_ID, f"Explosiones {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
 
 
