@@ -790,6 +790,240 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
     }
 
 
+def fetch_ema200_distance(ticker):
+    """Distancia porcentual del precio actual a la EMA200 diaria."""
+    try:
+        hist = yf.Ticker(ticker).history(period="1y")
+        if hist.empty or len(hist) < 50:
+            return None
+        c = hist["Close"]
+        ema200 = c.ewm(span=200, adjust=False).mean().iloc[-1]
+        price = c.iloc[-1]
+        dist_pct = round((price - ema200) / ema200 * 100, 1)
+        return {"ema200": round(ema200, 2), "dist_pct": dist_pct}
+    except:
+        return None
+
+
+def calcular_indice_valor(ticker):
+    """
+    Indice 0-100 estilo FREDI: 100=barato (zona acumulacion), 0=caro (zona venta).
+    Detecta automaticamente el tipo de activo (crypto/accion/indice) y usa
+    6 componentes especificos por tipo, cada uno puntuado 0-10.
+    """
+    es_crypto = ticker in COINGECKO_IDS or "-USD" in ticker
+    es_indice = ticker.startswith("^")
+
+    d = fetch_quote(ticker, "3mo")
+    if not d:
+        return None
+
+    ema200_data = fetch_ema200_distance(ticker)
+    componentes = {}
+
+    # RSI 14d diario (comun a todos)
+    rsi = d["rsi"]
+    if rsi < 25:   pts_rsi = 10
+    elif rsi < 35: pts_rsi = 8
+    elif rsi < 45: pts_rsi = 6
+    elif rsi < 55: pts_rsi = 5
+    elif rsi < 65: pts_rsi = 3
+    elif rsi < 75: pts_rsi = 2
+    else:          pts_rsi = 1
+    componentes["RSI 14d"] = {"valor": rsi, "puntos": pts_rsi}
+
+    # EMA200 distancia (comun a todos) — lejos por debajo = barato
+    if ema200_data:
+        dist = ema200_data["dist_pct"]
+        if dist < -30:   pts_ema = 10
+        elif dist < -20: pts_ema = 9
+        elif dist < -10: pts_ema = 7
+        elif dist < 0:   pts_ema = 5
+        elif dist < 10:  pts_ema = 3
+        elif dist < 20:  pts_ema = 2
+        else:            pts_ema = 1
+        componentes["EMA200"] = {"valor": f"{dist:+.1f}%", "puntos": pts_ema}
+    else:
+        pts_ema = 5
+        componentes["EMA200"] = {"valor": "N/D", "puntos": 5}
+
+    # Volumen — alto volumen en caida fuerte = posible capitulacion
+    vol_rel = d["vol_rel"]
+    d1 = d["d1"]
+    if vol_rel > 1.5 and d1 < -2:
+        pts_vol = 9
+    elif vol_rel > 1.2 and d1 < 0:
+        pts_vol = 7
+    elif vol_rel < 0.7:
+        pts_vol = 5
+    else:
+        pts_vol = 4
+    componentes["Volumen"] = {"valor": f"{vol_rel}x", "puntos": pts_vol}
+
+    if es_crypto:
+        # Fear & Greed
+        fg = get_fear_greed()
+        if fg:
+            fgv = fg["valor"]
+            if fgv < 20:   pts_fg = 10
+            elif fgv < 30: pts_fg = 8
+            elif fgv < 45: pts_fg = 6
+            elif fgv < 55: pts_fg = 5
+            elif fgv < 70: pts_fg = 3
+            elif fgv < 80: pts_fg = 2
+            else:          pts_fg = 1
+            componentes["Fear&Greed"] = {"valor": fgv, "puntos": pts_fg}
+        else:
+            pts_fg = 5
+            componentes["Fear&Greed"] = {"valor": "N/D", "puntos": 5}
+
+        # Funding rate
+        symbol_map = {"BTC-USD":"BTCUSDT","ETH-USD":"ETHUSDT","SOL-USD":"SOLUSDT","BNB-USD":"BNBUSDT"}
+        binance_sym = symbol_map.get(ticker, "BTCUSDT")
+        deriv = get_binance_derivatives(binance_sym)
+        funding = deriv.get("funding", {}).get("valor") if deriv else None
+        if funding is not None:
+            if funding < -0.02:   pts_fund = 10
+            elif funding < 0:     pts_fund = 7
+            elif funding < 0.01:  pts_fund = 5
+            elif funding < 0.03:  pts_fund = 3
+            elif funding < 0.05:  pts_fund = 2
+            else:                 pts_fund = 1
+            componentes["Funding Rate"] = {"valor": f"{funding:+.4f}%", "puntos": pts_fund}
+        else:
+            pts_fund = 5
+            componentes["Funding Rate"] = {"valor": "N/D", "puntos": 5}
+
+        # DXY — dolar fuerte suele coincidir con suelos de crypto
+        dxy_d = fetch_quote("DX-Y.NYB", "1mo")
+        if dxy_d:
+            dxy_val = dxy_d["price"]
+            if dxy_val > 105:   pts_dxy = 8
+            elif dxy_val > 102: pts_dxy = 6
+            elif dxy_val > 99:  pts_dxy = 5
+            elif dxy_val > 96:  pts_dxy = 3
+            else:               pts_dxy = 2
+            componentes["DXY"] = {"valor": dxy_val, "puntos": pts_dxy}
+        else:
+            pts_dxy = 5
+            componentes["DXY"] = {"valor": "N/D", "puntos": 5}
+
+        total_pts = pts_rsi + pts_ema + pts_vol + pts_fg + pts_fund + pts_dxy
+
+    else:
+        # ACCION o INDICE: VIX, RSI semanal, distancia maximo 52 semanas
+        vix_d = fetch_quote("^VIX", "1mo")
+        if vix_d:
+            vix_val = vix_d["price"]
+            if vix_val > 35:   pts_vix = 10
+            elif vix_val > 28: pts_vix = 8
+            elif vix_val > 22: pts_vix = 6
+            elif vix_val > 18: pts_vix = 4
+            elif vix_val > 14: pts_vix = 3
+            else:              pts_vix = 2
+            componentes["VIX"] = {"valor": vix_val, "puntos": pts_vix}
+        else:
+            pts_vix = 5
+            componentes["VIX"] = {"valor": "N/D", "puntos": 5}
+
+        rsi_w = fetch_weekly_rsi(ticker)
+        if rsi_w is not None:
+            if rsi_w < 30:   pts_rsiw = 10
+            elif rsi_w < 40: pts_rsiw = 8
+            elif rsi_w < 50: pts_rsiw = 6
+            elif rsi_w < 60: pts_rsiw = 4
+            elif rsi_w < 70: pts_rsiw = 2
+            else:            pts_rsiw = 1
+            componentes["RSI Semanal"] = {"valor": rsi_w, "puntos": pts_rsiw}
+        else:
+            pts_rsiw = 5
+            componentes["RSI Semanal"] = {"valor": "N/D", "puntos": 5}
+
+        dist_52 = round((d["price"] - d["hi52"]) / d["hi52"] * 100, 1)
+        if dist_52 < -40:   pts_52 = 10
+        elif dist_52 < -25: pts_52 = 8
+        elif dist_52 < -15: pts_52 = 6
+        elif dist_52 < -5:  pts_52 = 4
+        elif dist_52 < -2:  pts_52 = 3
+        else:               pts_52 = 1
+        componentes["Dist. Max 52s"] = {"valor": f"{dist_52:+.1f}%", "puntos": pts_52}
+
+        total_pts = pts_rsi + pts_ema + pts_vol + pts_vix + pts_rsiw + pts_52
+
+    score_final = round(total_pts / 60 * 100)
+
+    if score_final >= 80:
+        zona = "BARATO — ACUMULACION FUERTE"
+    elif score_final >= 65:
+        zona = "BARATO — BUENA ZONA DE COMPRA"
+    elif score_final >= 45:
+        zona = "NEUTRAL"
+    elif score_final >= 30:
+        zona = "CARO — PRECAUCION"
+    else:
+        zona = "MUY CARO — ZONA DE VENTA"
+
+    return {
+        "ticker": ticker,
+        "nombre": nombre(ticker),
+        "price": d["price"],
+        "score": score_final,
+        "zona": zona,
+        "componentes": componentes,
+        "tipo": "crypto" if es_crypto else ("indice" if es_indice else "accion"),
+    }
+
+
+def generate_valor_gauge(resultado):
+    """Genera gauge visual tipo velocimetro 0-100."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    fig, ax = plt.subplots(figsize=(9, 5.5), subplot_kw={'projection': 'polar'})
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    n_segmentos = 100
+    theta = np.linspace(np.pi, 0, n_segmentos + 1)
+
+    for i in range(n_segmentos):
+        if i < 30:    color = '#FF4444'
+        elif i < 45:  color = '#FF8844'
+        elif i < 65:  color = '#FFDD44'
+        elif i < 80:  color = '#88DD44'
+        else:         color = '#44DD44'
+        ax.barh(1, theta[i] - theta[i+1], left=theta[i+1], height=0.35, color=color, edgecolor='none')
+
+    score = resultado['score']
+    angle = np.pi - (score / 100 * np.pi)
+    ax.plot([angle, angle], [0, 1.05], color='white', linewidth=4, zorder=5)
+    ax.plot(angle, 0, 'o', color='white', markersize=18, zorder=6)
+    ax.plot(angle, 0, 'o', color='#1a1a2e', markersize=8, zorder=7)
+
+    ax.set_ylim(0, 1.3)
+    ax.set_theta_zero_location('E')
+    ax.set_theta_direction(1)
+    ax.set_thetamin(0)
+    ax.set_thetamax(180)
+    ax.set_xticks([0, np.pi/4, np.pi/2, 3*np.pi/4, np.pi])
+    ax.set_xticklabels(['100\nBARATO', '75', '50\nNEUTRAL', '25', '0\nCARO'],
+                        color='white', fontsize=10, fontweight='bold')
+    ax.set_yticks([])
+    ax.spines['polar'].set_visible(False)
+    ax.grid(False)
+
+    plt.figtext(0.5, 0.06, f"{score}/100", ha='center', fontsize=28,
+               color='white', fontweight='bold')
+    plt.title(f"{resultado['nombre']} ({resultado['ticker']}) — {resultado['price']}\n{resultado['zona']}",
+              color='white', fontsize=13, fontweight='bold', pad=25)
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+
 def generate_cycle_chart(mercados):
     """
     Genera imagen del ciclo de mercado con los puntos actuales marcados.
@@ -1807,6 +2041,7 @@ def main_kb():
            InlineKeyboardButton("Ayuda", callback_data="ayuda"))
     kb.row(InlineKeyboardButton("Intraday", callback_data="intraday"),
            InlineKeyboardButton("Seguimiento", callback_data="seguimiento"))
+    kb.row(InlineKeyboardButton("Indice Valor BTC", callback_data="valor_btc"))
     return kb
 
 
@@ -2822,6 +3057,81 @@ def cmd_infravaloradas(msg):
     safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto}")
 
 
+def cmd_valor_btc_directo(msg):
+    """Llamado desde el boton del menu — calcula valor de BTC directamente."""
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Calculando indice barato/caro de Bitcoin...")
+    resultado = calcular_indice_valor("BTC-USD")
+    if not resultado:
+        safe_send(msg.chat.id, "Error obteniendo datos de BTC.", message_id=m.message_id)
+        return
+    lines = [f"{resultado['nombre']} ({resultado['ticker']}) — {resultado['price']}",
+             f"{resultado['score']}/100 — {resultado['zona']}", "",
+             "COMPONENTES:"]
+    for nombre_c, datos in resultado["componentes"].items():
+        lines.append(f"{nombre_c}: {datos['valor']} -> {datos['puntos']}/10")
+    texto_resumen = "\n".join(lines)
+    try:
+        gauge = generate_valor_gauge(resultado)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, gauge, caption=texto_resumen)
+    except Exception as e:
+        log.warning(f"Gauge error: {e}")
+        safe_send(msg.chat.id, texto_resumen, message_id=m.message_id)
+
+
+@bot.message_handler(commands=["valor"])
+def cmd_valor(msg):
+    if not allowed(msg): return
+    parts = msg.text.split()
+    if len(parts) < 2:
+        safe_send(msg.chat.id,
+            "Uso: /valor TICKER\n"
+            "Indice 0-100 de barato/caro estilo FREDI\n\n"
+            "Ejemplos:\n"
+            "/valor BTC-USD\n"
+            "/valor NVDA\n"
+            "/valor ^GSPC")
+        return
+    ticker = parts[1].upper()
+    m = bot.send_message(msg.chat.id, f"Calculando indice barato/caro de {nombre(ticker)}...")
+
+    resultado = calcular_indice_valor(ticker)
+    if not resultado:
+        safe_send(msg.chat.id, f"Sin datos para {ticker}.", message_id=m.message_id)
+        return
+
+    lines = [f"{resultado['nombre']} ({ticker}) — {resultado['price']}",
+             f"{resultado['score']}/100 — {resultado['zona']}", "",
+             "COMPONENTES:"]
+    for nombre_c, datos in resultado["componentes"].items():
+        lines.append(f"{nombre_c}: {datos['valor']} -> {datos['puntos']}/10")
+    texto_resumen = "\n".join(lines)
+
+    try:
+        gauge = generate_valor_gauge(resultado)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, gauge, caption=texto_resumen)
+    except Exception as e:
+        log.warning(f"Gauge error: {e}")
+        safe_send(msg.chat.id, texto_resumen, message_id=m.message_id)
+
+
+@bot.message_handler(commands=["valores"])
+def cmd_valores(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Calculando indices de valor para activos clave... (20-30s)")
+    tickers = ["BTC-USD", "ETH-USD", "^GSPC", "^GDAXI", "^IBEX"]
+    lines = [f"INDICES DE VALOR {datetime.now().strftime('%d/%m %H:%M')}\n"]
+    for t in tickers:
+        r = calcular_indice_valor(t)
+        if r:
+            barra = "#" * (r["score"] // 10) + "-" * (10 - r["score"] // 10)
+            lines.append(f"{r['nombre']}: {r['score']}/100 [{barra}]")
+            lines.append(f"  {r['zona']}")
+    safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
+
+
 @bot.message_handler(commands=["ayuda"])
 def cmd_ayuda(msg):
     if not allowed(msg): return
@@ -2831,9 +3141,15 @@ def cmd_ayuda(msg):
         "/btc - Analisis profundo BTC con derivados Binance\n"
         "/crypto - BTC ETH SOL BNB precios y RSI\n\n"
         "SENALES:\n"
-        "/senales_eu - Senales Europa (RSI+MACD+2 timeframes)\n"
-        "/senales_us - Senales EEUU y crypto\n"
+        "/senales_eu - Senales Europa (RSI+MACD+VWAP+2TF)\n"
+        "/senales_us - Senales acciones EEUU\n"
+        "/intraday - Senales intradia 15min\n"
         "/etfs - ETFs con señales\n\n"
+        "VALOR Y CICLO:\n"
+        "/valor TICKER - Indice 0-100 barato/caro (estilo FREDI)\n"
+        "/valores - Vision rapida BTC/ETH/SP500/DAX/IBEX\n"
+        "/ciclo - Grafico ciclo de mercado BTC/SP500/DAX\n"
+        "/infravaloradas - Acciones castigadas con potencial\n\n"
         "MERCADO:\n"
         "/mercados - Indices EU y EEUU\n"
         "/sectores - Semaforo 11 sectores SP500\n"
@@ -2897,8 +3213,12 @@ def handle_callback(call):
         "resumen_semana": cmd_resumen_semana, "ayuda": cmd_ayuda,
         "ciclo": cmd_ciclo, "infravaloradas": cmd_infravaloradas,
         "intraday": cmd_intraday, "seguimiento": cmd_seguimiento,
+        "valor": cmd_valor, "valores": cmd_valores,
         "riesgo_info": lambda m: safe_send(m.chat.id, "Uso: /riesgo CAPITAL RIESGO% TICKER ENTRADA STOP\nEj: /riesgo 10000 2 NVDA 890 865"),
     }
+    if call.data == "valor_btc":
+        cmd_valor_btc_directo(call.message)
+        return
     fn = handlers.get(call.data)
     if fn:
         fn(call.message)
