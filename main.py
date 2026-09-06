@@ -1,13 +1,12 @@
 import logging
 import math
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from typing import Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
-import requests
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yfinance as yf
@@ -22,13 +21,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AlgorithmicFinancialBot")
 
-TELEGRAM_TOKEN = "TU_TELEGRAM_BOT_TOKEN_AQUI"
+# Lee el token desde la variable de entorno de Railway o usa el valor por defecto
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "TU_TOKEN_DE_BOTFATHER_AQUI")
+
+if ":" not in TELEGRAM_TOKEN:
+    logger.error("El TELEGRAM_TOKEN no es válido. Asegúrate de configurarlo en Railway o en el código.")
+
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 executor = ThreadPoolExecutor(max_workers=5)
 
 
 # -------------------------------------------------------------------
-# CACHÉ DE DATOS EN MEMORIA (Para evitar rate limits de YFinance)
+# CACHÉ EN MEMORIA
 # -------------------------------------------------------------------
 class SimpleCache:
     def __init__(self, ttl_seconds: int = 300):
@@ -51,10 +55,9 @@ cache = SimpleCache(ttl_seconds=300)
 
 
 # -------------------------------------------------------------------
-# MOTOR TÉCNICO Y CALCULADORA DE INDICADORES (Sin IA)
+# INDICADORES TÉCNICOS Y ANÁLISIS
 # -------------------------------------------------------------------
 def fetch_stock_data(ticker: str) -> Optional[pd.DataFrame]:
-    """Descarga de datos de mercado con caché."""
     cached_df = cache.get(ticker)
     if cached_df is not None:
         return cached_df
@@ -70,7 +73,6 @@ def fetch_stock_data(ticker: str) -> Optional[pd.DataFrame]:
     return None
 
 def calculate_indicators(df: pd.DataFrame) -> Dict[str, Any]:
-    """Calcula RSI, MACD, EMAs, ATR y Volumen promedio."""
     if df is None or len(df) < 50:
         return {}
 
@@ -98,7 +100,7 @@ def calculate_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
     sma50 = close.rolling(window=50).mean().iloc[-1] if len(close) >= 50 else float('nan')
 
-    # ATR (Average True Range - 14)
+    # ATR (14)
     tr1 = high - low
     tr2 = (high - close.shift()).abs()
     tr3 = (low - close.shift()).abs()
@@ -110,7 +112,6 @@ def calculate_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     current_vol = volume.iloc[-1]
     vol_ratio = current_vol / vol_avg20 if vol_avg20 > 0 else 1.0
 
-    # Soportes y Resistencias (Mínimos y Máximos de 30 días)
     support = low.tail(30).min()
     resistance = high.tail(30).max()
 
@@ -133,11 +134,10 @@ def calculate_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     }
 
 def generate_signal(ind: Dict[str, Any]) -> Dict[str, Any]:
-    """Genera la señal de trading y gestión de riesgo basándose en reglas técnicas."""
     score = 0
     price = ind['price']
 
-    # 1. Evaluación del RSI (CORREGIDO: Lógica limpia sin redundancias)
+    # Evaluación RSI
     rsi = ind['rsi']
     if rsi < 30:
         score += 2
@@ -145,7 +145,7 @@ def generate_signal(ind: Dict[str, Any]) -> Dict[str, Any]:
     elif rsi > 70:
         score -= 2
         rsi_desc = "Sobrecomprado 🔴"
-    elif rsi < 45:  # Corregido
+    elif rsi < 45:
         score += 0.5
         rsi_desc = "Zona Compradora 🟢"
     elif rsi > 55:
@@ -154,7 +154,7 @@ def generate_signal(ind: Dict[str, Any]) -> Dict[str, Any]:
     else:
         rsi_desc = "Neutral ⚪"
 
-    # 2. Evaluación MACD
+    # Evaluación MACD
     if ind['macd_hist'] > 0:
         score += 1
         macd_desc = "Alcista (Hist. > 0) 🟢"
@@ -162,7 +162,7 @@ def generate_signal(ind: Dict[str, Any]) -> Dict[str, Any]:
         score -= 1
         macd_desc = "Bajista (Hist. < 0) 🔴"
 
-    # 3. Medias Móviles
+    # Medias Móviles
     ma_signals = []
     if price > ind['ema20']:
         score += 1
@@ -171,7 +171,7 @@ def generate_signal(ind: Dict[str, Any]) -> Dict[str, Any]:
         score -= 1
         ma_signals.append("Precio < EMA20 🔴")
 
-    if not math.isnan(ind['sma50']):  # CORREGIDO: Uso de math.isnan
+    if not math.isnan(ind['sma50']):
         if price > ind['sma50']:
             score += 1
             ma_signals.append("Precio > SMA50 🟢")
@@ -179,14 +179,14 @@ def generate_signal(ind: Dict[str, Any]) -> Dict[str, Any]:
             score -= 1
             ma_signals.append("Precio < SMA50 🔴")
 
-    # 4. Volumen
+    # Volumen
     vol_desc = "Normal"
     if ind['vol_ratio'] > 1.5:
         vol_desc = f"Alto ({ind['vol_ratio']:.1f}x media) ⚡"
     elif ind['vol_ratio'] < 0.6:
         vol_desc = "Bajo"
 
-    # 5. Etiqueta Global
+    # Etiqueta Global
     if score >= 2.5:
         signal = "COMPRA FUERTE 🟢🟢"
     elif score >= 0.5:
@@ -198,8 +198,7 @@ def generate_signal(ind: Dict[str, Any]) -> Dict[str, Any]:
     else:
         signal = "NEUTRAL ⚪"
 
-    # 6. Gestión de Riesgo (Calculado vía ATR)
-    atr = ind['atr'] if not math.isnan(ind['atr']) else price * 0.02  # CORREGIDO: math.isnan
+    atr = ind['atr'] if not math.isnan(ind['atr']) else price * 0.02
     stop_loss = price - (1.5 * atr)
     take_profit = price + (3.0 * atr)
 
@@ -217,7 +216,7 @@ def generate_signal(ind: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # -------------------------------------------------------------------
-# FORMATEADOR VISUAL DEL COMANDO /valor
+# FORMATEO DE MENSAJES
 # -------------------------------------------------------------------
 def format_valor_message(ticker: str, ind: Dict[str, Any], sig: Dict[str, Any]) -> str:
     price = ind['price']
@@ -252,18 +251,17 @@ def format_valor_message(ticker: str, ind: Dict[str, Any], sig: Dict[str, Any]) 
 
 
 # -------------------------------------------------------------------
-# COMANDOS DEL BOT DE TELEGRAM
+# BOT HANDLERS
 # -------------------------------------------------------------------
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
         "<b>🤖 Bot de Análisis Técnico Financiero</b>\n\n"
-        "Usa el comando <b>/valor &lt;TICKER&gt;</b> para obtener un reporte técnico completo.\n\n"
+        "Usa el comando <b>/valor &lt;TICKER&gt;</b> para analizar un activo.\n\n"
         "<b>Ejemplos:</b>\n"
         "• <code>/valor AAPL</code>\n"
         "• <code>/valor TSLA</code>\n"
-        "• <code>/valor BTC-USD</code>\n"
-        "• <code>/valor NVDA</code>"
+        "• <code>/valor BTC-USD</code>"
     )
     bot.reply_to(message, welcome_text, parse_mode="HTML")
 
@@ -272,19 +270,18 @@ def send_welcome(message):
 def handle_valor(message):
     parts = message.text.split()
     if len(parts) < 2:
-        bot.reply_to(message, "⚠️ Debes especificar un activo. Ejemplo: <code>/valor AAPL</code>", parse_mode="HTML")
+        bot.reply_to(message, "⚠️ Especifica un activo. Ejemplo: <code>/valor AAPL</code>", parse_mode="HTML")
         return
 
     ticker = parts[1].upper().strip()
     status_msg = bot.reply_to(message, f"🔍 Analizando <code>{ticker}</code>...", parse_mode="HTML")
 
-    # Ejecución asíncrona no bloqueante
     def process_valor():
         try:
             df = fetch_stock_data(ticker)
             if df is None or df.empty:
                 bot.edit_message_text(
-                    f"❌ No se pudieron obtener datos para el ticker: <code>{ticker}</code>",
+                    f"❌ No se obtuvieron datos para: <code>{ticker}</code>",
                     chat_id=message.chat.id,
                     message_id=status_msg.message_id,
                     parse_mode="HTML"
@@ -295,7 +292,6 @@ def handle_valor(message):
             sig = generate_signal(ind)
             response_text = format_valor_message(ticker, ind, sig)
 
-            # Teclado Inline de interacción
             markup = InlineKeyboardMarkup()
             markup.row(
                 InlineKeyboardButton("📊 Actualizar", callback_data=f"refresh_{ticker}"),
@@ -313,9 +309,9 @@ def handle_valor(message):
                 reply_markup=markup
             )
         except Exception as e:
-            logger.error(f"Error procesando /valor para {ticker}: {e}")
+            logger.error(f"Error en /valor ({ticker}): {e}")
             bot.edit_message_text(
-                "❌ Ocurrió un error al procesar el análisis técnico.",
+                "❌ Ocurrió un error en el análisis.",
                 chat_id=message.chat.id,
                 message_id=status_msg.message_id
             )
@@ -323,9 +319,6 @@ def handle_valor(message):
     executor.submit(process_valor)
 
 
-# -------------------------------------------------------------------
-# MANEJADOR DE CALLBACKS (CORREGIDO: Sin claves duplicadas)
-# -------------------------------------------------------------------
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     data = call.data
@@ -334,18 +327,23 @@ def handle_callback(call):
     try:
         if data.startswith("refresh_"):
             ticker = data.split("_")[1]
-            bot.answer_callback_query(call.id, f"Actualizando datos de {ticker}...")
-            # Forzar actualización llamando a /valor internamente
+            bot.answer_callback_query(call.id, f"Actualizando {ticker}...")
             df = fetch_stock_data(ticker)
             if df is not None:
                 ind = calculate_indicators(df)
                 sig = generate_signal(ind)
                 text = format_valor_message(ticker, ind, sig)
-                bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
+                bot.edit_message_text(
+                    text,
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    parse_mode="HTML",
+                    reply_markup=call.message.reply_markup
+                )
 
         elif data.startswith("seg_"):
             ticker = data.split("_")[1]
-            bot.answer_callback_query(call.id, f" Añadido {ticker} a tu lista de seguimiento.")
+            bot.answer_callback_query(call.id, f"Añadido {ticker} a seguimiento.")
 
         elif data.startswith("bt_"):
             ticker = data.split("_")[1]
@@ -353,17 +351,14 @@ def handle_callback(call):
             run_backtest(chat_id, ticker)
 
     except Exception as e:
-        logger.error(f"Error procesando callback {data}: {e}")
+        logger.error(f"Error callback {data}: {e}")
 
 
-# -------------------------------------------------------------------
-# BACKTEST ALGORTÍMICO (CORREGIDO: Sin lógica redundante)
-# -------------------------------------------------------------------
 def run_backtest(chat_id: int, ticker: str):
     try:
         df = fetch_stock_data(ticker)
         if df is None or len(df) < 50:
-            bot.send_message(chat_id, "⚠️ No hay suficientes datos para el backtest.")
+            bot.send_message(chat_id, "⚠️ Datos insuficientes para el backtest.")
             return
 
         close = df['Close']
@@ -376,11 +371,8 @@ def run_backtest(chat_id: int, ticker: str):
         trades = 0
         wins = 0
 
-        # Lógica del Backtest (CORREGIDA)
         for i in range(15, len(df) - 1):
-            rsi_val = rsi.iloc[i]
-            # CORREGIDO: Eliminada condición redundante (rsi < 45 and rsi < 65)
-            if rsi_val < 35:
+            if rsi.iloc[i] < 35:
                 trades += 1
                 future_return = (close.iloc[i + 1] - close.iloc[i]) / close.iloc[i]
                 if future_return > 0:
@@ -388,32 +380,22 @@ def run_backtest(chat_id: int, ticker: str):
 
         win_rate = (wins / trades * 100) if trades > 0 else 0
         res = (
-            f"<b>📊 RESULTADOS BACKTEST ESTRATEGIA RSI ({ticker})</b>\n\n"
-            f"• <b>Operaciones totales:</b> {trades}\n"
-            f"• <b>Tasa de acierto (Win Rate):</b> {win_rate:.1f}%\n"
-            f"<i>*Regla: Compra en RSI &lt; 35 a 1 día vista.</i>"
+            f"<b>📊 BACKTEST ESTRATEGIA RSI ({ticker})</b>\n\n"
+            f"• <b>Operaciones:</b> {trades}\n"
+            f"• <b>Acierto:</b> {win_rate:.1f}%\n"
+            f"<i>*Regla: Compra en RSI &lt; 35 a 1 día.</i>"
         )
         bot.send_message(chat_id, res, parse_mode="HTML")
     except Exception as e:
-        logger.error(f"Error en backtest para {ticker}: {e}")
+        logger.error(f"Error backtest {ticker}: {e}")
 
 
 # -------------------------------------------------------------------
-# PROGRAMADOR DE TAREAS (SCHEDULER)
+# SCHEDULER & INICIO
 # -------------------------------------------------------------------
 scheduler = BackgroundScheduler()
-
-def job_scanner():
-    """Escáner periódico de mercado."""
-    logger.info("Ejecutando escáner de anomalias de mercado...")
-
-scheduler.add_job(job_scanner, 'interval', minutes=30)
 scheduler.start()
 
-
-# -------------------------------------------------------------------
-# INICIO DEL BOT
-# -------------------------------------------------------------------
 if __name__ == "__main__":
-    logger.info("Bot financiero algorítmico iniciado sin IA.")
+    logger.info("Bot en marcha sin IA.")
     bot.infinity_polling()
