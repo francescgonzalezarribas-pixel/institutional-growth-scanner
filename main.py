@@ -1,34 +1,36 @@
 import os
-import pytz
+import io
+import math
 import requests
 import feedparser
 import yfinance as yf
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import pandas as pd
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.patches import Wedge, Circle
 
-# --- CONFIGURACIÓN Y VARIABLES DE ENTORNO ---
+# --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "").strip()
 ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", 0))
-MADRID_TZ = pytz.timezone("Europe/Madrid")
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="Markdown")
 
 
-# --- FILTRO DE SEGURIDAD ---
 def is_authorized(user_id: int) -> bool:
     if ALLOWED_USER_ID == 0:
         return True
     return user_id == ALLOWED_USER_ID
 
 
-# --- FUNCIÓN IA (MISTRAL VÍA HTTP DIRECTO CON DIAGNÓSTICO DE ERRORES) ---
-def ask_mistral(
-    prompt: str,
-    system_prompt: str = "Eres un analista financiero experto en mercados y activos de inversión.",
-) -> str:
+# --- MISTRAL (OPCIONAL) ---
+def ask_mistral(prompt: str, system_prompt: str = "Eres un analista financiero experto.") -> str:
     if not MISTRAL_API_KEY:
-        return "⚠️ Error: API Key de Mistral no encontrada en las variables de entorno."
+        return ""
 
     url = "https://api.mistral.ai/v1/chat/completions"
     headers = {
@@ -41,289 +43,74 @@ def ask_mistral(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
+        "max_tokens": 600,
     }
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=25)
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
         data = response.json()
-
-        if (
-            response.status_code == 200
-            and "choices" in data
-            and len(data["choices"]) > 0
-        ):
+        if response.status_code == 200 and "choices" in data:
             return data["choices"][0]["message"]["content"]
-        else:
-            # Muestra en el chat el código HTTP y el mensaje de error exacto devuelto por Mistral
-            error_detail = data.get("message", data)
-            print(f"Error Mistral [{response.status_code}]: {data}")
-            return f"⚠️ Error de Mistral AI ({response.status_code}): {error_detail}"
-
+        return ""
     except Exception as e:
-        print(f"Error de conexión: {e}")
-        return f"⚠️ Error de conexión con Mistral: {e}"
+        print(f"Mistral error: {e}")
+        return ""
 
 
-# --- TECLADO PRINCIPAL ---
-def get_main_keyboard():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("📰 Noticias Impacto", callback_data="noticias"),
-        InlineKeyboardButton(
-            "🔍 Investigación Ticker", callback_data="investigar_help"
-        ),
-        InlineKeyboardButton(
-            "🔮 Previsiones Mercado", callback_data="previsiones"
-        ),
-        InlineKeyboardButton(
-            "💎 Índice Valor BTC", callback_data="indice_valor_btc"
-        ),
-    )
-    return markup
+# --- INDICADORES ---
+def compute_rsi(series: pd.Series, period: int = 14) -> float:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else 50.0
 
 
-# --- HANDLERS COMANDOS INICIALES ---
-@bot.message_handler(commands=["start", "menu"])
-def send_welcome(message):
-    if not is_authorized(message.from_user.id):
-        return
-    text = (
-        "🤖 **Bot de Investigación, Noticias y Previsiones Financieras**\n\n"
-        "Selecciona una opción del menú o usa las funciones directas:\n"
-        "• `/investigar TICKER` - Análisis fundamental y técnico con IA\n"
-        "• `/noticias` - Titulares clave e impacto de mercado\n"
-        "• `/previsiones` - Perspectivas y proyecciones macro\n"
-        "• `/btc` - Índice de Valor y métricas de Bitcoin\n\n"
-        "_O escribe cualquier duda financiera directamente._"
-    )
-    bot.reply_to(
-        message, text, parse_mode="Markdown", reply_markup=get_main_keyboard()
-    )
-
-
-# --- HANDLERS BOTONES DE TELEGRAM ---
-@bot.callback_query_handler(func=lambda call: True)
-def handle_query(call):
-    if not is_authorized(call.from_user.id):
-        return
-
-    if call.data == "noticias":
-        bot.answer_callback_query(call.id, "Analizando noticias...")
-        send_noticias(call.message)
-    elif call.data == "investigar_help":
-        bot.answer_callback_query(call.id)
-        bot.send_message(
-            call.message.chat.id,
-            "🔍 Envíame el ticker que deseas investigar.\n\nEjemplo: `/investigar NVDA` o `/investigar AAPL`",
-            parse_mode="Markdown",
-        )
-    elif call.data == "previsiones":
-        bot.answer_callback_query(call.id, "Generando previsiones...")
-        send_previsiones(call.message)
-    elif call.data == "indice_valor_btc":
-        bot.answer_callback_query(call.id, "Calculando Índice Valor BTC...")
-        send_indice_valor_btc(call.message)
-
-
-# --- MÓDULO 1: NOTICIAS DE IMPACTO ---
-@bot.message_handler(commands=["noticias"])
-def send_noticias(message):
-    if not is_authorized(message.from_user.id):
-        return
-    bot.send_chat_action(message.chat.id, "typing")
-
-    rss_urls = [
-        "https://search.cnbc.com/rs/search/combinedrenderer/view.xml?partnerId=2000&keywords=markets&target=all",
-        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC&region=US&lang=en-US",
-    ]
-
-    headlines = []
-    for url in rss_urls:
-        try:
-            feed = feedparser.parse(url)
-            for entry in feed.entries[:3]:
-                headlines.append(f"- {entry.title}")
-        except Exception as e:
-            print(f"Error cargando RSS {url}: {e}")
-
-    raw_news = (
-        "\n".join(headlines)
-        if headlines
-        else "No se pudieron obtener titulares en tiempo real."
-    )
-
-    prompt = f"Sintetiza estas noticias financieras destacando los 3 puntos clave de mayor impacto para los inversores:\n\n{raw_news}"
-    analysis = ask_mistral(
-        prompt, "Eres un analista de noticias de mercados financieros."
-    )
-
-    response = f"📰 **NOTICIAS DE IMPACTO EN EL MERCADO**\n\n{analysis}"
-    bot.send_message(
-        message.chat.id,
-        response,
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard(),
-    )
-
-
-# --- MÓDULO 2: INVESTIGACIÓN DE TICKER ---
-@bot.message_handler(commands=["investigar"])
-def send_investigacion(message):
-    if not is_authorized(message.from_user.id):
-        return
-
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(
-            message,
-            "⚠️ Especifica un ticker. Ejemplo: `/investigar TSLA`",
-            parse_mode="Markdown",
-        )
-        return
-
-    ticker = args[1].upper()
-    bot.send_chat_action(message.chat.id, "typing")
-
+def get_fear_greed() -> float:
     try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-
-        name = info.get("shortName", ticker)
-        price = info.get("currentPrice") or info.get(
-            "regularMarketPrice", "N/D"
-        )
-        pe_ratio = info.get("forwardPE", "N/D")
-        market_cap = info.get("marketCap", "N/D")
-        target_price = info.get("targetMeanPrice", "N/D")
-
-        datos_str = (
-            f"Empresa: {name} ({ticker})\n"
-            f"Precio actual: ${price}\n"
-            f"P/E Forward: {pe_ratio}\n"
-            f"Market Cap: {market_cap}\n"
-            f"Precio Objetivo Analistas: ${target_price}"
-        )
-
-        prompt = (
-            f"Realiza un informe de investigación resumido basándote en estos datos:\n{datos_str}\n\n"
-            f"Estructura la respuesta en: 1. Diagnóstico Fundamental, 2. Factores de Riesgo/Oportunidad, 3. Valoración Final."
-        )
-        analysis = ask_mistral(prompt)
-
-        msg = f"🔍 **INFORME DE INVESTIGACIÓN: {ticker}**\n\n{analysis}"
-        bot.send_message(
-            message.chat.id,
-            msg,
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard(),
-        )
-    except Exception as e:
-        bot.reply_to(message, f"⚠️ Error obteniendo datos de {ticker}: {e}")
+        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=8)
+        data = r.json()
+        return float(data["data"][0]["value"])
+    except Exception:
+        return 50.0
 
 
-# --- MÓDULO 3: PREVISIONES DE MERCADO ---
-@bot.message_handler(commands=["previsiones"])
-def send_previsiones(message):
-    if not is_authorized(message.from_user.id):
-        return
-    bot.send_chat_action(message.chat.id, "typing")
-
+def get_vix() -> float:
     try:
-        sp500 = yf.Ticker("^GSPC")
-        hist = sp500.history(period="1mo")
-        precio_actual = hist["Close"].iloc[-1]
-        var_mes = (
-            (precio_actual - hist["Close"].iloc[0]) / hist["Close"].iloc[0]
-        ) * 100
-
-        prompt = (
-            f"El S&P 500 cotiza en {precio_actual:.2f} con una variación del {var_mes:.2f}% en el último mes.\n"
-            f"Ofrece un análisis de previsión a corto y medio plazo contemplando el contexto macroeconómico y los posibles escenarios técnicos."
-        )
-        forecast = ask_mistral(prompt)
-
-        response = f"🔮 **PREVISIONES Y PERSPECTIVAS DE MERCADO**\n\n{forecast}"
-        bot.send_message(
-            message.chat.id,
-            response,
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard(),
-        )
-    except Exception as e:
-        bot.send_message(message.chat.id, f"⚠️ Error generando previsiones: {e}")
+        vix = yf.Ticker("^VIX")
+        hist = vix.history(period="5d")
+        return float(hist["Close"].iloc[-1])
+    except Exception:
+        return 20.0
 
 
-# --- MÓDULO 4: ÍNDICE VALOR BITCOIN (BTC) ---
-@bot.message_handler(commands=["btc", "indice_valor"])
-def send_indice_valor_btc(message):
-    if not is_authorized(message.from_user.id):
-        return
-    bot.send_chat_action(message.chat.id, "typing")
-
-    try:
-        btc = yf.Ticker("BTC-USD")
-        hist = btc.history(period="1y")
-        precio_actual = hist["Close"].iloc[-1]
-        sma_200 = hist["Close"].rolling(window=200).mean().iloc[-1]
-
-        ratio = precio_actual / sma_200
-
-        if ratio < 1.0:
-            zona = "🟢 Infravalorado / Zona de Oportunidad"
-            puntuacion = 85
-        elif 1.0 <= ratio < 1.5:
-            zona = "🟡 Zona Neutra / Acumulación"
-            puntuacion = 55
-        else:
-            zona = "🔴 Sobrevalorado / Riesgo Elevado"
-            puntuacion = 25
-
-        prompt = (
-            f"El precio de Bitcoin es ${precio_actual:,.2f} y su Media Móvil de 200 días es ${sma_200:,.2f} (Ratio {ratio:.2f}).\n"
-            f"Explica brevemente qué implica este nivel de valoración y cuál es la estrategia recomendada para un inversor a largo plazo."
-        )
-        ia_opinion = ask_mistral(
-            prompt,
-            "Eres un analista experto en la valoración fundamental de Bitcoin.",
-        )
-
-        response = (
-            f"💎 **ÍNDICE VALOR BITCOIN (BTC)**\n\n"
-            f"• **Precio Actual:** ${precio_actual:,.2f}\n"
-            f"• **SMA 200 Días:** ${sma_200:,.2f}\n"
-            f"• **Ratio de Valoración:** `{ratio:.2f}`\n"
-            f"• **Estado:** {zona}\n"
-            f"• **Puntuación de Valor:** `{puntuacion}/100`\n\n"
-            f"🧠 **Análisis de Valoración (IA):**\n{ia_opinion}"
-        )
-        bot.send_message(
-            message.chat.id,
-            response,
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard(),
-        )
-    except Exception as e:
-        bot.send_message(
-            message.chat.id, f"⚠️ Error calculando el Índice Valor BTC: {e}"
-        )
+def score_rsi(rsi: float) -> int:
+    if rsi < 30: return 10
+    if rsi < 40: return 8
+    if rsi < 50: return 6
+    if rsi < 60: return 5
+    if rsi < 70: return 3
+    if rsi < 80: return 2
+    return 1
 
 
-# --- MANEJADOR DE CONSULTAS LIBRES ---
-@bot.message_handler(func=lambda msg: True)
-def handle_free_question(message):
-    if not is_authorized(message.from_user.id):
-        return
-    bot.send_chat_action(message.chat.id, "typing")
-    answer = ask_mistral(message.text)
-    bot.reply_to(
-        message,
-        answer,
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard(),
-    )
+def score_ema_pct(pct: float) -> int:
+    if pct < -20: return 10
+    if pct < -10: return 8
+    if pct < -5:  return 7
+    if pct < 0:   return 6
+    if pct < 5:   return 5
+    if pct < 10:  return 4
+    if pct < 20:  return 3
+    return 2
 
 
-# --- ARRANQUE DEL BOT ---
-if __name__ == "__main__":
-    print("🤖 Bot financiero iniciado correctamente...")
-    bot.infinity_polling(skip_pending=True)
+def score_volume(rel_vol: float) -> int:
+    if rel_vol > 2.0: return 8
+    if rel_vol > 1.5: return 7
+    if rel_vol > 1.2: return 6
+    if rel_vol > 0.8: return 5
+    if rel_vol >
