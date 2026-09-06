@@ -20,7 +20,8 @@ matplotlib.use('Agg')
 import mplfinance as mpf
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from mistralai.client import MistralClient as Mistral
+# ✅ CORRECTO (actualizado)
+from mistralai.client import Mistral
 from mistralai.models.chat_completion import ChatMessage
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
