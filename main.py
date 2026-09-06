@@ -11,7 +11,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.patches import Wedge, Circle, FancyBboxPatch
+from matplotlib.patches import Wedge, Circle, Rectangle
 from datetime import datetime
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -115,7 +115,31 @@ def get_realtime_btc():
         return None
 
 
-# ===================== SCORING MEJORADO =====================
+def get_ticker_news(ticker: str, name: str, max_items=4):
+    """Noticias relacionadas con el ticker"""
+    queries = [
+        f"https://news.google.com/rss/search?q={ticker}+stock&hl=es&gl=ES&ceid=ES:es",
+        f"https://news.google.com/rss/search?q={name}&hl=es&gl=ES&ceid=ES:es",
+    ]
+    headlines = []
+    for url in queries:
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:3]:
+                title = entry.title.strip()
+                # Limpiar fuente del final
+                if " - " in title:
+                    title = title.rsplit(" - ", 1)[0]
+                if title and title not in headlines:
+                    headlines.append(title)
+            if len(headlines) >= max_items:
+                break
+        except:
+            continue
+    return headlines[:max_items]
+
+
+# ===================== SCORING =====================
 def score_rsi(rsi: float) -> float:
     if rsi <= 28: return 10
     if rsi <= 35: return 8.5
@@ -162,7 +186,6 @@ def score_macd(macd_data) -> float:
     return 4
 
 def score_rel_strength(pct: float) -> float:
-    """Fuerza relativa vs SPY o BTC. Positivo = más fuerte."""
     if pct >= 12: return 9
     if pct >= 6:  return 7.5
     if pct >= 2:  return 6
@@ -195,24 +218,28 @@ def get_label(score: float) -> str:
 
 
 def get_conclusion(score: float, components: list) -> str:
-    rsi_sc = next((s for n, v, s in components if "RSI 14" in n), 5)
-    dist_sc = next((s for n, v, s in components if "Dist" in n), 5)
-    fg_sc = next((s for n, v, s in components if "Fear" in n), 5)
-
     if score >= 72:
         return "Zona de valor interesante. Buena relación riesgo/beneficio."
     if score >= 58:
         return "Zona de acumulación. Se puede entrar por tramos."
     if score <= 28:
         return "Precio muy extendido + sentimiento extremo. Mejor esperar."
+    rsi_sc = next((s for n, v, s in components if "RSI 14" in n), 5)
+    dist_sc = next((s for n, v, s in components if "Dist" in n), 5)
     if rsi_sc <= 2 and dist_sc <= 3:
         return "Sobrecomprado y cerca de máximos. Alto riesgo de pullback."
-    if fg_sc <= 2:
-        return "Codicia elevada. Cuidado con nuevas entradas agresivas."
     return "Situación equilibrada. Mejor esperar confirmación."
 
 
-# ===================== CÁLCULO ÍNDICE VALOR =====================
+def score_to_color(score: float) -> str:
+    """Color según puntuación 0-10"""
+    if score >= 7.5: return "#30d158"      # verde
+    if score >= 5.5: return "#ffd60a"      # amarillo
+    if score >= 3.5: return "#ff9f0a"      # naranja
+    return "#ff453a"                      # rojo
+
+
+# ===================== CÁLCULO ÍNDICE =====================
 def calculate_value_index(ticker: str) -> dict:
     ticker = ticker.upper().strip()
     is_crypto = any(x in ticker for x in ["BTC", "ETH", "SOL", "BNB"]) or "-USD" in ticker
@@ -229,7 +256,6 @@ def calculate_value_index(ticker: str) -> dict:
     volume = hist["Volume"]
     price = float(close.iloc[-1])
 
-    # Componentes
     rsi = compute_rsi(close)
     ema200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
     ema_pct = ((price - ema200) / ema200) * 100
@@ -241,14 +267,12 @@ def calculate_value_index(ticker: str) -> dict:
     rsi_w = compute_rsi(weekly, 14) if len(weekly) > 15 else 50.0
     macd_data = compute_macd(close)
 
-    # Fuerza relativa
     try:
         benchmark = yf.Ticker("BTC-USD" if is_crypto else "SPY").history(period="3mo")["Close"]
         rel_str = ((price / float(close.iloc[-21])) - (float(benchmark.iloc[-1]) / float(benchmark.iloc[-21]))) * 100
     except:
-        rel_str = 0
+        rel_str = 0.0
 
-    # Pesos (suma = 10)
     weights = {
         "RSI 14d": 1.8,
         "Dist. Max 52s": 1.8,
@@ -262,8 +286,8 @@ def calculate_value_index(ticker: str) -> dict:
     }
 
     components = []
-    total_weighted = 0
-    total_weight = 0
+    total_weighted = 0.0
+    total_weight = 0.0
 
     comps_raw = [
         ("RSI 14d", f"{rsi:.1f}", score_rsi(rsi)),
@@ -291,8 +315,9 @@ def calculate_value_index(ticker: str) -> dict:
         total_weighted += sc * w
         total_weight += w
 
-    final_score = round((total_weighted / total_weight) * 10, 1)  # escala 0-100
-    final_score = max(0, min(100, final_score * 10))  # asegurar 0-100
+    # CORRECCIÓN: media ponderada → escala 0-100
+    final_score = (total_weighted / total_weight) * 10
+    final_score = max(0, min(100, round(final_score)))
 
     name = ticker
     try:
@@ -302,59 +327,78 @@ def calculate_value_index(ticker: str) -> dict:
         pass
 
     conclusion = get_conclusion(final_score, components)
+    news = get_ticker_news(ticker.replace("-USD", ""), name)
 
     return {
         "ticker": ticker, "name": name, "price": price,
-        "score": int(round(final_score)),
+        "score": int(final_score),
         "label": get_label(final_score),
         "components": components,
-        "conclusion": conclusion
+        "conclusion": conclusion,
+        "news": news
     }
 
 
-# ===================== GAUGE MEJORADO =====================
-def create_gauge_image(score: int, title: str, label: str) -> io.BytesIO:
-    fig, ax = plt.subplots(figsize=(9, 5.8), facecolor="#0b0f14")
-    ax.set_facecolor("#0b0f14")
-    ax.set_xlim(-1.45, 1.45)
-    ax.set_ylim(-0.55, 1.45)
-    ax.set_aspect("equal")
-    ax.axis("off")
+# ===================== GAUGE PRINCIPAL + MINI BARRAS =====================
+def create_gauge_image(score: int, title: str, label: str, components: list) -> io.BytesIO:
+    fig = plt.figure(figsize=(10, 9.5), facecolor="#0b0f14")
 
-    # Arco de colores más suave
-    colors = ["#ff2d55", "#ff6b35", "#ffd60a", "#30d158", "#00c7be"]
+    # --- Gauge principal ---
+    ax1 = fig.add_axes([0.1, 0.48, 0.8, 0.48])
+    ax1.set_facecolor("#0b0f14")
+    ax1.set_xlim(-1.4, 1.4)
+    ax1.set_ylim(-0.5, 1.4)
+    ax1.set_aspect("equal")
+    ax1.axis("off")
+
+    colors = ["#ff453a", "#ff9f0a", "#ffd60a", "#30d158", "#00c7be"]
     angles = [180, 144, 108, 72, 36, 0]
 
     for i in range(5):
-        wedge = Wedge((0, 0), 1.12, angles[i+1], angles[i], width=0.32,
-                      facecolor=colors[i], edgecolor="#0b0f14", linewidth=3, alpha=0.95)
-        ax.add_patch(wedge)
+        wedge = Wedge((0, 0), 1.15, angles[i+1], angles[i], width=0.34,
+                      facecolor=colors[i], edgecolor="#0b0f14", linewidth=3)
+        ax1.add_patch(wedge)
 
-    # Aguja más elegante
     angle_deg = 180 - (score / 100) * 180
     angle_rad = math.radians(angle_deg)
-    ax.plot([0, 0.92 * math.cos(angle_rad)], [0, 0.92 * math.sin(angle_rad)],
-            color="white", linewidth=5, solid_capstyle="round", zorder=10,
-            path_effects=[])
+    ax1.plot([0, 0.95 * math.cos(angle_rad)], [0, 0.95 * math.sin(angle_rad)],
+             color="white", linewidth=5.5, solid_capstyle="round", zorder=10)
+    ax1.add_patch(Circle((0, 0), 0.12, facecolor="white", zorder=11))
+    ax1.add_patch(Circle((0, 0), 0.06, facecolor="#0b0f14", zorder=12))
 
-    # Centro
-    ax.add_patch(Circle((0, 0), 0.11, facecolor="white", zorder=11))
-    ax.add_patch(Circle((0, 0), 0.055, facecolor="#0b0f14", zorder=12))
+    ax1.text(0, 1.32, title, ha="center", va="center", fontsize=15, color="#e6edf3", fontweight="bold")
+    ax1.text(0, -0.28, f"{score}/100", ha="center", va="center", fontsize=36, color="white", fontweight="bold")
+    ax1.text(0, -0.48, label, ha="center", va="center", fontsize=14, color="#8b949e")
+    ax1.text(-1.28, -0.12, "CARO", ha="center", va="center", fontsize=12, color="#ff453a", fontweight="bold")
+    ax1.text(1.28, -0.12, "BARATO", ha="center", va="center", fontsize=12, color="#30d158", fontweight="bold")
 
-    # Textos
-    ax.text(0, 1.32, title, ha="center", va="center", fontsize=14, color="#e6edf3",
-            fontweight="bold", fontfamily="sans-serif")
-    ax.text(0, -0.28, f"{score}/100", ha="center", va="center", fontsize=34, color="white",
-            fontweight="bold")
-    ax.text(0, -0.48, label, ha="center", va="center", fontsize=13, color="#8b949e")
+    # --- Mini barras de componentes ---
+    ax2 = fig.add_axes([0.08, 0.04, 0.84, 0.40])
+    ax2.set_facecolor("#0b0f14")
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(-0.5, len(components) + 0.5)
+    ax2.axis("off")
 
-    ax.text(-1.25, -0.12, "CARO", ha="center", va="center", fontsize=12, color="#ff2d55", fontweight="bold")
-    ax.text(1.25, -0.12, "BARATO", ha="center", va="center", fontsize=12, color="#30d158", fontweight="bold")
-    ax.text(0, 1.15, "50", ha="center", va="center", fontsize=11, color="#8b949e")
+    ax2.text(5, len(components) + 0.15, "COMPONENTES", ha="center", va="center",
+             fontsize=12, color="#8b949e", fontweight="bold")
+
+    for i, (name, value, sc) in enumerate(reversed(components)):
+        y = i
+        color = score_to_color(sc)
+
+        # Fondo de la barra
+        ax2.add_patch(Rectangle((2.8, y - 0.25), 5.5, 0.5, facecolor="#21262d", edgecolor="none", linewidth=0))
+        # Barra de score
+        width = (sc / 10) * 5.5
+        ax2.add_patch(Rectangle((2.8, y - 0.25), width, 0.5, facecolor=color, edgecolor="none", linewidth=0, alpha=0.9))
+
+        # Textos
+        ax2.text(0.1, y, name, ha="left", va="center", fontsize=10, color="#e6edf3")
+        ax2.text(2.6, y, value, ha="right", va="center", fontsize=9, color="#8b949e")
+        ax2.text(8.5, y, f"{sc}/10", ha="left", va="center", fontsize=10, color=color, fontweight="bold")
 
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=180, bbox_inches="tight", facecolor="#0b0f14",
-                edgecolor="none", pad_inches=0.15)
+    plt.savefig(buf, format="png", dpi=160, facecolor="#0b0f14", edgecolor="none", bbox_inches="tight", pad_inches=0.2)
     plt.close(fig)
     buf.seek(0)
     return buf
@@ -416,16 +460,14 @@ def send_btc_profundo(message):
             f"EMA50:    {d['ema50']:,.0f}",
             "",
             f"**S/R**  R1: {d['r1']:,.0f}  |  Pivot: {d['pivot']:,.0f}  |  S1: {d['s1']:,.0f}",
-            ""
         ]
         if d["niveles"]:
-            lines.append("**Niveles psicológicos**")
+            lines.append("\n**Niveles psicológicos**")
             for n in d["niveles"][:4]:
                 lines.append(f"{n['tipo']}: {n['nivel']:,} ({n['dist']:+.1f}%)")
-            lines.append("")
         if d["fear_greed"]:
             fg = d["fear_greed"]
-            lines.append(f"**Fear & Greed:** {fg['valor']:.0f}/100 — {fg['clasificacion']}")
+            lines.append(f"\n**Fear & Greed:** {fg['valor']:.0f}/100 — {fg['clasificacion']}")
         if d["funding"] is not None:
             fr = d["funding"]
             señal = "Longs pagando" if fr > 0.02 else "Shorts pagando" if fr < -0.01 else "Neutral"
@@ -459,9 +501,9 @@ def get_main_keyboard():
 def send_welcome(message):
     if not is_authorized(message.from_user.id): return
     text = ("🤖 **Bot Financiero**\n\n"
-            "• `/valor TICKER` → Medidor de valor mejorado\n"
+            "• `/valor TICKER` → Medidor de valor + noticias\n"
             "• `/btc` → Análisis profundo Bitcoin\n"
-            "• `/noticias` → Noticias en español\n"
+            "• `/noticias` → Noticias generales\n"
             "• `/investigar TICKER` → Datos del activo")
     bot.reply_to(message, text, reply_markup=get_main_keyboard())
 
@@ -501,18 +543,26 @@ def send_valor(message, ticker):
     try:
         data = calculate_value_index(ticker)
         title = f"{data['name']} ({data['ticker']}) — {data['price']:.2f}"
-        img = create_gauge_image(data["score"], title, data["label"])
+        img = create_gauge_image(data["score"], title, data["label"], data["components"])
 
-        lines = [
+        # Caption con conclusión + noticias
+        caption_lines = [
             f"**{data['name']} ({data['ticker']}) — {data['price']:.2f}**",
-            f"**{data['score']}/100 — {data['label']}**\n",
-            "**COMPONENTES:**"
+            f"**{data['score']}/100 — {data['label']}**",
+            f"\n_{data['conclusion']}_"
         ]
-        for n, v, s in data["components"]:
-            lines.append(f"{n}: {v} → {s}/10")
-        lines.append(f"\n_{data['conclusion']}_")
 
-        bot.send_photo(message.chat.id, img, caption="\n".join(lines), reply_markup=get_main_keyboard())
+        if data["news"]:
+            caption_lines.append("\n**Noticias recientes:**")
+            for n in data["news"][:3]:
+                caption_lines.append(f"• {n}")
+
+        bot.send_photo(
+            message.chat.id,
+            img,
+            caption="\n".join(caption_lines),
+            reply_markup=get_main_keyboard()
+        )
     except Exception as e:
         bot.reply_to(message, f"⚠️ Error: {e}")
 
@@ -576,5 +626,5 @@ def handle_free(message):
 
 
 if __name__ == "__main__":
-    print("🤖 Bot Índice Valor v2 iniciado...")
+    print("🤖 Bot Índice Valor v3 (barras + noticias) iniciado...")
     bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
