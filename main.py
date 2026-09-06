@@ -22,7 +22,6 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ✅ CORRECTO (actualizado)
 from mistralai.client import Mistral
-from mistralai.models.chat_completion import ChatMessage
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from collections import defaultdict
