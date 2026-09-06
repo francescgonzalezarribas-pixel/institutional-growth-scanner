@@ -12,24 +12,29 @@ Financial Telegram Bot - Version Completa v6
 
 import os, io, logging, time, feedparser
 import yfinance as yf
+
+import os  # 👈 Añadido (necesario para os.environ)
 import requests, pytz
 import numpy as np
 import pandas as pd
 import matplotlib
+
 matplotlib.use('Agg')
 import mplfinance as mpf
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-# ✅ CORRECTO (actualizado)
-from mistralai.client import Mistral
+from mistralai import Mistral  # 👈 Corregido (sin .client)
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from collections import defaultdict
 
-TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 MISTRAL_API_KEY = os.environ["MISTRAL_API_KEY"]
 ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", 0))
 MADRID = pytz.timezone("Europe/Madrid")
+
+# Inicialización del cliente oficial de Mistral
+client = Mistral(api_key=MISTRAL_API_KEY)
 
 SYSTEM = """Eres un analista financiero senior. Reglas:
 - Responde SIEMPRE en espanol
