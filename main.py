@@ -24,7 +24,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="Markdown")
 def is_authorized(uid):
     return ALLOWED_USER_ID == 0 or uid == ALLOWED_USER_ID
 
-# ===================== MAPAS =====================
+# ===================== MAPAS Y RESOLUCIÓN =====================
 CRYPTO_MAP = {
     "BTC":"BTC-USD","ETH":"ETH-USD","SOL":"SOL-USD","BNB":"BNB-USD","XRP":"XRP-USD",
     "ADA":"ADA-USD","DOGE":"DOGE-USD","DOT":"DOT-USD","HBAR":"HBAR-USD","AVAX":"AVAX-USD",
@@ -61,7 +61,7 @@ def get_cg_id(raw):
     t = raw.upper().strip().replace("USDT","").replace("-USD","")
     return COINGECKO_IDS.get(t)
 
-# ===================== GEMINI 3.6 FLASH =====================
+# ===================== GEMINI 3.6 FLASH (PARSEO SEGURO) =====================
 def ask_gemini(prompt, max_tokens=650):
     if not GEMINI_API_KEY:
         return None
@@ -83,7 +83,16 @@ def ask_gemini(prompt, max_tokens=650):
         }
         r = requests.post(url, json=payload, timeout=35)
         if r.status_code == 200:
-            return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            data = r.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                cand = candidates[0]
+                parts = cand.get("content", {}).get("parts", [])
+                if parts and "text" in parts[0]:
+                    return parts[0]["text"].strip()
+                
+                finish_reason = cand.get("finishReason", "DESCONOCIDO")
+                print(f"Gemini no devolvió texto. Razón: {finish_reason}")
         else:
             print(f"Gemini 3.6 error [{r.status_code}]: {r.text[:250]}")
     except Exception as e:
@@ -188,7 +197,7 @@ def calculate_value_index(raw):
     if (hist.empty or len(hist) < 20) and is_crypto:
         cg = get_crypto_data(raw)
         if not cg:
-            raise ValueError("Sin datos")
+            raise ValueError("Sin datos disponibles")
         fg = get_fear_greed()
         vix = get_vix()
         usdt_dom = get_usdt_dominance()
@@ -501,7 +510,7 @@ def send_analiza(message, raw):
     except Exception as e:
         bot.reply_to(message, f"⚠️ No pude analizar **{raw.upper()}**: {e}")
 
-# ===================== HANDLERS =====================
+# ===================== HANDLERS Y MENÚ =====================
 def get_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
