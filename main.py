@@ -61,28 +61,33 @@ def get_cg_id(raw):
     t = raw.upper().strip().replace("USDT","").replace("-USD","")
     return COINGECKO_IDS.get(t)
 
-# ===================== GEMINI (modelo corregido) =====================
+# ===================== GEMINI (CON FALLBACK DE MODELOS) =====================
 def ask_gemini(prompt, max_tokens=400):
     if not GEMINI_API_KEY:
         return None
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
-        payload = {
-            "contents": [{
-                "parts": [{"text": "Eres un analista financiero profesional y conciso. Responde siempre en español, claro, directo y accionable. Máximo 4-5 frases.\n\n" + prompt}]
-            }],
-            "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.35}
-        }
-        r = requests.post(url, json=payload, timeout=35)
-        if r.status_code == 200:
-            return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        else:
-            print(f"Gemini status: {r.status_code} - {r.text[:300]}")
-    except Exception as e:
-        print(f"Gemini error: {e}")
+    
+    models = ["gemini-1.5-flash", "gemini-2.0-flash"]
+    
+    for model in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+            payload = {
+                "contents": [{
+                    "parts": [{"text": "Eres un analista financiero profesional y conciso. Responde siempre en español, claro, directo y accionable. Máximo 4-5 frases.\n\n" + prompt}]
+                }],
+                "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.35}
+            }
+            r = requests.post(url, json=payload, timeout=35)
+            if r.status_code == 200:
+                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            else:
+                print(f"Gemini error ({model}) [{r.status_code}]: {r.text[:200]}")
+        except Exception as e:
+            print(f"Excepción Gemini ({model}): {e}")
+            
     return None
 
-# ===================== COINGECKO =====================
+# ===================== COINGECKO & MACRO =====================
 def get_crypto_data(raw):
     cg_id = get_cg_id(raw)
     if not cg_id:
@@ -109,7 +114,41 @@ def get_crypto_data(raw):
         print(f"CoinGecko error: {e}")
         return None
 
-# ===================== INDICADORES =====================
+def get_vix():
+    try:
+        data = yf.Ticker("^VIX").history(period="5d")
+        if not data.empty:
+            return float(data["Close"].iloc[-1])
+    except:
+        pass
+    return 18.0
+
+def score_vix(vix):
+    if vix >= 32: return 10.0
+    if vix >= 26: return 8.0
+    if vix >= 20: return 6.0
+    if vix >= 15: return 4.0
+    return 2.0
+
+def get_usdt_dominance():
+    try:
+        r = requests.get("https://api.coingecko.com/api/v3/global", timeout=6)
+        if r.status_code == 200:
+            data = r.json()["data"]
+            return float(data["market_cap_percentage"].get("usdt", 0))
+    except:
+        pass
+    return None
+
+def score_usdt_dominance(usdt_dom):
+    if usdt_dom >= 8.5: return 10.0
+    if usdt_dom >= 7.5: return 8.5
+    if usdt_dom >= 6.0: return 6.0
+    if usdt_dom >= 4.8: return 4.0
+    if usdt_dom >= 4.0: return 2.0
+    return 0.5
+
+# ===================== INDICADORES TÉCNICOS =====================
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -135,7 +174,7 @@ def get_fear_greed():
     except:
         return 50.0
 
-# ===================== VALOR =====================
+# ===================== CÁLCULO DE VALOR =====================
 def calculate_value_index(raw):
     ticker = resolve_ticker(raw)
     is_crypto = get_cg_id(raw) is not None or "-USD" in ticker
@@ -148,12 +187,17 @@ def calculate_value_index(raw):
         if not cg:
             raise ValueError("Sin datos")
         fg = get_fear_greed()
+        vix = get_vix()
+        usdt_dom = get_usdt_dominance()
+
         score = 45
-        if cg["d1"] < -5: score += 12
+        if cg["d1"] < -5: score += 10
         if cg["d7"] < -12: score += 10
-        if cg["ath_change"] < -70: score += 15
-        if fg < 30: score += 12
-        if fg > 75: score -= 18
+        if cg["ath_change"] < -70: score += 10
+        if fg < 30: score += 10
+        if fg > 75: score -= 15
+        if vix >= 26: score += 10
+        if usdt_dom and usdt_dom >= 7.5: score += 10
         score = max(12, min(88, score))
 
         label = ("BARATO — OPORTUNIDAD" if score >= 72 else
@@ -166,10 +210,13 @@ def calculate_value_index(raw):
             ("Cambio 7d", f"{cg['d7']:+.1f}%", 8 if cg["d7"] < -10 else 4),
             ("Desde ATH", f"{cg['ath_change']:+.1f}%", 9 if cg["ath_change"] < -60 else 3),
             ("Fear&Greed", f"{fg:.0f}", 9 if fg < 30 else 3),
+            ("VIX", f"{vix:.1f}", score_vix(vix)),
         ]
+        if usdt_dom:
+            components.append(("USDT.D", f"{usdt_dom:.2f}%", score_usdt_dominance(usdt_dom)))
 
         outlook = ask_gemini(
-            f"Activo: {cg['name']} ({cg['symbol']}). Precio: ${cg['price']}. Cambio 24h: {cg['d1']:.1f}%. Cambio 7d: {cg['d7']:.1f}%. Desde máximos: {cg['ath_change']:.1f}%. Fear & Greed: {fg}. Score: {score}/100. Perspectiva corta y accionable."
+            f"Activo: {cg['name']} ({cg['symbol']}). Precio: ${cg['price']}. Cambio 24h: {cg['d1']:.1f}%. Cambio 7d: {cg['d7']:.1f}%. Desde máximos: {cg['ath_change']:.1f}%. Fear & Greed: {fg}. VIX: {vix:.1f}. Score: {score}/100. Perspectiva corta y accionable."
         ) or "Revisa el sentimiento del mercado y el volumen antes de entrar."
 
         return {
@@ -224,9 +271,16 @@ def calculate_value_index(raw):
         ("Volumen", f"{rel_vol:.2f}x", 7 if rel_vol>1.8 else (5 if rel_vol>1.1 else 3)),
         ("RSI Semanal", f"{rsi_w:.1f}", s_rsi(rsi_w)),
     ]
+
+    vix = get_vix()
+    components.append(("VIX", f"{vix:.1f}", score_vix(vix)))
+
     if is_crypto:
         fg = get_fear_greed()
         components.append(("Fear&Greed", f"{fg:.0f}", 9 if fg<30 else (5 if fg<55 else 1.5)))
+        usdt_dom = get_usdt_dominance()
+        if usdt_dom:
+            components.append(("USDT.D", f"{usdt_dom:.2f}%", score_usdt_dominance(usdt_dom)))
 
     score = max(0, min(100, int(round(sum(c[2] for c in components)/len(components)*10))))
     label = ("BARATO — OPORTUNIDAD" if score>=72 else "NEUTRAL — ACUMULACIÓN" if score>=58 else
@@ -329,7 +383,7 @@ def get_top_signals(stocks, n=3, min_score=6):
         entry = d["price"]
         stop = round(entry - d["atr"]*1.4, 2 if entry>10 else 4)
         if stop<=0: stop = round(entry*0.97,2)
-        risk = entry - stop
+        risk = max(entry - stop, 0.000001)
         tp1 = round(entry + risk*1.6, 2 if entry>10 else 4)
         tp2 = round(entry + risk*2.8, 2 if entry>10 else 4)
         try: name = yf.Ticker(t).info.get("shortName", t)
@@ -536,5 +590,5 @@ def fb(m):
         bot.reply_to(m, "Usa `/valor TICKER`, `/analiza TICKER`, `/senales_eu` o `/senales_us`", reply_markup=get_kb())
 
 if __name__ == "__main__":
-    print("Bot completo + Gemini 2.0 Flash iniciado")
+    print("Bot completo + Gemini reintento + VIX + USDT.D iniciado")
     bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
