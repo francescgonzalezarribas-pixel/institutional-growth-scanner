@@ -73,7 +73,7 @@ def ask_gemini(prompt, max_tokens=400):
             }],
             "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.35}
         }
-        r = requests.post(url, json=payload, timeout=18)
+        r = requests.post(url, json=payload, timeout=35)
         if r.status_code == 200:
             return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         else:
