@@ -62,19 +62,22 @@ def get_cg_id(raw):
     return COINGECKO_IDS.get(t)
 
 # ===================== GEMINI =====================
-def ask_gemini(prompt, max_tokens=350):
+def ask_gemini(prompt, max_tokens=400):
     if not GEMINI_API_KEY:
         return None
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {
-            "contents": [{"parts": [{"text": "Eres un analista financiero conciso. Responde siempre en español, máximo 3 frases, claro y accionable.\n\n" + prompt}]}],
-            "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.4}
+            "contents": [{
+                "parts": [{"text": "Eres un analista financiero profesional y conciso. Responde siempre en español, claro, directo y accionable. Máximo 4-5 frases.\n\n" + prompt}]
+            }],
+            "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.35}
         }
-        r = requests.post(url, json=payload, timeout=15)
+        r = requests.post(url, json=payload, timeout=18)
         if r.status_code == 200:
-            data = r.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        else:
+            print(f"Gemini status: {r.status_code} - {r.text[:200]}")
     except Exception as e:
         print(f"Gemini error: {e}")
     return None
@@ -140,7 +143,7 @@ def calculate_value_index(raw):
     stock = yf.Ticker(ticker)
     hist = stock.history(period="1y")
 
-    # Fallback CoinGecko para criptos sin datos en Yahoo
+    # Fallback CoinGecko
     if (hist.empty or len(hist) < 20) and is_crypto:
         cg = get_crypto_data(raw)
         if not cg:
@@ -167,8 +170,8 @@ def calculate_value_index(raw):
         ]
 
         outlook = ask_gemini(
-            f"Dame una perspectiva corta de {cg['name']} ({cg['symbol']}) a ${cg['price']}, cambio 24h {cg['d1']:.1f}%, desde máximos {cg['ath_change']:.1f}%, Fear&Greed {fg}."
-        ) or "Datos limitados. Revisa sentimiento y volumen."
+            f"Activo: {cg['name']} ({cg['symbol']}). Precio: ${cg['price']}. Cambio 24h: {cg['d1']:.1f}%. Cambio 7d: {cg['d7']:.1f}%. Desde máximos históricos: {cg['ath_change']:.1f}%. Fear & Greed: {fg}. Score de valor: {score}/100. Dame una perspectiva corta y accionable."
+        ) or "Revisa el sentimiento del mercado y el volumen antes de entrar."
 
         return {
             "ticker": cg["symbol"] + "-USD", "name": cg["name"], "price": cg["price"], "d1": cg["d1"],
@@ -240,8 +243,8 @@ def calculate_value_index(raw):
     resistances = [round(2*pivot - low.iloc[-1], 4 if price<10 else 2)]
 
     outlook = ask_gemini(
-        f"Activo {name} ({ticker}) a {price:.4f}. RSI {rsi:.1f}, distancia máximo 52s {dist_52:.1f}%, score {score}/100. Perspectiva corta y accionable."
-    ) or ("Zona interesante" if score>=60 else "Mejor esperar confirmación" if score>=40 else "Precio extendido, precaución")
+        f"Activo: {name} ({ticker}). Precio actual: {price:.4f}. RSI: {rsi:.1f}. Distancia al máximo de 52 semanas: {dist_52:.1f}%. Score de valor: {score}/100 ({label}). Dame una perspectiva corta, clara y accionable de qué esperar."
+    ) or ("Zona interesante para acumular" if score>=60 else "Mejor esperar confirmación" if score>=40 else "Precio extendido, precaución")
 
     return {
         "ticker": ticker, "name": name, "price": price, "d1": d1,
@@ -366,30 +369,67 @@ def send_signals(message, region="US"):
     stocks = US_STOCKS if region=="US" else EU_STOCKS
     titulo = "🇺🇸 SEÑALES EEUU" if region=="US" else "🇪🇺 SEÑALES EUROPA"
     try:
-        signals = get_top_signals(stocks, n=4, min_score=6 if region=="US" else 5)
+        signals = get_top_signals(stocks, n=3, min_score=6 if region=="US" else 5)
         if not signals:
             bot.send_message(message.chat.id, f"No hay señales claras en {region} ahora.", reply_markup=get_kb())
             return
         bot.send_message(message.chat.id, f"**{titulo}** — {datetime.now().strftime('%d/%m %H:%M')}")
         for s in signals:
+            # Explicación IA de la señal
+            explicacion = ask_gemini(
+                f"Señal de trading: {s['nombre']} ({s['ticker']}). Entrada {s['entry']}, Stop {s['stop']}, TP1 {s['tp1']}, R/R {s['rr']}x. "
+                f"RSI {s['rsi']:.1f}, Volumen {s['vol_rel']:.1f}x, motivos: {', '.join(s['motivos'])}. "
+                f"Explica en 2-3 frases por qué es interesante y qué riesgo principal tiene."
+            )
             caption = (f"**{s['nombre']} ({s['ticker']})** — Score **{s['score']}**\n\n"
                        f"🟢 Entrada: `{s['entry']}`\n🎯 TP1: `{s['tp1']}` | TP2: `{s['tp2']}`\n"
                        f"🔴 Stop: `{s['stop']}` | R/R: **{s['rr']}x**\n"
-                       f"RSI: {s['rsi']:.1f} | Vol: {s['vol_rel']:.1f}x\n\n_{' · '.join(s['motivos'])}_")
+                       f"RSI: {s['rsi']:.1f} | Vol: {s['vol_rel']:.1f}x\n\n"
+                       f"_{' · '.join(s['motivos'])}_")
+            if explicacion:
+                caption += f"\n\n**Análisis IA:**\n{explicacion}"
             try:
                 bot.send_photo(message.chat.id, create_signal_chart(s), caption=caption)
             except:
                 bot.send_message(message.chat.id, caption)
-            time.sleep(0.7)
+            time.sleep(1.0)
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ Error: {e}", reply_markup=get_kb())
+
+# ===================== ANALIZA =====================
+def send_analiza(message, raw):
+    bot.send_chat_action(message.chat.id, "typing")
+    try:
+        data = calculate_value_index(raw)
+        p = data["price"]
+        ps = f"{p:.8f}" if p<0.001 else f"{p:.6f}" if p<0.1 else f"{p:.4f}" if p<1 else f"{p:.2f}" if p<1000 else f"{p:,.0f}"
+
+        prompt = (
+            f"Haz un análisis completo y profesional del activo {data['name']} ({data['ticker']}).\n"
+            f"Precio: {ps} (cambio 24h: {data['d1']:+.2f}%)\n"
+            f"Score de valor: {data['score']}/100 — {data['label']}\n"
+            f"Componentes: {data['components']}\n"
+            f"Dame: 1) Situación actual 2) Qué esperar a corto plazo 3) Nivel de riesgo 4) Conclusión clara."
+        )
+        analisis = ask_gemini(prompt, max_tokens=550)
+
+        text = (f"🔍 **Análisis de {data['name']} ({data['ticker']})**\n\n"
+                f"Precio: **{ps}** ({data['d1']:+.2f}%)\n"
+                f"Score: **{data['score']}/100** — {data['label']}\n\n")
+        if analisis:
+            text += analisis
+        else:
+            text += data["outlook"]
+        bot.send_message(message.chat.id, text, reply_markup=get_kb())
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ No pude analizar **{raw.upper()}**: {e}")
 
 # ===================== HANDLERS =====================
 def get_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("💎 Índice Valor", callback_data="valor_help"),
-        InlineKeyboardButton("₿ BTC", callback_data="btc"),
+        InlineKeyboardButton("🔍 Analizar", callback_data="analiza_help"),
         InlineKeyboardButton("🇪🇺 Señales EU", callback_data="senales_eu"),
         InlineKeyboardButton("🇺🇸 Señales US", callback_data="senales_us"),
         InlineKeyboardButton("📰 Noticias", callback_data="noticias"),
@@ -400,19 +440,31 @@ def get_kb():
 @bot.message_handler(commands=["start","menu"])
 def start(m):
     if not is_authorized(m.from_user.id): return
-    bot.reply_to(m, "🤖 **Bot Financiero**\n\n• `/valor TICKER` → Medidor (criptos + memes + acciones)\n• `/senales_eu` / `/senales_us` → Señales + gráfico\n• `/btc` → Bitcoin\n\n_CoinGecko + Gemini_", reply_markup=get_kb())
+    bot.reply_to(m,
+        "🤖 **Bot Financiero + IA**\n\n"
+        "• `/valor TICKER` → Medidor de valor\n"
+        "• `/analiza TICKER` → Análisis completo con IA\n"
+        "• `/senales_eu` / `/senales_us` → Señales + explicación IA\n"
+        "• `/noticias` → Noticias + resumen IA\n\n"
+        "_Ejemplos: /valor PEPE  /analiza TSLA  /valor ORO_",
+        reply_markup=get_kb())
 
 @bot.callback_query_handler(func=lambda c: True)
 def cb(call):
     if not is_authorized(call.from_user.id): return
     bot.answer_callback_query(call.id)
-    if call.data=="valor_help":
-        bot.send_message(call.message.chat.id, "💎 Ejemplos:\n`/valor PEPE`\n`/valor SUI`\n`/valor BTC`\n`/valor ORO`\n`/valor TSLA`")
-    elif call.data=="btc": send_valor(call.message, "BTC")
-    elif call.data=="senales_eu": send_signals(call.message, "EU")
-    elif call.data=="senales_us": send_signals(call.message, "US")
-    elif call.data=="noticias": noticias(call.message)
-    elif call.data=="menu": start(call.message)
+    if call.data == "valor_help":
+        bot.send_message(call.message.chat.id, "💎 Ejemplos:\n`/valor PEPE`\n`/valor SUI`\n`/valor BTC`\n`/valor TSLA`")
+    elif call.data == "analiza_help":
+        bot.send_message(call.message.chat.id, "🔍 Ejemplos:\n`/analiza BTC`\n`/analiza TSLA`\n`/analiza NVDA`")
+    elif call.data == "senales_eu":
+        send_signals(call.message, "EU")
+    elif call.data == "senales_us":
+        send_signals(call.message, "US")
+    elif call.data == "noticias":
+        noticias(call.message)
+    elif call.data == "menu":
+        start(call.message)
 
 @bot.message_handler(commands=["valor","value"])
 def cmd_valor(m):
@@ -441,6 +493,15 @@ def send_valor(m, raw):
     except Exception as e:
         bot.reply_to(m, f"⚠️ No pude obtener datos de **{raw.upper()}**.")
 
+@bot.message_handler(commands=["analiza","analisis","analyze"])
+def cmd_analiza(m):
+    if not is_authorized(m.from_user.id): return
+    args = m.text.split()
+    if len(args)<2:
+        bot.reply_to(m, "⚠️ Usa: `/analiza TSLA` o `/analiza BTC`")
+        return
+    send_analiza(m, args[1])
+
 @bot.message_handler(commands=["senales_eu","señales_eu"])
 def eu(m):
     if is_authorized(m.from_user.id): send_signals(m, "EU")
@@ -460,20 +521,23 @@ def noticias(m):
     heads = []
     for url in ["https://www.expansion.com/rss/mercados.xml","https://cincodias.elpais.com/rss/cincodias/portada.xml"]:
         try:
-            for e in feedparser.parse(url).entries[:3]:
-                if e.title not in heads: heads.append(f"• {e.title}")
+            for e in feedparser.parse(url).entries[:4]:
+                if e.title not in heads: heads.append(e.title)
         except: pass
-    resumen = ask_gemini("Resume estas noticias de mercado en 3 puntos clave:\n" + "\n".join(heads[:5])) if heads and GEMINI_API_KEY else None
-    text = "📰 **NOTICIAS**\n\n"
-    if resumen: text += resumen + "\n\n"
-    text += "\n".join(heads[:5] or ["Sin noticias"])
+
+    text = "📰 **NOTICIAS DE MERCADO**\n\n"
+    if heads and GEMINI_API_KEY:
+        resumen = ask_gemini("Resume estas noticias financieras en 3-4 puntos clave y di el sesgo general del mercado (alcista/bajista/neutral):\n" + "\n".join(heads[:6]))
+        if resumen:
+            text += resumen + "\n\n**Titulares:**\n"
+    text += "\n".join([f"• {h}" for h in heads[:5]] or ["Sin noticias"])
     bot.send_message(m.chat.id, text, reply_markup=get_kb())
 
 @bot.message_handler(func=lambda m: True)
 def fb(m):
     if is_authorized(m.from_user.id) and m.text and not m.text.startswith("/"):
-        bot.reply_to(m, "Usa `/valor TICKER`, `/senales_eu` o `/senales_us`", reply_markup=get_kb())
+        bot.reply_to(m, "Usa `/valor TICKER`, `/analiza TICKER`, `/senales_eu` o `/senales_us`", reply_markup=get_kb())
 
 if __name__ == "__main__":
-    print("Bot CoinGecko + Gemini iniciado")
+    print("Bot completo + Gemini IA iniciado")
     bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
