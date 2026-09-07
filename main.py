@@ -66,7 +66,7 @@ def ask_gemini(prompt, max_tokens=400):
     if not GEMINI_API_KEY:
         return None
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{
                 "parts": [{"text": "Eres un analista financiero profesional y conciso. Responde siempre en español, claro, directo y accionable. Máximo 4-5 frases.\n\n" + prompt}]
