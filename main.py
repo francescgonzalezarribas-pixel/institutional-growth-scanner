@@ -73,64 +73,20 @@ def get_vix() -> float:
         return 18.0
 
 
-def get_binance_funding():
-    try:
-        r = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT", timeout=6)
-        return round(float(r.json().get("lastFundingRate", 0)) * 100, 4)
-    except:
-        return None
-
-
-def get_binance_long_short():
-    try:
-        r = requests.get("https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=1", timeout=6)
-        data = r.json()
-        if data:
-            ratio = float(data[0]["longShortRatio"])
-            long_pct = round(ratio / (1 + ratio) * 100, 1)
-            return {"ratio": round(ratio, 3), "long_pct": long_pct, "short_pct": round(100 - long_pct, 1)}
-    except:
-        return None
-
-
-def get_btc_dominance():
-    try:
-        r = requests.get("https://api.coingecko.com/api/v3/global", timeout=8)
-        data = r.json()["data"]
-        return {
-            "btc_dom": round(data["market_cap_percentage"]["btc"], 1),
-            "eth_dom": round(data["market_cap_percentage"].get("eth", 0), 1),
-            "total_mcap_b": round(data["total_market_cap"]["usd"] / 1e9, 0)
-        }
-    except:
-        return None
-
-
-def get_realtime_btc():
-    try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", timeout=6)
-        data = r.json()
-        return {"price": float(data["lastPrice"]), "d1": float(data["priceChangePercent"])}
-    except:
-        return None
-
-
 def get_ticker_news(ticker: str, name: str, max_items=4):
-    """Noticias relacionadas con el ticker"""
     queries = [
-        f"https://news.google.com/rss/search?q={ticker}+stock&hl=es&gl=ES&ceid=ES:es",
+        f"https://news.google.com/rss/search?q={ticker}+stock+OR+crypto&hl=es&gl=ES&ceid=ES:es",
         f"https://news.google.com/rss/search?q={name}&hl=es&gl=ES&ceid=ES:es",
     ]
     headlines = []
     for url in queries:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:3]:
+            for entry in feed.entries[:4]:
                 title = entry.title.strip()
-                # Limpiar fuente del final
                 if " - " in title:
                     title = title.rsplit(" - ", 1)[0]
-                if title and title not in headlines:
+                if title and title not in headlines and len(title) > 25:
                     headlines.append(title)
             if len(headlines) >= max_items:
                 break
@@ -217,29 +173,33 @@ def get_label(score: float) -> str:
     return "MUY CARO — ALTO RIESGO"
 
 
-def get_conclusion(score: float, components: list) -> str:
+def get_outlook(score: float, rsi: float, ema_pct: float, dist_52: float, fg_val: float = None) -> str:
+    """Genera una perspectiva corta y accionable"""
     if score >= 72:
-        return "Zona de valor interesante. Buena relación riesgo/beneficio."
+        return "Zona de valor atractiva. Se puede acumular por tramos aprovechando debilidades."
     if score >= 58:
-        return "Zona de acumulación. Se puede entrar por tramos."
+        return "Zona de acumulación. Mejor entrar con paciencia y en retrocesos."
     if score <= 28:
-        return "Precio muy extendido + sentimiento extremo. Mejor esperar."
-    rsi_sc = next((s for n, v, s in components if "RSI 14" in n), 5)
-    dist_sc = next((s for n, v, s in components if "Dist" in n), 5)
-    if rsi_sc <= 2 and dist_sc <= 3:
-        return "Sobrecomprado y cerca de máximos. Alto riesgo de pullback."
-    return "Situación equilibrada. Mejor esperar confirmación."
+        return "Precio muy extendido y sentimiento extremo. Alto riesgo de corrección. Mejor esperar."
+    if rsi >= 68 and dist_52 > -8:
+        return "Sobrecomprado y cerca de máximos. Probable consolidación o pullback antes de continuar."
+    if rsi <= 35 and dist_52 < -25:
+        return "Sobreventa significativa. Posible rebote técnico en los próximos días."
+    if ema_pct > 12 and (fg_val is None or fg_val > 65):
+        return "Tendencia alcista pero extendida + codicia. Cuidado con nuevas entradas agresivas."
+    if ema_pct < -8:
+        return "Precio por debajo de la media de largo plazo. Posible zona de interés si hay estabilización."
+    return "Situación equilibrada. Mejor esperar una confirmación más clara de dirección."
 
 
 def score_to_color(score: float) -> str:
-    """Color según puntuación 0-10"""
-    if score >= 7.5: return "#30d158"      # verde
-    if score >= 5.5: return "#ffd60a"      # amarillo
-    if score >= 3.5: return "#ff9f0a"      # naranja
-    return "#ff453a"                      # rojo
+    if score >= 7.5: return "#30d158"
+    if score >= 5.5: return "#ffd60a"
+    if score >= 3.5: return "#ff9f0a"
+    return "#ff453a"
 
 
-# ===================== CÁLCULO ÍNDICE =====================
+# ===================== CÁLCULO PRINCIPAL =====================
 def calculate_value_index(ticker: str) -> dict:
     ticker = ticker.upper().strip()
     is_crypto = any(x in ticker for x in ["BTC", "ETH", "SOL", "BNB"]) or "-USD" in ticker
@@ -253,9 +213,12 @@ def calculate_value_index(ticker: str) -> dict:
         raise ValueError(f"No hay datos suficientes para {ticker}")
 
     close = hist["Close"]
+    high = hist["High"]
+    low = hist["Low"]
     volume = hist["Volume"]
     price = float(close.iloc[-1])
 
+    # Indicadores
     rsi = compute_rsi(close)
     ema200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
     ema_pct = ((price - ema200) / ema200) * 100
@@ -267,22 +230,43 @@ def calculate_value_index(ticker: str) -> dict:
     rsi_w = compute_rsi(weekly, 14) if len(weekly) > 15 else 50.0
     macd_data = compute_macd(close)
 
+    # Fuerza relativa
     try:
-        benchmark = yf.Ticker("BTC-USD" if is_crypto else "SPY").history(period="3mo")["Close"]
-        rel_str = ((price / float(close.iloc[-21])) - (float(benchmark.iloc[-1]) / float(benchmark.iloc[-21]))) * 100
+        bench = yf.Ticker("BTC-USD" if is_crypto else "SPY").history(period="3mo")["Close"]
+        rel_str = ((price / float(close.iloc[-21])) - (float(bench.iloc[-1]) / float(bench.iloc[-21]))) * 100
     except:
         rel_str = 0.0
 
+    # Soportes y Resistencias (Pivot + recientes)
+    pivot = (high.iloc[-1] + low.iloc[-1] + close.iloc[-1]) / 3
+    r1 = 2 * pivot - low.iloc[-1]
+    s1 = 2 * pivot - high.iloc[-1]
+    r2 = pivot + (high.iloc[-1] - low.iloc[-1])
+    s2 = pivot - (high.iloc[-1] - low.iloc[-1])
+
+    # Niveles redondos cercanos
+    if price > 1000:
+        step = 1000 if price > 20000 else 500
+    elif price > 100:
+        step = 5
+    else:
+        step = 1
+
+    round_levels = []
+    base = int(price / step) * step
+    for i in range(-3, 4):
+        lvl = base + i * step
+        if lvl > 0:
+            round_levels.append(lvl)
+
+    supports = sorted([s for s in [s1, s2] + [l for l in round_levels if l < price]] )[-2:]
+    resistances = sorted([r for r in [r1, r2] + [l for l in round_levels if l > price]])[:2]
+
+    # Scoring
     weights = {
-        "RSI 14d": 1.8,
-        "Dist. Max 52s": 1.8,
-        "EMA200": 1.3,
-        "MACD": 1.2,
-        "Fuerza Rel": 1.1,
-        "RSI Semanal": 1.0,
-        "Volumen": 0.8,
-        "VIX": 0.7,
-        "Fear&Greed": 1.3 if is_crypto else 0.0
+        "RSI 14d": 1.8, "Dist. Max 52s": 1.8, "EMA200": 1.3,
+        "MACD": 1.2, "Fuerza Rel": 1.1, "RSI Semanal": 1.0,
+        "Volumen": 0.8, "VIX": 0.7, "Fear&Greed": 1.3 if is_crypto else 0.0
     }
 
     components = []
@@ -302,6 +286,7 @@ def calculate_value_index(ticker: str) -> dict:
     vix = get_vix()
     comps_raw.append(("VIX", f"{vix:.1f}", score_vix(vix)))
 
+    fg_val = None
     if is_crypto:
         fg = get_fear_greed()
         fg_val = fg["valor"] if fg else 50
@@ -309,13 +294,11 @@ def calculate_value_index(ticker: str) -> dict:
 
     for name, val, sc in comps_raw:
         w = weights.get(name, 1.0)
-        if w == 0:
-            continue
+        if w == 0: continue
         components.append((name, val, round(sc, 1)))
         total_weighted += sc * w
         total_weight += w
 
-    # CORRECCIÓN: media ponderada → escala 0-100
     final_score = (total_weighted / total_weight) * 10
     final_score = max(0, min(100, round(final_score)))
 
@@ -326,7 +309,7 @@ def calculate_value_index(ticker: str) -> dict:
     except:
         pass
 
-    conclusion = get_conclusion(final_score, components)
+    outlook = get_outlook(final_score, rsi, ema_pct, dist_52, fg_val)
     news = get_ticker_news(ticker.replace("-USD", ""), name)
 
     return {
@@ -334,30 +317,30 @@ def calculate_value_index(ticker: str) -> dict:
         "score": int(final_score),
         "label": get_label(final_score),
         "components": components,
-        "conclusion": conclusion,
+        "outlook": outlook,
+        "supports": [round(s, 2) if price < 1000 else int(round(s)) for s in supports],
+        "resistances": [round(r, 2) if price < 1000 else int(round(r)) for r in resistances],
         "news": news
     }
 
 
-# ===================== GAUGE PRINCIPAL + MINI BARRAS =====================
+# ===================== GAUGE =====================
 def create_gauge_image(score: int, title: str, label: str, components: list) -> io.BytesIO:
-    fig = plt.figure(figsize=(10, 9.5), facecolor="#0b0f14")
+    fig = plt.figure(figsize=(10, 9.2), facecolor="#0b0f14")
 
-    # --- Gauge principal ---
-    ax1 = fig.add_axes([0.1, 0.48, 0.8, 0.48])
+    # Gauge
+    ax1 = fig.add_axes([0.08, 0.46, 0.84, 0.50])
     ax1.set_facecolor("#0b0f14")
     ax1.set_xlim(-1.4, 1.4)
-    ax1.set_ylim(-0.5, 1.4)
+    ax1.set_ylim(-0.55, 1.4)
     ax1.set_aspect("equal")
     ax1.axis("off")
 
     colors = ["#ff453a", "#ff9f0a", "#ffd60a", "#30d158", "#00c7be"]
     angles = [180, 144, 108, 72, 36, 0]
-
     for i in range(5):
-        wedge = Wedge((0, 0), 1.15, angles[i+1], angles[i], width=0.34,
-                      facecolor=colors[i], edgecolor="#0b0f14", linewidth=3)
-        ax1.add_patch(wedge)
+        ax1.add_patch(Wedge((0, 0), 1.15, angles[i+1], angles[i], width=0.34,
+                            facecolor=colors[i], edgecolor="#0b0f14", linewidth=3))
 
     angle_deg = 180 - (score / 100) * 180
     angle_rad = math.radians(angle_deg)
@@ -366,39 +349,33 @@ def create_gauge_image(score: int, title: str, label: str, components: list) -> 
     ax1.add_patch(Circle((0, 0), 0.12, facecolor="white", zorder=11))
     ax1.add_patch(Circle((0, 0), 0.06, facecolor="#0b0f14", zorder=12))
 
-    ax1.text(0, 1.32, title, ha="center", va="center", fontsize=15, color="#e6edf3", fontweight="bold")
+    ax1.text(0, 1.32, title, ha="center", va="center", fontsize=14, color="#e6edf3", fontweight="bold")
     ax1.text(0, -0.28, f"{score}/100", ha="center", va="center", fontsize=36, color="white", fontweight="bold")
-    ax1.text(0, -0.48, label, ha="center", va="center", fontsize=14, color="#8b949e")
+    ax1.text(0, -0.50, label, ha="center", va="center", fontsize=13, color="#8b949e")
     ax1.text(-1.28, -0.12, "CARO", ha="center", va="center", fontsize=12, color="#ff453a", fontweight="bold")
     ax1.text(1.28, -0.12, "BARATO", ha="center", va="center", fontsize=12, color="#30d158", fontweight="bold")
 
-    # --- Mini barras de componentes ---
-    ax2 = fig.add_axes([0.08, 0.04, 0.84, 0.40])
+    # Barras componentes
+    ax2 = fig.add_axes([0.07, 0.03, 0.86, 0.40])
     ax2.set_facecolor("#0b0f14")
     ax2.set_xlim(0, 10)
-    ax2.set_ylim(-0.5, len(components) + 0.5)
+    ax2.set_ylim(-0.4, len(components) + 0.6)
     ax2.axis("off")
 
-    ax2.text(5, len(components) + 0.15, "COMPONENTES", ha="center", va="center",
-             fontsize=12, color="#8b949e", fontweight="bold")
+    ax2.text(5, len(components) + 0.25, "COMPONENTES", ha="center", va="center",
+             fontsize=11, color="#8b949e", fontweight="bold")
 
     for i, (name, value, sc) in enumerate(reversed(components)):
         y = i
         color = score_to_color(sc)
-
-        # Fondo de la barra
-        ax2.add_patch(Rectangle((2.8, y - 0.25), 5.5, 0.5, facecolor="#21262d", edgecolor="none", linewidth=0))
-        # Barra de score
-        width = (sc / 10) * 5.5
-        ax2.add_patch(Rectangle((2.8, y - 0.25), width, 0.5, facecolor=color, edgecolor="none", linewidth=0, alpha=0.9))
-
-        # Textos
-        ax2.text(0.1, y, name, ha="left", va="center", fontsize=10, color="#e6edf3")
-        ax2.text(2.6, y, value, ha="right", va="center", fontsize=9, color="#8b949e")
-        ax2.text(8.5, y, f"{sc}/10", ha="left", va="center", fontsize=10, color=color, fontweight="bold")
+        ax2.add_patch(Rectangle((2.9, y - 0.22), 5.4, 0.44, facecolor="#21262d", edgecolor="none"))
+        ax2.add_patch(Rectangle((2.9, y - 0.22), (sc / 10) * 5.4, 0.44, facecolor=color, edgecolor="none", alpha=0.9))
+        ax2.text(0.15, y, name, ha="left", va="center", fontsize=9.5, color="#e6edf3")
+        ax2.text(2.75, y, value, ha="right", va="center", fontsize=8.5, color="#8b949e")
+        ax2.text(8.5, y, f"{sc}/10", ha="left", va="center", fontsize=9.5, color=color, fontweight="bold")
 
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=160, facecolor="#0b0f14", edgecolor="none", bbox_inches="tight", pad_inches=0.2)
+    plt.savefig(buf, format="png", dpi=160, facecolor="#0b0f14", bbox_inches="tight", pad_inches=0.18)
     plt.close(fig)
     buf.seek(0)
     return buf
@@ -406,42 +383,27 @@ def create_gauge_image(score: int, title: str, label: str, components: list) -> 
 
 # ===================== BTC PROFUNDO =====================
 def analisis_btc_profundo():
-    rt = get_realtime_btc()
     hist = yf.Ticker("BTC-USD").history(period="1y")
     close = hist["Close"]
     high = hist["High"]
     low = hist["Low"]
-
-    price = rt["price"] if rt else float(close.iloc[-1])
-    d1 = rt["d1"] if rt else 0
+    price = float(close.iloc[-1])
+    d1 = (price - float(close.iloc[-2])) / float(close.iloc[-2]) * 100
     d5 = (price - float(close.iloc[-6])) / float(close.iloc[-6]) * 100 if len(close) > 5 else 0
     d20 = (price - float(close.iloc[-21])) / float(close.iloc[-21]) * 100 if len(close) > 20 else 0
-
     rsi = compute_rsi(close)
     ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
-
     pivot = (high.iloc[-1] + low.iloc[-1] + close.iloc[-1]) / 3
     r1 = 2 * pivot - low.iloc[-1]
     s1 = 2 * pivot - high.iloc[-1]
 
-    niveles = []
-    for n in [70000, 75000, 80000, 85000, 90000, 95000, 100000]:
-        dist = (n - price) / price * 100
-        if abs(dist) < 12:
-            niveles.append({"nivel": n, "tipo": "Resistencia" if n > price else "Soporte", "dist": round(dist, 1)})
-
     return {
         "price": price, "d1": d1, "d5": d5, "d20": d20,
-        "rsi": round(rsi, 1),
-        "ema20": round(ema20, 0), "ema50": round(ema50, 0),
+        "rsi": round(rsi, 1), "ema20": round(ema20, 0), "ema50": round(ema50, 0),
         "sobre_ema20": price > ema20,
         "r1": round(r1, 0), "s1": round(s1, 0), "pivot": round(pivot, 0),
-        "niveles": niveles,
         "fear_greed": get_fear_greed(),
-        "funding": get_binance_funding(),
-        "long_short": get_binance_long_short(),
-        "dominancia": get_btc_dominance(),
     }
 
 
@@ -452,33 +414,14 @@ def send_btc_profundo(message):
         lines = [
             f"**BITCOIN** — {datetime.now().strftime('%d/%m %H:%M')}",
             f"Precio:   **{d['price']:,.0f} USD**",
-            f"Hoy:      {d['d1']:+.2f}%",
-            f"Semana:   {d['d5']:+.2f}%",
-            f"Mes:      {d['d20']:+.2f}%",
+            f"Hoy:      {d['d1']:+.2f}%  |  Semana: {d['d5']:+.2f}%  |  Mes: {d['d20']:+.2f}%",
             f"RSI:      {d['rsi']}",
-            f"EMA20:    {'SOBRE' if d['sobre_ema20'] else 'BAJO'} ({d['ema20']:,.0f})",
-            f"EMA50:    {d['ema50']:,.0f}",
-            "",
-            f"**S/R**  R1: {d['r1']:,.0f}  |  Pivot: {d['pivot']:,.0f}  |  S1: {d['s1']:,.0f}",
+            f"EMA20:    {'SOBRE' if d['sobre_ema20'] else 'BAJO'} ({d['ema20']:,.0f})  |  EMA50: {d['ema50']:,.0f}",
+            f"\n**S/R**  R1: {d['r1']:,.0f}  |  Pivot: {d['pivot']:,.0f}  |  S1: {d['s1']:,.0f}",
         ]
-        if d["niveles"]:
-            lines.append("\n**Niveles psicológicos**")
-            for n in d["niveles"][:4]:
-                lines.append(f"{n['tipo']}: {n['nivel']:,} ({n['dist']:+.1f}%)")
         if d["fear_greed"]:
             fg = d["fear_greed"]
             lines.append(f"\n**Fear & Greed:** {fg['valor']:.0f}/100 — {fg['clasificacion']}")
-        if d["funding"] is not None:
-            fr = d["funding"]
-            señal = "Longs pagando" if fr > 0.02 else "Shorts pagando" if fr < -0.01 else "Neutral"
-            lines.append(f"**Funding:** {fr:+.4f}% → {señal}")
-        if d["long_short"]:
-            ls = d["long_short"]
-            lines.append(f"**Long/Short:** {ls['ratio']} ({ls['long_pct']}% / {ls['short_pct']}%)")
-        if d["dominancia"]:
-            dom = d["dominancia"]
-            lines.append(f"**Dominancia BTC:** {dom['btc_dom']}% | ETH: {dom['eth_dom']}%")
-
         bot.send_message(message.chat.id, "\n".join(lines), reply_markup=get_main_keyboard())
     except Exception as e:
         bot.reply_to(message, f"⚠️ Error BTC: {e}")
@@ -501,8 +444,8 @@ def get_main_keyboard():
 def send_welcome(message):
     if not is_authorized(message.from_user.id): return
     text = ("🤖 **Bot Financiero**\n\n"
-            "• `/valor TICKER` → Medidor de valor + noticias\n"
-            "• `/btc` → Análisis profundo Bitcoin\n"
+            "• `/valor TICKER` → Medidor completo + S/R + perspectiva + noticias\n"
+            "• `/btc` → Análisis Bitcoin\n"
             "• `/noticias` → Noticias generales\n"
             "• `/investigar TICKER` → Datos del activo")
     bot.reply_to(message, text, reply_markup=get_main_keyboard())
@@ -545,24 +488,23 @@ def send_valor(message, ticker):
         title = f"{data['name']} ({data['ticker']}) — {data['price']:.2f}"
         img = create_gauge_image(data["score"], title, data["label"], data["components"])
 
-        # Caption con conclusión + noticias
-        caption_lines = [
+        # Caption completo
+        lines = [
             f"**{data['name']} ({data['ticker']}) — {data['price']:.2f}**",
             f"**{data['score']}/100 — {data['label']}**",
-            f"\n_{data['conclusion']}_"
+            "",
+            f"**Soportes:** {'  |  '.join(str(s) for s in data['supports'])}",
+            f"**Resistencias:** {'  |  '.join(str(r) for r in data['resistances'])}",
+            "",
+            f"**Qué esperar:**\n{data['outlook']}",
         ]
 
         if data["news"]:
-            caption_lines.append("\n**Noticias recientes:**")
+            lines.append("\n**Noticias recientes:**")
             for n in data["news"][:3]:
-                caption_lines.append(f"• {n}")
+                lines.append(f"• {n}")
 
-        bot.send_photo(
-            message.chat.id,
-            img,
-            caption="\n".join(caption_lines),
-            reply_markup=get_main_keyboard()
-        )
+        bot.send_photo(message.chat.id, img, caption="\n".join(lines), reply_markup=get_main_keyboard())
     except Exception as e:
         bot.reply_to(message, f"⚠️ Error: {e}")
 
@@ -626,5 +568,5 @@ def handle_free(message):
 
 
 if __name__ == "__main__":
-    print("🤖 Bot Índice Valor v3 (barras + noticias) iniciado...")
+    print("🤖 Bot Índice Valor completo iniciado...")
     bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
