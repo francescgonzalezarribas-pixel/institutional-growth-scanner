@@ -61,12 +61,12 @@ def get_cg_id(raw):
     t = raw.upper().strip().replace("USDT","").replace("-USD","")
     return COINGECKO_IDS.get(t)
 
-# ===================== GEMINI =====================
+# ===================== GEMINI (modelo corregido) =====================
 def ask_gemini(prompt, max_tokens=400):
     if not GEMINI_API_KEY:
         return None
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{
                 "parts": [{"text": "Eres un analista financiero profesional y conciso. Responde siempre en español, claro, directo y accionable. Máximo 4-5 frases.\n\n" + prompt}]
@@ -77,7 +77,7 @@ def ask_gemini(prompt, max_tokens=400):
         if r.status_code == 200:
             return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         else:
-            print(f"Gemini status: {r.status_code} - {r.text[:200]}")
+            print(f"Gemini status: {r.status_code} - {r.text[:300]}")
     except Exception as e:
         print(f"Gemini error: {e}")
     return None
@@ -143,7 +143,6 @@ def calculate_value_index(raw):
     stock = yf.Ticker(ticker)
     hist = stock.history(period="1y")
 
-    # Fallback CoinGecko
     if (hist.empty or len(hist) < 20) and is_crypto:
         cg = get_crypto_data(raw)
         if not cg:
@@ -170,7 +169,7 @@ def calculate_value_index(raw):
         ]
 
         outlook = ask_gemini(
-            f"Activo: {cg['name']} ({cg['symbol']}). Precio: ${cg['price']}. Cambio 24h: {cg['d1']:.1f}%. Cambio 7d: {cg['d7']:.1f}%. Desde máximos históricos: {cg['ath_change']:.1f}%. Fear & Greed: {fg}. Score de valor: {score}/100. Dame una perspectiva corta y accionable."
+            f"Activo: {cg['name']} ({cg['symbol']}). Precio: ${cg['price']}. Cambio 24h: {cg['d1']:.1f}%. Cambio 7d: {cg['d7']:.1f}%. Desde máximos: {cg['ath_change']:.1f}%. Fear & Greed: {fg}. Score: {score}/100. Perspectiva corta y accionable."
         ) or "Revisa el sentimiento del mercado y el volumen antes de entrar."
 
         return {
@@ -243,7 +242,7 @@ def calculate_value_index(raw):
     resistances = [round(2*pivot - low.iloc[-1], 4 if price<10 else 2)]
 
     outlook = ask_gemini(
-        f"Activo: {name} ({ticker}). Precio actual: {price:.4f}. RSI: {rsi:.1f}. Distancia al máximo de 52 semanas: {dist_52:.1f}%. Score de valor: {score}/100 ({label}). Dame una perspectiva corta, clara y accionable de qué esperar."
+        f"Activo: {name} ({ticker}). Precio: {price:.4f}. RSI: {rsi:.1f}. Distancia al máximo 52s: {dist_52:.1f}%. Score: {score}/100 ({label}). Perspectiva corta y accionable."
     ) or ("Zona interesante para acumular" if score>=60 else "Mejor esperar confirmación" if score>=40 else "Precio extendido, precaución")
 
     return {
@@ -311,7 +310,7 @@ def fetch_signal_data(ticker):
                 "vol_rel":vol_rel,"atr":atr,"hist":hist,"sobre_ema20":price>ema20,"tendencia":ema20>ema50}
     except: return None
 
-def get_top_signals(stocks, n=4, min_score=6):
+def get_top_signals(stocks, n=3, min_score=6):
     cands = []
     for t in stocks:
         d = fetch_signal_data(t)
@@ -375,11 +374,10 @@ def send_signals(message, region="US"):
             return
         bot.send_message(message.chat.id, f"**{titulo}** — {datetime.now().strftime('%d/%m %H:%M')}")
         for s in signals:
-            # Explicación IA de la señal
             explicacion = ask_gemini(
                 f"Señal de trading: {s['nombre']} ({s['ticker']}). Entrada {s['entry']}, Stop {s['stop']}, TP1 {s['tp1']}, R/R {s['rr']}x. "
                 f"RSI {s['rsi']:.1f}, Volumen {s['vol_rel']:.1f}x, motivos: {', '.join(s['motivos'])}. "
-                f"Explica en 2-3 frases por qué es interesante y qué riesgo principal tiene."
+                f"Explica en 2-3 frases por qué es interesante y el riesgo principal."
             )
             caption = (f"**{s['nombre']} ({s['ticker']})** — Score **{s['score']}**\n\n"
                        f"🟢 Entrada: `{s['entry']}`\n🎯 TP1: `{s['tp1']}` | TP2: `{s['tp2']}`\n"
@@ -405,10 +403,9 @@ def send_analiza(message, raw):
         ps = f"{p:.8f}" if p<0.001 else f"{p:.6f}" if p<0.1 else f"{p:.4f}" if p<1 else f"{p:.2f}" if p<1000 else f"{p:,.0f}"
 
         prompt = (
-            f"Haz un análisis completo y profesional del activo {data['name']} ({data['ticker']}).\n"
+            f"Haz un análisis completo del activo {data['name']} ({data['ticker']}).\n"
             f"Precio: {ps} (cambio 24h: {data['d1']:+.2f}%)\n"
             f"Score de valor: {data['score']}/100 — {data['label']}\n"
-            f"Componentes: {data['components']}\n"
             f"Dame: 1) Situación actual 2) Qué esperar a corto plazo 3) Nivel de riesgo 4) Conclusión clara."
         )
         analisis = ask_gemini(prompt, max_tokens=550)
@@ -539,5 +536,5 @@ def fb(m):
         bot.reply_to(m, "Usa `/valor TICKER`, `/analiza TICKER`, `/senales_eu` o `/senales_us`", reply_markup=get_kb())
 
 if __name__ == "__main__":
-    print("Bot completo + Gemini IA iniciado")
+    print("Bot completo + Gemini 2.0 Flash iniciado")
     bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
