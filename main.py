@@ -51,10 +51,16 @@ EU_STOCKS = ["SAN.MC","BBVA.MC","ITX.MC","REP.MC","TEF.MC","IBE.MC","AMS.MC","OR
 US_STOCKS = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AMD","NFLX","JPM","V","MA","JNJ","UNH","XOM","WMT","HD","BA","CAT","DIS","CRM","PLTR","COIN","SMCI","ARM","AVGO","QCOM","SHOP","SNOW","CRWD","UBER","INTC","ORCL"]
 
 def resolve_ticker(raw):
-    t = raw.upper().strip().replace("USDT","").replace("-USD","")
-    if t in CRYPTO_MAP: return CRYPTO_MAP[t]
-    if t in COMMODITIES: return COMMODITIES[t]
-    if len(t) <= 5 and t.isalpha(): return f"{t}-USD"
+    t = raw.upper().strip()
+    clean = t.replace("USDT", "").replace("-USD", "")
+    
+    if clean in CRYPTO_MAP:
+        return CRYPTO_MAP[clean]
+    if clean in COMMODITIES:
+        return COMMODITIES[clean]
+    if "-USD" in t or "USDT" in t:
+        return f"{clean}-USD"
+        
     return t
 
 def get_cg_id(raw):
@@ -189,7 +195,7 @@ def get_fear_greed():
 # ===================== CÁLCULO DE VALOR =====================
 def calculate_value_index(raw):
     ticker = resolve_ticker(raw)
-    is_crypto = get_cg_id(raw) is not None or "-USD" in ticker
+    is_crypto = get_cg_id(raw) is not None or ticker.endswith("-USD")
 
     stock = yf.Ticker(ticker)
     hist = stock.history(period="1y")
@@ -532,7 +538,7 @@ def start(m):
         "• `/analiza TICKER` → Informe detallado con datos macro e IA\n"
         "• `/senales_eu` / `/senales_us` → Señales técnicas con R/R e IA\n"
         "• `/noticias` → Noticias en vivo + impacto cuantitativo\n\n"
-        "_Ejemplos: /valor BTC  /analiza NVDA  /valor ORO_",
+        "_Ejemplos: /valor BTC  /analiza NVDA  /valor TSLA /valor MP_",
         reply_markup=get_kb())
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -540,9 +546,9 @@ def cb(call):
     if not is_authorized(call.from_user.id): return
     bot.answer_callback_query(call.id)
     if call.data == "valor_help":
-        bot.send_message(call.message.chat.id, "💎 Ejemplos:\n`/valor PEPE`\n`/valor BTC`\n`/valor TSLA`\n`/valor ORO`")
+        bot.send_message(call.message.chat.id, "💎 Ejemplos:\n`/valor TSLA`\n`/valor MP`\n`/valor BTC`\n`/valor ORO`")
     elif call.data == "analiza_help":
-        bot.send_message(call.message.chat.id, "🔍 Ejemplos:\n`/analiza BTC`\n`/analiza NVDA`\n`/analiza AAPL`")
+        bot.send_message(call.message.chat.id, "🔍 Ejemplos:\n`/analiza TSLA`\n`/analiza MP`\n`/analiza NVDA`")
     elif call.data == "senales_eu":
         send_signals(call.message, "EU")
     elif call.data == "senales_us":
@@ -557,7 +563,7 @@ def cmd_valor(m):
     if not is_authorized(m.from_user.id): return
     args = m.text.split()
     if len(args)<2:
-        bot.reply_to(m, "⚠️ Usa: `/valor PEPE` o `/valor TSLA`")
+        bot.reply_to(m, "⚠️ Usa: `/valor TSLA` o `/valor MP`")
         return
     send_valor(m, args[1])
 
