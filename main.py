@@ -1435,10 +1435,13 @@ def calcular_fundamental(ticker):
         elif f["ev_ebitda"] < 20: pts_val += 1
         else:                     pts_val -= 1
     pts_val = max(0, min(20, pts_val))
+    pe_txt = f"{f['pe']:.1f}" if f['pe'] else 'N/D'
+    peg_txt = f"{f['peg']:.2f}" if f['peg'] else 'N/D'
+    ev_txt = f"{f['ev_ebitda']:.1f}" if f['ev_ebitda'] else 'N/D'
     categorias["Valoracion"] = {
         "puntos": pts_val, "max": 20,
         "notas": val_notas,
-        "valores": f"P/E:{f['pe']:.1f if f['pe'] else 'N/D'} PEG:{f['peg']:.2f if f['peg'] else 'N/D'} EV/EBITDA:{f['ev_ebitda']:.1f if f['ev_ebitda'] else 'N/D'}"
+        "valores": f"P/E:{pe_txt} PEG:{peg_txt} EV/EBITDA:{ev_txt}"
     }
 
     # 2. SALUD FINANCIERA (0-20)
@@ -1457,10 +1460,11 @@ def calcular_fundamental(ticker):
     caja_b = round(f["caja"] / 1e9, 1) if f["caja"] else 0
     sal_notas.append(f"Caja: {caja_b}B USD")
     pts_sal = max(0, min(20, pts_sal))
+    cr_txt = f"{f['current_ratio']:.1f}" if f['current_ratio'] else 'N/D'
     categorias["Salud Financiera"] = {
         "puntos": pts_sal, "max": 20,
         "notas": sal_notas,
-        "valores": f"Deuda/EBITDA:{f['deuda_ebitda']}x Current:{f['current_ratio']:.1f if f['current_ratio'] else 'N/D'}"
+        "valores": f"Deuda/EBITDA:{f['deuda_ebitda']}x Current:{cr_txt}"
     }
 
     # 3. RENTABILIDAD Y CASH FLOW (0-20)
@@ -1485,10 +1489,12 @@ def calcular_fundamental(ticker):
     elif f["fcf"] and f["fcf"] < 0:
         pts_rent -= 2; rent_notas.append("FCF negativo")
     pts_rent = max(0, min(20, pts_rent))
+    mn_txt = f"{f['margen_neto']*100:.1f}" if f['margen_neto'] else 'N/D'
+    roe_txt = f"{f['roe']*100:.1f}" if f['roe'] else 'N/D'
     categorias["Rentabilidad"] = {
         "puntos": pts_rent, "max": 20,
         "notas": rent_notas,
-        "valores": f"Margen neto:{f['margen_neto']*100:.1f if f['margen_neto'] else 'N/D'}% ROE:{f['roe']*100:.1f if f['roe'] else 'N/D'}%"
+        "valores": f"Margen neto:{mn_txt}% ROE:{roe_txt}%"
     }
 
     # 4. CRECIMIENTO (0-20)
@@ -1513,10 +1519,12 @@ def calcular_fundamental(ticker):
             crec_notas.append("Crecimiento consistente multi-año")
             pts_crec += 2
     pts_crec = max(0, min(20, pts_crec))
+    rg_txt = f"{f['rev_growth']*100:.0f}" if f['rev_growth'] else 'N/D'
+    eg_txt = f"{f['earn_growth']*100:.0f}" if f['earn_growth'] else 'N/D'
     categorias["Crecimiento"] = {
         "puntos": pts_crec, "max": 20,
         "notas": crec_notas,
-        "valores": f"Rev growth:{f['rev_growth']*100:.0f if f['rev_growth'] else 'N/D'}% Earn growth:{f['earn_growth']*100:.0f if f['earn_growth'] else 'N/D'}%"
+        "valores": f"Rev growth:{rg_txt}% Earn growth:{eg_txt}%"
     }
 
     # 5. POTENCIAL LARGO PLAZO (0-20)
@@ -1537,10 +1545,12 @@ def calcular_fundamental(ticker):
         if dy > 3: pts_lp += 2; lp_notas.append(f"Dividendo {dy:.1f}% — retorno accionista")
         elif dy > 1: pts_lp += 1
     pts_lp = max(0, min(20, pts_lp))
+    mb_txt = f"{f['margen_bruto']*100:.0f}" if f['margen_bruto'] else 'N/D'
+    ins_txt = f"{f['insider_pct']*100:.1f}" if f['insider_pct'] else 'N/D'
     categorias["Potencial LP"] = {
         "puntos": pts_lp, "max": 20,
         "notas": lp_notas,
-        "valores": f"Margen bruto:{f['margen_bruto']*100:.0f if f['margen_bruto'] else 'N/D'}% Insider:{f['insider_pct']*100:.1f if f['insider_pct'] else 'N/D'}%"
+        "valores": f"Margen bruto:{mb_txt}% Insider:{ins_txt}%"
     }
 
     total = sum(c["puntos"] for c in categorias.values())
