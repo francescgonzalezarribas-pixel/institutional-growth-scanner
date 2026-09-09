@@ -1411,33 +1411,182 @@ def fetch_fundamentales(ticker):
         return None
 
 
+def detectar_tipo_empresa(f):
+    """Detecta el tipo de empresa para ajustar la valoracion."""
+    sector = (f.get("sector") or "").lower()
+    industry = (f.get("industry") or "").lower()
+    rev_growth = f.get("rev_growth") or 0
+    fcf = f.get("fcf") or 0
+    div_yield = f.get("div_yield") or 0
+    margen_neto = f.get("margen_neto") or 0
+
+    if any(s in sector for s in ["utility", "utilities"]):
+        return "utility"
+    if any(s in sector for s in ["basic material", "mining", "oil", "energy"]):
+        return "materials"
+    if any(s in industry for s in ["biotech", "pharmaceutical", "drug"]):
+        return "biotech"
+    if rev_growth > 0.30 and fcf < 0:
+        return "growth"
+    if div_yield > 0.03:
+        return "income"
+    if any(s in sector for s in ["technology", "tech"]):
+        return "tech"
+    return "value"
+
+
+def estimar_precio_por_tipo(f, tipo, price):
+    """Estimacion de precio segun tipo de empresa."""
+    rev_growth = f.get("rev_growth") or 0.05
+    rev_ttm = f.get("rev_ttm") or 0
+    mktcap = f.get("mktcap") or 0
+    fcf = f.get("fcf") or 0
+    div_yield = f.get("div_yield") or 0
+    pe_fwd = f.get("pe_fwd") or f.get("pe") or 20
+    earn_growth = f.get("earn_growth") or rev_growth
+
+    precio_justo = None
+    est_1y = None
+    est_3y = None
+    metodo = ""
+
+    if tipo == "growth" and rev_ttm > 0 and mktcap > 0:
+        # Valoracion por multiplo de ventas (P/S)
+        ps_actual = mktcap / rev_ttm
+        ps_objetivo = min(ps_actual * 0.8, 15)  # descuento al actual
+        rev_1y = rev_ttm * (1 + rev_growth)
+        rev_3y = rev_ttm * (1 + rev_growth) ** 3
+        precio_justo = round(price * (ps_objetivo / ps_actual), 2)
+        est_1y = round(price * (1 + rev_growth * 0.7), 2)
+        est_3y = round(price * (1 + rev_growth * 0.5) ** 3, 2)
+        metodo = f"P/S x{ps_objetivo:.1f} (empresa crecimiento, FCF negativo)"
+
+    elif tipo == "utility" and div_yield > 0:
+        # Valoracion por yield objetivo
+        yield_objetivo = 0.04  # 4% yield objetivo para utilities
+        precio_justo = round(price * (div_yield / yield_objetivo), 2)
+        crecimiento_div = 0.03  # utilities crecen dividendo ~3% anual
+        est_1y = round(precio_justo * (1 + crecimiento_div), 2)
+        est_3y = round(precio_justo * (1 + crecimiento_div) ** 3, 2)
+        metodo = f"Yield objetivo 4% (utility)"
+
+    elif tipo == "materials" and rev_ttm > 0 and mktcap > 0:
+        # Valoracion por EV/Ingresos para materials
+        ev_rev = mktcap / rev_ttm
+        ev_rev_objetivo = max(ev_rev * 0.9, 2)
+        precio_justo = round(price * (ev_rev_objetivo / ev_rev), 2)
+        est_1y = round(price * (1 + max(rev_growth, 0.10)), 2)
+        est_3y = round(price * (1 + max(rev_growth * 0.6, 0.08)) ** 3, 2)
+        metodo = f"EV/Ingresos ajustado ciclo commodities"
+
+    elif tipo == "biotech":
+        # Biotech: muy especulativo, usamos crecimiento de ingresos con descuento
+        est_1y = round(price * (1 + max(rev_growth * 0.5, 0.05)), 2)
+        est_3y = round(price * (1 + max(rev_growth * 0.4, 0.08)) ** 3, 2)
+        precio_justo = round(price * 0.85, 2)
+        metodo = "Especulativo (biotech sin beneficios)"
+
+    elif fcf > 0 and mktcap > 0:
+        # DCF clasico para empresas con FCF positivo
+        tasa_desc = 0.10
+        tasa_crec_fcf = min(max(earn_growth, 0.03), 0.25)
+        fcf_yield = fcf / mktcap
+        precio_justo = round(price * (fcf_yield + tasa_crec_fcf) / tasa_desc, 2)
+        est_1y = round(price * (1 + max(earn_growth, 0.05)), 2)
+        est_3y = round(price * (1 + max(earn_growth * 0.7, 0.05)) ** 3, 2)
+        metodo = "DCF (Free Cash Flow)"
+
+    elif pe_fwd and pe_fwd > 0:
+        # Valoracion por PER forward
+        pe_objetivo = min(pe_fwd * 0.9, 25)
+        precio_justo = round(price * (pe_objetivo / pe_fwd), 2)
+        est_1y = round(price * (1 + max(earn_growth, 0.05)), 2)
+        est_3y = round(price * (1 + max(earn_growth * 0.7, 0.05)) ** 3, 2)
+        metodo = f"PER forward {pe_fwd:.1f}x"
+
+    return precio_justo, est_1y, est_3y, metodo
+
+
+def buscar_noticias_ma(ticker, nombre_empresa):
+    """Busca noticias de M&A para el ticker."""
+    try:
+        terminos = f"{nombre_empresa} acquisition merger buyout takeover 2026"
+        url = f"https://news.google.com/rss/search?q={terminos}&hl=en&gl=US&ceid=US:en"
+        feed = feedparser.parse(url)
+        noticias_ma = []
+        palabras_clave = ["acqui", "merger", "buyout", "takeover", "deal", "bid", "purchase"]
+        for entry in feed.entries[:10]:
+            titulo = entry.get("title", "").lower()
+            if any(p in titulo for p in palabras_clave):
+                noticias_ma.append(entry.get("title", ""))
+        return noticias_ma[:3]
+    except:
+        return []
+
+
 def calcular_fundamental(ticker):
     """
-    Puntuacion fundamental 0-100.
+    Puntuacion fundamental 0-100 con ajuste por tipo de empresa.
     5 categorias x 20 puntos = 100 total.
     """
     f = fetch_fundamentales(ticker)
     if not f:
         return None
 
+    tipo = detectar_tipo_empresa(f)
     categorias = {}
 
-    # 1. VALORACION (0-20)
-    pts_val = 10  # base neutral
-    val_notas = []
-    if f["pe"]:
-        if f["pe"] < 15:   pts_val += 4; val_notas.append(f"P/E {f['pe']:.1f} barato")
-        elif f["pe"] < 25: pts_val += 2; val_notas.append(f"P/E {f['pe']:.1f} razonable")
-        elif f["pe"] < 40: pts_val -= 1; val_notas.append(f"P/E {f['pe']:.1f} elevado")
-        else:              pts_val -= 3; val_notas.append(f"P/E {f['pe']:.1f} muy caro")
-    if f["peg"]:
-        if f["peg"] < 1:   pts_val += 3; val_notas.append(f"PEG {f['peg']:.2f} infravalorado")
-        elif f["peg"] < 2: pts_val += 1; val_notas.append(f"PEG {f['peg']:.2f} ok")
-        else:              pts_val -= 2; val_notas.append(f"PEG {f['peg']:.2f} caro vs crecimiento")
-    if f["ev_ebitda"]:
-        if f["ev_ebitda"] < 10:  pts_val += 3
-        elif f["ev_ebitda"] < 20: pts_val += 1
-        else:                     pts_val -= 1
+    # 1. VALORACION (0-20) — ajustada por tipo
+    pts_val = 10
+    val_notas = [f"Tipo empresa: {tipo.upper()}"]
+
+    if tipo == "growth":
+        # Growth: P/S y crecimiento son mas importantes que P/E
+        ps = f.get("ps") or 0
+        if ps > 0:
+            if ps < 5:    pts_val += 5; val_notas.append(f"P/S {ps:.1f}x barato para growth")
+            elif ps < 15: pts_val += 2; val_notas.append(f"P/S {ps:.1f}x razonable")
+            elif ps < 30: pts_val -= 1; val_notas.append(f"P/S {ps:.1f}x elevado")
+            else:         pts_val -= 3; val_notas.append(f"P/S {ps:.1f}x muy caro")
+        if f["rev_growth"] and f["rev_growth"] > 0.5:
+            pts_val += 3; val_notas.append(f"Crecimiento {f['rev_growth']*100:.0f}% justifica premium")
+
+    elif tipo == "utility":
+        # Utility: dividendo y estabilidad son lo importante
+        if f["div_yield"]:
+            dy = f["div_yield"] * 100
+            if dy > 5:    pts_val += 5; val_notas.append(f"Dividendo {dy:.1f}% excelente para utility")
+            elif dy > 3:  pts_val += 3; val_notas.append(f"Dividendo {dy:.1f}% bueno")
+            elif dy > 1:  pts_val += 1
+        # Deuda alta es NORMAL en utilities — no penalizar
+        val_notas.append("Deuda alta es estructural en utilities (no penaliza)")
+
+    elif tipo == "materials":
+        # Materials: EV/EBITDA y ciclo
+        if f["ev_ebitda"]:
+            if f["ev_ebitda"] < 8:   pts_val += 5; val_notas.append(f"EV/EBITDA {f['ev_ebitda']:.1f}x barato")
+            elif f["ev_ebitda"] < 15: pts_val += 2; val_notas.append(f"EV/EBITDA {f['ev_ebitda']:.1f}x ok")
+            else:                     pts_val -= 1; val_notas.append(f"EV/EBITDA {f['ev_ebitda']:.1f}x caro")
+        val_notas.append("FCF negativo en expansion es normal en mining")
+
+    elif tipo == "biotech":
+        # Biotech: pipeline y caja
+        caja_b = round(f["caja"] / 1e9, 1) if f["caja"] else 0
+        if caja_b > 0.5: pts_val += 4; val_notas.append(f"Caja {caja_b}B USD — runway suficiente")
+        val_notas.append("Valoracion especulativa — depende del pipeline")
+
+    else:
+        # Valoracion clasica P/E, PEG, EV/EBITDA
+        if f["pe"]:
+            if f["pe"] < 15:   pts_val += 4; val_notas.append(f"P/E {f['pe']:.1f} barato")
+            elif f["pe"] < 25: pts_val += 2; val_notas.append(f"P/E {f['pe']:.1f} razonable")
+            elif f["pe"] < 40: pts_val -= 1; val_notas.append(f"P/E {f['pe']:.1f} elevado")
+            else:              pts_val -= 3; val_notas.append(f"P/E {f['pe']:.1f} muy caro")
+        if f["peg"]:
+            if f["peg"] < 1:   pts_val += 3; val_notas.append(f"PEG {f['peg']:.2f} infravalorado")
+            elif f["peg"] < 2: pts_val += 1; val_notas.append(f"PEG {f['peg']:.2f} ok")
+            else:              pts_val -= 2; val_notas.append(f"PEG {f['peg']:.2f} caro vs crecimiento")
+
     pts_val = max(0, min(20, pts_val))
     pe_txt = f"{f['pe']:.1f}" if f['pe'] else 'N/D'
     peg_txt = f"{f['peg']:.2f}" if f['peg'] else 'N/D'
@@ -1448,21 +1597,33 @@ def calcular_fundamental(ticker):
         "valores": f"P/E:{pe_txt} PEG:{peg_txt} EV/EBITDA:{ev_txt}"
     }
 
-    # 2. SALUD FINANCIERA (0-20)
+    # 2. SALUD FINANCIERA (0-20) — ajustada por sector
     pts_sal = 10
     sal_notas = []
-    if f["deuda_ebitda"] is not None:
-        if f["deuda_ebitda"] < 0:   pts_sal += 5; sal_notas.append("Caja neta positiva")
-        elif f["deuda_ebitda"] < 1: pts_sal += 4; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x muy baja")
-        elif f["deuda_ebitda"] < 2: pts_sal += 2; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x saludable")
-        elif f["deuda_ebitda"] < 4: pts_sal -= 2; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x moderada")
-        else:                        pts_sal -= 4; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x alta")
-    if f["current_ratio"]:
-        if f["current_ratio"] > 2:  pts_sal += 3; sal_notas.append(f"Current ratio {f['current_ratio']:.1f} excelente")
-        elif f["current_ratio"] > 1: pts_sal += 1
-        else:                        pts_sal -= 3; sal_notas.append("Liquidez ajustada")
+
+    if tipo == "utility":
+        # Utilities: deuda alta es estructural, mirar cobertura de intereses
+        if f["current_ratio"]:
+            if f["current_ratio"] > 1: pts_sal += 3; sal_notas.append(f"Current ratio {f['current_ratio']:.1f} ok")
+        caja_b = round(f["caja"] / 1e9, 1) if f["caja"] else 0
+        sal_notas.append(f"Caja: {caja_b}B — utility con deuda estructural normal")
+        pts_sal += 3  # bonus por ser modelo de negocio regulado y predecible
+    else:
+        if f["deuda_ebitda"] is not None:
+            if f["deuda_ebitda"] < 0:   pts_sal += 5; sal_notas.append("Caja neta positiva")
+            elif f["deuda_ebitda"] < 1: pts_sal += 4; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x muy baja")
+            elif f["deuda_ebitda"] < 2: pts_sal += 2; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x saludable")
+            elif f["deuda_ebitda"] < 4: pts_sal -= 1; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x moderada")
+            elif tipo not in ["materials", "growth"]:
+                pts_sal -= 3; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x alta")
+        if f["current_ratio"]:
+            if f["current_ratio"] > 2:  pts_sal += 3; sal_notas.append(f"Current ratio {f['current_ratio']:.1f} excelente")
+            elif f["current_ratio"] > 1: pts_sal += 1
+            else:                        pts_sal -= 2; sal_notas.append("Liquidez ajustada")
+
     caja_b = round(f["caja"] / 1e9, 1) if f["caja"] else 0
-    sal_notas.append(f"Caja: {caja_b}B USD")
+    if caja_b not in [str(x) for x in sal_notas]:
+        sal_notas.append(f"Caja: {caja_b}B USD")
     pts_sal = max(0, min(20, pts_sal))
     cr_txt = f"{f['current_ratio']:.1f}" if f['current_ratio'] else 'N/D'
     categorias["Salud Financiera"] = {
@@ -1471,27 +1632,34 @@ def calcular_fundamental(ticker):
         "valores": f"Deuda/EBITDA:{f['deuda_ebitda']}x Current:{cr_txt}"
     }
 
-    # 3. RENTABILIDAD Y CASH FLOW (0-20)
+    # 3. RENTABILIDAD (0-20) — ajustada
     pts_rent = 10
     rent_notas = []
+
+    if tipo in ["growth", "biotech", "materials"] and (f["fcf"] or 0) < 0:
+        # FCF negativo en estas empresas es normal si crecen fuerte
+        pts_rent += 2
+        rent_notas.append("FCF negativo aceptable en fase expansion")
+    elif f["fcf"] and f["fcf"] > 0:
+        fcf_b = round(f["fcf"] / 1e9, 1)
+        pts_rent += 3; rent_notas.append(f"FCF positivo {fcf_b}B USD")
+    elif f["fcf"] and f["fcf"] < 0 and tipo not in ["growth", "biotech", "materials"]:
+        pts_rent -= 2; rent_notas.append("FCF negativo — preocupante")
+
     if f["margen_neto"]:
         mn = f["margen_neto"] * 100
         if mn > 25:   pts_rent += 4; rent_notas.append(f"Margen neto {mn:.1f}% excelente")
         elif mn > 15: pts_rent += 3; rent_notas.append(f"Margen neto {mn:.1f}% bueno")
-        elif mn > 8:  pts_rent += 1; rent_notas.append(f"Margen neto {mn:.1f}% ok")
+        elif mn > 5:  pts_rent += 1; rent_notas.append(f"Margen neto {mn:.1f}% ok")
         elif mn > 0:  pass
-        else:         pts_rent -= 3; rent_notas.append(f"Margen neto negativo {mn:.1f}%")
+        elif tipo not in ["growth", "biotech"]:
+            pts_rent -= 2; rent_notas.append(f"Margen neto negativo {mn:.1f}%")
+
     if f["roe"]:
         roe = f["roe"] * 100
-        if roe > 25:  pts_rent += 3; rent_notas.append(f"ROE {roe:.1f}% excelente")
-        elif roe > 15: pts_rent += 2
-        elif roe > 8:  pts_rent += 1
-        else:          pts_rent -= 1
-    if f["fcf"] and f["fcf"] > 0:
-        fcf_b = round(f["fcf"] / 1e9, 1)
-        pts_rent += 3; rent_notas.append(f"FCF positivo {fcf_b}B USD")
-    elif f["fcf"] and f["fcf"] < 0:
-        pts_rent -= 2; rent_notas.append("FCF negativo")
+        if roe > 20:  pts_rent += 3; rent_notas.append(f"ROE {roe:.1f}% excelente")
+        elif roe > 10: pts_rent += 1
+
     pts_rent = max(0, min(20, pts_rent))
     mn_txt = f"{f['margen_neto']*100:.1f}" if f['margen_neto'] else 'N/D'
     roe_txt = f"{f['roe']*100:.1f}" if f['roe'] else 'N/D'
@@ -1506,17 +1674,20 @@ def calcular_fundamental(ticker):
     crec_notas = []
     if f["rev_growth"]:
         rg = f["rev_growth"] * 100
-        if rg > 30:   pts_crec += 5; crec_notas.append(f"Ingresos +{rg:.0f}% YoY excepcional")
-        elif rg > 15: pts_crec += 3; crec_notas.append(f"Ingresos +{rg:.0f}% YoY bueno")
+        if rg > 50:   pts_crec += 6; crec_notas.append(f"Ingresos +{rg:.0f}% YoY excepcional")
+        elif rg > 30: pts_crec += 4; crec_notas.append(f"Ingresos +{rg:.0f}% YoY muy bueno")
+        elif rg > 15: pts_crec += 2; crec_notas.append(f"Ingresos +{rg:.0f}% YoY bueno")
         elif rg > 5:  pts_crec += 1; crec_notas.append(f"Ingresos +{rg:.0f}% YoY moderado")
         elif rg > 0:  pass
+        elif tipo == "utility": pass  # utilities crecen poco — normal
         else:         pts_crec -= 3; crec_notas.append(f"Ingresos {rg:.0f}% cayendo")
     if f["earn_growth"]:
         eg = f["earn_growth"] * 100
-        if eg > 30:   pts_crec += 5; crec_notas.append(f"Beneficios +{eg:.0f}% YoY")
-        elif eg > 15: pts_crec += 3
+        if eg > 50:   pts_crec += 4; crec_notas.append(f"Beneficios +{eg:.0f}% YoY")
+        elif eg > 20: pts_crec += 2
         elif eg > 5:  pts_crec += 1
-        else:         pts_crec -= 2
+        elif tipo not in ["growth", "biotech", "materials"]:
+            pts_crec -= 1
     if f["rev_hist"] and len(f["rev_hist"]) >= 3:
         revs = sorted(f["rev_hist"].items())
         if revs[-1][1] > revs[0][1]:
@@ -1534,20 +1705,33 @@ def calcular_fundamental(ticker):
     # 5. POTENCIAL LARGO PLAZO (0-20)
     pts_lp = 10
     lp_notas = []
+
+    # Factor M&A — buscar noticias
+    noticias_ma = buscar_noticias_ma(ticker, f["nombre"])
+    if noticias_ma:
+        pts_lp += 4
+        lp_notas.append(f"M&A potencial: {noticias_ma[0][:60]}")
+
     if f["insider_pct"]:
         ip = f["insider_pct"] * 100
-        if ip > 10:  pts_lp += 3; lp_notas.append(f"Insiders {ip:.1f}% — directivos con piel en el juego")
-        elif ip > 5: pts_lp += 1; lp_notas.append(f"Insiders {ip:.1f}%")
+        if ip > 10:  pts_lp += 3; lp_notas.append(f"Insiders {ip:.1f}% — directivos comprometidos")
+        elif ip > 5: pts_lp += 1
+
     if f["margen_bruto"]:
         mb = f["margen_bruto"] * 100
         if mb > 60:  pts_lp += 4; lp_notas.append(f"Margen bruto {mb:.0f}% — moat fuerte")
         elif mb > 40: pts_lp += 2; lp_notas.append(f"Margen bruto {mb:.0f}%")
         elif mb > 20: pts_lp += 1
-        else:         pts_lp -= 2
+
+    if tipo == "utility":
+        pts_lp += 2; lp_notas.append("Monopolio regulado — ingresos predecibles")
+    elif tipo == "materials" and "rare" in (f.get("industry") or "").lower():
+        pts_lp += 3; lp_notas.append("Materiales criticos — valor estrategico geopolitico")
+
     if f["div_yield"]:
         dy = f["div_yield"] * 100
-        if dy > 3: pts_lp += 2; lp_notas.append(f"Dividendo {dy:.1f}% — retorno accionista")
-        elif dy > 1: pts_lp += 1
+        if dy > 3: pts_lp += 2; lp_notas.append(f"Dividendo {dy:.1f}%")
+
     pts_lp = max(0, min(20, pts_lp))
     mb_txt = f"{f['margen_bruto']*100:.0f}" if f['margen_bruto'] else 'N/D'
     ins_txt = f"{f['insider_pct']*100:.1f}" if f['insider_pct'] else 'N/D'
@@ -1559,16 +1743,8 @@ def calcular_fundamental(ticker):
 
     total = sum(c["puntos"] for c in categorias.values())
 
-    # Estimacion precio
-    precio_justo = None
-    est_1y = None
-    est_3y = None
-    if f["fcf"] and f["fcf"] > 0 and f["mktcap"] and f["mktcap"] > 0:
-        fcf_yield = f["fcf"] / f["mktcap"]
-        tasa_crec = f["rev_growth"] or 0.08
-        precio_justo = round(f["price"] / (1 + (0.10 - tasa_crec)), 2)
-        est_1y = round(f["price"] * (1 + max(tasa_crec, 0.05)), 2)
-        est_3y = round(f["price"] * (1 + max(tasa_crec, 0.05)) ** 3, 2)
+    # Estimacion precio ajustada por tipo
+    precio_justo, est_1y, est_3y, metodo_est = estimar_precio_por_tipo(f, tipo, f["price"])
 
     if total >= 80:    zona = "INVERSION EXCELENTE"
     elif total >= 65:  zona = "BUENA INVERSION"
@@ -1579,9 +1755,10 @@ def calcular_fundamental(ticker):
     return {
         "ticker": ticker, "nombre": f["nombre"], "price": f["price"],
         "sector": f["sector"], "mktcap": f["mktcap"],
-        "score": total, "zona": zona,
+        "tipo": tipo, "score": total, "zona": zona,
         "categorias": categorias, "fundamentales": f,
         "precio_justo": precio_justo, "est_1y": est_1y, "est_3y": est_3y,
+        "metodo_est": metodo_est, "noticias_ma": noticias_ma,
     }
 
 
@@ -3538,19 +3715,23 @@ def cmd_fundamental(msg):
     texto_detalle = "\n".join(detalles)
 
     # Análisis IA con precio actual
+    ma_txt = f"Noticias M&A: {resultado['noticias_ma'][0][:80]}" if resultado.get('noticias_ma') else "Sin noticias M&A detectadas"
     prompt = (f"Analisis fundamental de {resultado['nombre']} ({ticker}):\n"
+              f"Tipo empresa: {resultado.get('tipo','').upper()}\n"
               f"Precio actual HOY: {precio_actual} USD ({precio_hoy:+.2f}% hoy)\n"
               f"Score: {resultado['score']}/100 — {resultado['zona']}\n"
-              f"Valoracion: {cats['Valoracion']['puntos']}/20 — {cats['Valoracion']['valores']}\n"
+              f"Valoracion: {cats['Valoracion']['puntos']}/20\n"
               f"Salud financiera: {cats['Salud Financiera']['puntos']}/20\n"
               f"Rentabilidad: {cats['Rentabilidad']['puntos']}/20 — {cats['Rentabilidad']['valores']}\n"
               f"Crecimiento: {cats['Crecimiento']['puntos']}/20 — {cats['Crecimiento']['valores']}\n"
-              f"Potencial LP: {cats['Potencial LP']['puntos']}/20\n\n"
+              f"Potencial LP: {cats['Potencial LP']['puntos']}/20\n"
+              f"{ma_txt}\n\n"
               "USA el precio actual indicado arriba. No uses precios de otros años.\n"
-              "1. Es buena inversion a largo plazo? Por que?\n"
-              "2. Principal riesgo\n"
-              "3. Ventaja competitiva (moat)\n"
-              "4. Veredicto final en 2 lineas con precio objetivo a 1 año")
+              "Ten en cuenta el tipo de empresa para el analisis — una utility con deuda alta es NORMAL.\n"
+              "1. Es buena inversion a largo plazo segun su tipo de negocio?\n"
+              "2. Principal riesgo especifico de este sector\n"
+              "3. Ventaja competitiva (moat) especifica\n"
+              "4. Veredicto: COMPRAR / MANTENER / EVITAR con precio objetivo a 1 año")
     texto_ia = ask_ai(prompt, max_chars=2000)
 
     try:
