@@ -978,47 +978,97 @@ def calcular_indice_valor(ticker):
 
 
 def generate_valor_gauge(resultado):
-    """Genera gauge visual tipo velocimetro 0-100."""
+    """Genera gauge visual con velocimetro + barras de componentes estilo FREDI."""
     import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
     import numpy as np
 
-    fig, ax = plt.subplots(figsize=(9, 5.5), subplot_kw={'projection': 'polar'})
+    componentes = resultado.get("componentes", {})
+    n_comp = len(componentes)
+
+    # Layout: velocimetro arriba, barras abajo
+    fig = plt.figure(figsize=(10, 7 + n_comp * 0.5))
     fig.patch.set_facecolor('#0d1117')
+
+    # Velocimetro (parte superior)
+    ax = fig.add_axes([0.05, 0.45, 0.90, 0.50], projection='polar')
     ax.set_facecolor('#0d1117')
 
-    n_segmentos = 100
-    theta = np.linspace(np.pi, 0, n_segmentos + 1)
-
-    for i in range(n_segmentos):
-        if i < 30:    color = '#FF4444'
-        elif i < 45:  color = '#FF8844'
-        elif i < 65:  color = '#FFDD44'
-        elif i < 80:  color = '#88DD44'
-        else:         color = '#44DD44'
-        ax.barh(1, theta[i] - theta[i+1], left=theta[i+1], height=0.35, color=color, edgecolor='none')
+    n_seg = 100
+    theta = np.linspace(np.pi, 0, n_seg + 1)
+    for i in range(n_seg):
+        if i < 30:    color = '#FF3333'
+        elif i < 45:  color = '#FF7700'
+        elif i < 65:  color = '#FFCC00'
+        elif i < 80:  color = '#99DD00'
+        else:         color = '#00CC44'
+        ax.barh(1, theta[i] - theta[i+1], left=theta[i+1], height=0.4, color=color, edgecolor='none')
 
     score = resultado['score']
     angle = np.pi - (score / 100 * np.pi)
-    ax.plot([angle, angle], [0, 1.05], color='white', linewidth=4, zorder=5)
-    ax.plot(angle, 0, 'o', color='white', markersize=18, zorder=6)
-    ax.plot(angle, 0, 'o', color='#1a1a2e', markersize=8, zorder=7)
+    ax.plot([angle, angle], [0, 1.08], color='white', linewidth=5, zorder=5)
+    ax.plot(angle, 0, 'o', color='white', markersize=20, zorder=6)
+    ax.plot(angle, 0, 'o', color='#0d1117', markersize=10, zorder=7)
 
-    ax.set_ylim(0, 1.3)
+    ax.set_ylim(0, 1.35)
     ax.set_theta_zero_location('E')
     ax.set_theta_direction(1)
     ax.set_thetamin(0)
     ax.set_thetamax(180)
-    ax.set_xticks([0, np.pi/4, np.pi/2, 3*np.pi/4, np.pi])
-    ax.set_xticklabels(['100\nBARATO', '75', '50\nNEUTRAL', '25', '0\nCARO'],
-                        color='white', fontsize=10, fontweight='bold')
+    ax.set_xticks([np.pi, 3*np.pi/4, np.pi/2, np.pi/4, 0])
+    ax.set_xticklabels(['0\nCARO', '25', '50\nNEUTRAL', '75', '100\nBARATÉ'],
+                        color='white', fontsize=9, fontweight='bold')
     ax.set_yticks([])
     ax.spines['polar'].set_visible(False)
     ax.grid(False)
 
-    plt.figtext(0.5, 0.06, f"{score}/100", ha='center', fontsize=28,
-               color='white', fontweight='bold')
-    plt.title(f"{resultado['nombre']} ({resultado['ticker']}) — {resultado['price']}\n{resultado['zona']}",
-              color='white', fontsize=13, fontweight='bold', pad=25)
+    # Score central
+    fig.text(0.5, 0.47, f"{score}/100", ha='center', va='center',
+             fontsize=32, color='white', fontweight='bold')
+
+    # Zona
+    zona_color = '#FF3333' if score < 30 else '#FF7700' if score < 45 else '#FFCC00' if score < 65 else '#99DD00' if score < 80 else '#00CC44'
+    fig.text(0.5, 0.42, resultado['zona'], ha='center', va='center',
+             fontsize=11, color=zona_color, fontweight='bold')
+
+    # Titulo
+    fig.text(0.5, 0.97, f"{resultado['nombre']} ({resultado['ticker']})  —  {resultado['price']}",
+             ha='center', va='top', fontsize=13, color='white', fontweight='bold')
+
+    # Barras de componentes (parte inferior)
+    ax2 = fig.add_axes([0.05, 0.02, 0.90, 0.38])
+    ax2.set_facecolor('#0d1117')
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(-0.5, n_comp - 0.5)
+    ax2.axis('off')
+
+    for idx, (nombre_c, datos) in enumerate(reversed(list(componentes.items()))):
+        pts = datos['puntos']
+        val = datos['valor']
+        y = idx
+
+        # Fondo barra
+        ax2.barh(y, 10, height=0.55, left=0, color='#1a1a2e', zorder=1)
+
+        # Barra coloreada
+        bar_color = '#FF3333' if pts <= 3 else '#FF7700' if pts <= 5 else '#FFCC00' if pts <= 7 else '#00CC44'
+        ax2.barh(y, pts, height=0.55, left=0, color=bar_color, zorder=2)
+
+        # Nombre componente
+        ax2.text(-0.1, y, nombre_c, va='center', ha='right',
+                color='#AAAAAA', fontsize=9, fontweight='bold')
+
+        # Valor
+        ax2.text(pts + 0.1, y, str(val), va='center', ha='left',
+                color='white', fontsize=8)
+
+        # Puntuacion
+        ax2.text(10.1, y, f"{pts}/10", va='center', ha='left',
+                color=bar_color, fontsize=9, fontweight='bold')
+
+    ax2.set_xlim(-3, 11)
+    fig.text(0.5, 0.40, 'COMPONENTES', ha='center',
+             fontsize=9, color='#666666', fontweight='bold')
 
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117', bbox_inches='tight')
@@ -1273,6 +1323,337 @@ def get_intraday_signals(stocks, n=4):
         })
     candidatos.sort(key=lambda x: x["score"], reverse=True)
     return candidatos[:n]
+
+
+def fetch_fundamentales(ticker):
+    """Obtiene datos fundamentales via yfinance."""
+    try:
+        tk = yf.Ticker(ticker)
+        info = tk.info
+        if not info:
+            return None
+
+        # Precio actual
+        price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
+
+        # Valoracion
+        pe      = info.get("trailingPE")
+        pe_fwd  = info.get("forwardPE")
+        peg     = info.get("pegRatio")
+        pb      = info.get("priceToBook")
+        ps      = info.get("priceToSalesTrailing12Months")
+        ev_ebitda = info.get("enterpriseToEbitda")
+
+        # Salud financiera
+        deuda_total  = info.get("totalDebt", 0)
+        caja         = info.get("totalCash", 0)
+        ebitda       = info.get("ebitda", 0)
+        current_ratio = info.get("currentRatio")
+        deuda_neta   = (deuda_total - caja) if deuda_total and caja else None
+        deuda_ebitda = round(deuda_neta / ebitda, 2) if (deuda_neta and ebitda and ebitda > 0) else None
+
+        # Rentabilidad
+        margen_bruto   = info.get("grossMargins")
+        margen_neto    = info.get("profitMargins")
+        margen_op      = info.get("operatingMargins")
+        roe            = info.get("returnOnEquity")
+        roa            = info.get("returnOnAssets")
+
+        # Crecimiento
+        rev_growth     = info.get("revenueGrowth")
+        earn_growth    = info.get("earningsGrowth")
+        rev_ttm        = info.get("totalRevenue", 0)
+        fcf            = info.get("freeCashflow", 0)
+
+        # Market cap y sector
+        mktcap   = info.get("marketCap", 0)
+        sector   = info.get("sector", "N/D")
+        industry = info.get("industry", "N/D")
+        nombre_e = info.get("longName") or info.get("shortName", ticker)
+
+        # Dividendo
+        div_yield = info.get("dividendYield")
+
+        # Insider ownership
+        insider_pct = info.get("heldPercentInsiders")
+
+        # Historico financiero (ultimos 4 años)
+        try:
+            financials = tk.financials
+            rev_hist = {}
+            if not financials.empty and "Total Revenue" in financials.index:
+                for col in financials.columns[:4]:
+                    year = col.year
+                    rev_hist[year] = financials.loc["Total Revenue", col]
+        except:
+            rev_hist = {}
+
+        return {
+            "ticker": ticker, "nombre": nombre_e, "price": price,
+            "sector": sector, "industry": industry,
+            "pe": pe, "pe_fwd": pe_fwd, "peg": peg, "pb": pb, "ps": ps,
+            "ev_ebitda": ev_ebitda,
+            "deuda_neta": deuda_neta, "deuda_ebitda": deuda_ebitda,
+            "caja": caja, "current_ratio": current_ratio,
+            "margen_bruto": margen_bruto, "margen_neto": margen_neto,
+            "margen_op": margen_op, "roe": roe, "roa": roa,
+            "rev_growth": rev_growth, "earn_growth": earn_growth,
+            "rev_ttm": rev_ttm, "fcf": fcf, "mktcap": mktcap,
+            "div_yield": div_yield, "insider_pct": insider_pct,
+            "rev_hist": rev_hist,
+        }
+    except Exception as e:
+        log.warning(f"fetch_fundamentales {ticker}: {e}")
+        return None
+
+
+def calcular_fundamental(ticker):
+    """
+    Puntuacion fundamental 0-100.
+    5 categorias x 20 puntos = 100 total.
+    """
+    f = fetch_fundamentales(ticker)
+    if not f:
+        return None
+
+    categorias = {}
+
+    # 1. VALORACION (0-20)
+    pts_val = 10  # base neutral
+    val_notas = []
+    if f["pe"]:
+        if f["pe"] < 15:   pts_val += 4; val_notas.append(f"P/E {f['pe']:.1f} barato")
+        elif f["pe"] < 25: pts_val += 2; val_notas.append(f"P/E {f['pe']:.1f} razonable")
+        elif f["pe"] < 40: pts_val -= 1; val_notas.append(f"P/E {f['pe']:.1f} elevado")
+        else:              pts_val -= 3; val_notas.append(f"P/E {f['pe']:.1f} muy caro")
+    if f["peg"]:
+        if f["peg"] < 1:   pts_val += 3; val_notas.append(f"PEG {f['peg']:.2f} infravalorado")
+        elif f["peg"] < 2: pts_val += 1; val_notas.append(f"PEG {f['peg']:.2f} ok")
+        else:              pts_val -= 2; val_notas.append(f"PEG {f['peg']:.2f} caro vs crecimiento")
+    if f["ev_ebitda"]:
+        if f["ev_ebitda"] < 10:  pts_val += 3
+        elif f["ev_ebitda"] < 20: pts_val += 1
+        else:                     pts_val -= 1
+    pts_val = max(0, min(20, pts_val))
+    categorias["Valoracion"] = {
+        "puntos": pts_val, "max": 20,
+        "notas": val_notas,
+        "valores": f"P/E:{f['pe']:.1f if f['pe'] else 'N/D'} PEG:{f['peg']:.2f if f['peg'] else 'N/D'} EV/EBITDA:{f['ev_ebitda']:.1f if f['ev_ebitda'] else 'N/D'}"
+    }
+
+    # 2. SALUD FINANCIERA (0-20)
+    pts_sal = 10
+    sal_notas = []
+    if f["deuda_ebitda"] is not None:
+        if f["deuda_ebitda"] < 0:   pts_sal += 5; sal_notas.append("Caja neta positiva")
+        elif f["deuda_ebitda"] < 1: pts_sal += 4; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x muy baja")
+        elif f["deuda_ebitda"] < 2: pts_sal += 2; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x saludable")
+        elif f["deuda_ebitda"] < 4: pts_sal -= 2; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x moderada")
+        else:                        pts_sal -= 4; sal_notas.append(f"Deuda/EBITDA {f['deuda_ebitda']}x alta")
+    if f["current_ratio"]:
+        if f["current_ratio"] > 2:  pts_sal += 3; sal_notas.append(f"Current ratio {f['current_ratio']:.1f} excelente")
+        elif f["current_ratio"] > 1: pts_sal += 1
+        else:                        pts_sal -= 3; sal_notas.append("Liquidez ajustada")
+    caja_b = round(f["caja"] / 1e9, 1) if f["caja"] else 0
+    sal_notas.append(f"Caja: {caja_b}B USD")
+    pts_sal = max(0, min(20, pts_sal))
+    categorias["Salud Financiera"] = {
+        "puntos": pts_sal, "max": 20,
+        "notas": sal_notas,
+        "valores": f"Deuda/EBITDA:{f['deuda_ebitda']}x Current:{f['current_ratio']:.1f if f['current_ratio'] else 'N/D'}"
+    }
+
+    # 3. RENTABILIDAD Y CASH FLOW (0-20)
+    pts_rent = 10
+    rent_notas = []
+    if f["margen_neto"]:
+        mn = f["margen_neto"] * 100
+        if mn > 25:   pts_rent += 4; rent_notas.append(f"Margen neto {mn:.1f}% excelente")
+        elif mn > 15: pts_rent += 3; rent_notas.append(f"Margen neto {mn:.1f}% bueno")
+        elif mn > 8:  pts_rent += 1; rent_notas.append(f"Margen neto {mn:.1f}% ok")
+        elif mn > 0:  pass
+        else:         pts_rent -= 3; rent_notas.append(f"Margen neto negativo {mn:.1f}%")
+    if f["roe"]:
+        roe = f["roe"] * 100
+        if roe > 25:  pts_rent += 3; rent_notas.append(f"ROE {roe:.1f}% excelente")
+        elif roe > 15: pts_rent += 2
+        elif roe > 8:  pts_rent += 1
+        else:          pts_rent -= 1
+    if f["fcf"] and f["fcf"] > 0:
+        fcf_b = round(f["fcf"] / 1e9, 1)
+        pts_rent += 3; rent_notas.append(f"FCF positivo {fcf_b}B USD")
+    elif f["fcf"] and f["fcf"] < 0:
+        pts_rent -= 2; rent_notas.append("FCF negativo")
+    pts_rent = max(0, min(20, pts_rent))
+    categorias["Rentabilidad"] = {
+        "puntos": pts_rent, "max": 20,
+        "notas": rent_notas,
+        "valores": f"Margen neto:{f['margen_neto']*100:.1f if f['margen_neto'] else 'N/D'}% ROE:{f['roe']*100:.1f if f['roe'] else 'N/D'}%"
+    }
+
+    # 4. CRECIMIENTO (0-20)
+    pts_crec = 10
+    crec_notas = []
+    if f["rev_growth"]:
+        rg = f["rev_growth"] * 100
+        if rg > 30:   pts_crec += 5; crec_notas.append(f"Ingresos +{rg:.0f}% YoY excepcional")
+        elif rg > 15: pts_crec += 3; crec_notas.append(f"Ingresos +{rg:.0f}% YoY bueno")
+        elif rg > 5:  pts_crec += 1; crec_notas.append(f"Ingresos +{rg:.0f}% YoY moderado")
+        elif rg > 0:  pass
+        else:         pts_crec -= 3; crec_notas.append(f"Ingresos {rg:.0f}% cayendo")
+    if f["earn_growth"]:
+        eg = f["earn_growth"] * 100
+        if eg > 30:   pts_crec += 5; crec_notas.append(f"Beneficios +{eg:.0f}% YoY")
+        elif eg > 15: pts_crec += 3
+        elif eg > 5:  pts_crec += 1
+        else:         pts_crec -= 2
+    if f["rev_hist"] and len(f["rev_hist"]) >= 3:
+        revs = sorted(f["rev_hist"].items())
+        if revs[-1][1] > revs[0][1]:
+            crec_notas.append("Crecimiento consistente multi-año")
+            pts_crec += 2
+    pts_crec = max(0, min(20, pts_crec))
+    categorias["Crecimiento"] = {
+        "puntos": pts_crec, "max": 20,
+        "notas": crec_notas,
+        "valores": f"Rev growth:{f['rev_growth']*100:.0f if f['rev_growth'] else 'N/D'}% Earn growth:{f['earn_growth']*100:.0f if f['earn_growth'] else 'N/D'}%"
+    }
+
+    # 5. POTENCIAL LARGO PLAZO (0-20)
+    pts_lp = 10
+    lp_notas = []
+    if f["insider_pct"]:
+        ip = f["insider_pct"] * 100
+        if ip > 10:  pts_lp += 3; lp_notas.append(f"Insiders {ip:.1f}% — directivos con piel en el juego")
+        elif ip > 5: pts_lp += 1; lp_notas.append(f"Insiders {ip:.1f}%")
+    if f["margen_bruto"]:
+        mb = f["margen_bruto"] * 100
+        if mb > 60:  pts_lp += 4; lp_notas.append(f"Margen bruto {mb:.0f}% — moat fuerte")
+        elif mb > 40: pts_lp += 2; lp_notas.append(f"Margen bruto {mb:.0f}%")
+        elif mb > 20: pts_lp += 1
+        else:         pts_lp -= 2
+    if f["div_yield"]:
+        dy = f["div_yield"] * 100
+        if dy > 3: pts_lp += 2; lp_notas.append(f"Dividendo {dy:.1f}% — retorno accionista")
+        elif dy > 1: pts_lp += 1
+    pts_lp = max(0, min(20, pts_lp))
+    categorias["Potencial LP"] = {
+        "puntos": pts_lp, "max": 20,
+        "notas": lp_notas,
+        "valores": f"Margen bruto:{f['margen_bruto']*100:.0f if f['margen_bruto'] else 'N/D'}% Insider:{f['insider_pct']*100:.1f if f['insider_pct'] else 'N/D'}%"
+    }
+
+    total = sum(c["puntos"] for c in categorias.values())
+
+    # Estimacion precio
+    precio_justo = None
+    est_1y = None
+    est_3y = None
+    if f["fcf"] and f["fcf"] > 0 and f["mktcap"] and f["mktcap"] > 0:
+        fcf_yield = f["fcf"] / f["mktcap"]
+        tasa_crec = f["rev_growth"] or 0.08
+        precio_justo = round(f["price"] / (1 + (0.10 - tasa_crec)), 2)
+        est_1y = round(f["price"] * (1 + max(tasa_crec, 0.05)), 2)
+        est_3y = round(f["price"] * (1 + max(tasa_crec, 0.05)) ** 3, 2)
+
+    if total >= 80:    zona = "INVERSION EXCELENTE"
+    elif total >= 65:  zona = "BUENA INVERSION"
+    elif total >= 50:  zona = "INVERSION ACEPTABLE"
+    elif total >= 35:  zona = "PRECAUCION"
+    else:              zona = "EVITAR"
+
+    return {
+        "ticker": ticker, "nombre": f["nombre"], "price": f["price"],
+        "sector": f["sector"], "mktcap": f["mktcap"],
+        "score": total, "zona": zona,
+        "categorias": categorias, "fundamentales": f,
+        "precio_justo": precio_justo, "est_1y": est_1y, "est_3y": est_3y,
+    }
+
+
+def generate_fundamental_chart(resultado):
+    """Genera imagen de analisis fundamental con barras por categoria."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    cats = resultado["categorias"]
+    n = len(cats)
+
+    fig = plt.figure(figsize=(10, 8 + n * 0.6))
+    fig.patch.set_facecolor('#0d1117')
+
+    # Velocimetro superior
+    ax = fig.add_axes([0.05, 0.55, 0.90, 0.40], projection='polar')
+    ax.set_facecolor('#0d1117')
+    theta = np.linspace(np.pi, 0, 101)
+    for i in range(100):
+        if i < 35:    c = '#FF3333'
+        elif i < 50:  c = '#FF7700'
+        elif i < 65:  c = '#FFCC00'
+        elif i < 80:  c = '#99DD00'
+        else:         c = '#00CC44'
+        ax.barh(1, theta[i] - theta[i+1], left=theta[i+1], height=0.4, color=c, edgecolor='none')
+
+    score = resultado["score"]
+    angle = np.pi - (score / 100 * np.pi)
+    ax.plot([angle, angle], [0, 1.08], color='white', linewidth=5, zorder=5)
+    ax.plot(angle, 0, 'o', color='white', markersize=20, zorder=6)
+    ax.plot(angle, 0, 'o', color='#0d1117', markersize=10, zorder=7)
+    ax.set_ylim(0, 1.35)
+    ax.set_theta_zero_location('E')
+    ax.set_theta_direction(1)
+    ax.set_thetamin(0)
+    ax.set_thetamax(180)
+    ax.set_xticks([np.pi, 3*np.pi/4, np.pi/2, np.pi/4, 0])
+    ax.set_xticklabels(['0\nEVITAR', '25', '50', '75', '100\nEXCELENTE'],
+                        color='white', fontsize=9, fontweight='bold')
+    ax.set_yticks([])
+    ax.spines['polar'].set_visible(False)
+    ax.grid(False)
+
+    zona_color = '#FF3333' if score < 35 else '#FF7700' if score < 50 else '#FFCC00' if score < 65 else '#99DD00' if score < 80 else '#00CC44'
+    fig.text(0.5, 0.57, f"{score}/100", ha='center', fontsize=30, color='white', fontweight='bold')
+    fig.text(0.5, 0.52, resultado['zona'], ha='center', fontsize=11, color=zona_color, fontweight='bold')
+
+    mktcap_b = round(resultado['mktcap'] / 1e9, 1) if resultado.get('mktcap') else 'N/D'
+    fig.text(0.5, 0.97, f"{resultado['nombre']} ({resultado['ticker']})  |  {resultado['price']} USD  |  Cap: {mktcap_b}B",
+             ha='center', fontsize=12, color='white', fontweight='bold')
+    fig.text(0.5, 0.93, resultado['sector'], ha='center', fontsize=9, color='#888888')
+
+    # Barras categorias
+    ax2 = fig.add_axes([0.15, 0.20, 0.70, 0.30])
+    ax2.set_facecolor('#0d1117')
+    ax2.set_xlim(0, 20)
+    ax2.set_ylim(-0.5, n - 0.5)
+    ax2.axis('off')
+
+    for idx, (cat, datos) in enumerate(reversed(list(cats.items()))):
+        pts = datos['puntos']
+        y = idx
+        ax2.barh(y, 20, height=0.6, color='#1a1a2e', zorder=1)
+        bar_c = '#FF3333' if pts < 7 else '#FF7700' if pts < 10 else '#FFCC00' if pts < 14 else '#00CC44'
+        ax2.barh(y, pts, height=0.6, color=bar_c, zorder=2)
+        ax2.text(-0.3, y, cat, va='center', ha='right', color='#CCCCCC', fontsize=9, fontweight='bold')
+        ax2.text(pts + 0.3, y, datos['valores'][:30], va='center', ha='left', color='#AAAAAA', fontsize=7)
+        ax2.text(20.5, y, f"{pts}/20", va='center', ha='left', color=bar_c, fontsize=9, fontweight='bold')
+    ax2.set_xlim(-6, 22)
+
+    # Estimaciones precio
+    if resultado.get('est_1y'):
+        pct_1y = round((resultado['est_1y'] - resultado['price']) / resultado['price'] * 100, 1)
+        pct_3y = round((resultado['est_3y'] - resultado['price']) / resultado['price'] * 100, 1)
+        fig.text(0.5, 0.18, 'ESTIMACION DE PRECIO', ha='center', fontsize=9, color='#666666', fontweight='bold')
+        fig.text(0.25, 0.13, f"Precio justo\n{resultado['precio_justo']} USD", ha='center', fontsize=9, color='#AAAAAA')
+        fig.text(0.50, 0.13, f"1 año\n{resultado['est_1y']} USD ({pct_1y:+.0f}%)", ha='center', fontsize=9,
+                color='#00CC44' if pct_1y > 0 else '#FF3333')
+        fig.text(0.75, 0.13, f"3 años\n{resultado['est_3y']} USD ({pct_3y:+.0f}%)", ha='center', fontsize=9,
+                color='#00CC44' if pct_3y > 0 else '#FF3333')
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
 
 
 def generate_chart(ticker, entry, tp1, tp2, stop):
@@ -2038,7 +2419,8 @@ def main_kb():
            InlineKeyboardButton("Ayuda", callback_data="ayuda"))
     kb.row(InlineKeyboardButton("Intraday", callback_data="intraday"),
            InlineKeyboardButton("Seguimiento", callback_data="seguimiento"))
-    kb.row(InlineKeyboardButton("Indice Valor BTC", callback_data="valor_btc"))
+    kb.row(InlineKeyboardButton("Indice Valor BTC", callback_data="valor_btc"),
+           InlineKeyboardButton("Fundamental", callback_data="fundamental_info"))
     return kb
 
 
@@ -3077,6 +3459,78 @@ def cmd_valor_btc_directo(msg):
         safe_send(msg.chat.id, texto_resumen, message_id=m.message_id)
 
 
+@bot.message_handler(commands=["fundamental"])
+def cmd_fundamental(msg):
+    if not allowed(msg): return
+    parts = msg.text.split()
+    if len(parts) < 2:
+        safe_send(msg.chat.id,
+            "Uso: /fundamental TICKER\n"
+            "Analisis fundamental completo con puntuacion 0-100\n\n"
+            "Ejemplos:\n"
+            "/fundamental NVDA\n"
+            "/fundamental AAPL\n"
+            "/fundamental SAN.MC")
+        return
+    ticker = parts[1].upper()
+    m = bot.send_message(msg.chat.id, f"Analizando fundamentales de {ticker}... (10-15s)")
+
+    resultado = calcular_fundamental(ticker)
+    if not resultado:
+        safe_send(msg.chat.id, f"Sin datos fundamentales para {ticker}.\nPrueba con tickers de EEUU como NVDA, AAPL, MSFT.", message_id=m.message_id)
+        return
+
+    # Texto resumen
+    cats = resultado["categorias"]
+    lines = [
+        f"{resultado['nombre']} ({ticker})",
+        f"Sector: {resultado['sector']}",
+        f"Precio: {resultado['price']} USD",
+        f"",
+        f"PUNTUACION FUNDAMENTAL: {resultado['score']}/100",
+        f"{resultado['zona']}",
+        f"",
+    ]
+    for cat, datos in cats.items():
+        lines.append(f"{cat}: {datos['puntos']}/20")
+        for nota in datos['notas'][:2]:
+            lines.append(f"  • {nota}")
+
+    if resultado.get('est_1y'):
+        pct_1y = round((resultado['est_1y'] - resultado['price']) / resultado['price'] * 100, 1)
+        pct_3y = round((resultado['est_3y'] - resultado['price']) / resultado['price'] * 100, 1)
+        lines += ["", "ESTIMACIONES:",
+                  f"Precio justo: {resultado['precio_justo']} USD",
+                  f"1 año: {resultado['est_1y']} USD ({pct_1y:+.0f}%)",
+                  f"3 años: {resultado['est_3y']} USD ({pct_3y:+.0f}%)"]
+
+    texto_resumen = "\n".join(lines)
+
+    # Análisis IA
+    prompt = (f"Analisis fundamental de {resultado['nombre']} ({ticker}):\n"
+              f"Score: {resultado['score']}/100 — {resultado['zona']}\n"
+              f"Valoracion: {cats['Valoracion']['puntos']}/20 — {cats['Valoracion']['valores']}\n"
+              f"Salud financiera: {cats['Salud Financiera']['puntos']}/20\n"
+              f"Rentabilidad: {cats['Rentabilidad']['puntos']}/20 — {cats['Rentabilidad']['valores']}\n"
+              f"Crecimiento: {cats['Crecimiento']['puntos']}/20 — {cats['Crecimiento']['valores']}\n"
+              f"Potencial LP: {cats['Potencial LP']['puntos']}/20\n\n"
+              "1. Es una buena inversion a largo plazo? Por que?\n"
+              "2. Principal riesgo de esta empresa\n"
+              "3. Principal ventaja competitiva (moat)\n"
+              "4. Veredicto final en 2 lineas")
+    texto_ia = ask_ai(prompt, max_chars=1500)
+
+    try:
+        chart = generate_fundamental_chart(resultado)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, chart, caption=texto_resumen[:1020])
+        time.sleep(0.5)
+        safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto_ia}")
+    except Exception as e:
+        log.warning(f"Fundamental chart error: {e}")
+        safe_send(msg.chat.id, texto_resumen + f"\n\nANALISIS IA\n{texto_ia}", message_id=m.message_id)
+
+
 @bot.message_handler(commands=["valor"])
 def cmd_valor(msg):
     if not allowed(msg): return
@@ -3211,6 +3665,8 @@ def handle_callback(call):
         "ciclo": cmd_ciclo, "infravaloradas": cmd_infravaloradas,
         "intraday": cmd_intraday, "seguimiento": cmd_seguimiento,
         "valor": cmd_valor, "valores": cmd_valores,
+        "fundamental": cmd_fundamental,
+        "fundamental_info": lambda m: safe_send(m.chat.id, "Uso: /fundamental TICKER\nEj: /fundamental NVDA"),
         "riesgo_info": lambda m: safe_send(m.chat.id, "Uso: /riesgo CAPITAL RIESGO% TICKER ENTRADA STOP\nEj: /riesgo 10000 2 NVDA 890 865"),
     }
     if call.data == "valor_btc":
