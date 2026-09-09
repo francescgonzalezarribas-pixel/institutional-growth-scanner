@@ -20,13 +20,13 @@ matplotlib.use('Agg')
 import mplfinance as mpf
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import anthropic
+import google.generativeai as genai
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from collections import defaultdict
 
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+GEMINI_API_KEY  = os.environ["GEMINI_API_KEY"]
 ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", 0))
 MADRID = pytz.timezone("Europe/Madrid")
 
@@ -37,7 +37,11 @@ SYSTEM = """Eres un analista financiero senior. Reglas:
 - Da conclusiones concretas y accionables
 - Precios exactos en tus recomendaciones"""
 
-ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
+ai_model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction=SYSTEM
+)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 ALERTS = defaultdict(list)
 SEGUIMIENTO = defaultdict(list)  # trades abiertos: {ticker, entrada, tp1, tp2, stop, fecha, lado}
@@ -1851,19 +1855,14 @@ def allowed(message):
 def ask_ai(prompt, max_chars=3000):
     for attempt in range(3):
         try:
-            resp = ai_client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=1024,
-                system=SYSTEM,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            texto = resp.content[0].text
+            resp = ai_model.generate_content(prompt)
+            texto = resp.text
             return texto[:max_chars] if len(texto) > max_chars else texto
         except Exception as e:
             if attempt < 2:
                 time.sleep(3)
             else:
-                log.error(f"Claude API: {e}")
+                log.error(f"Gemini API: {e}")
                 return "Error IA. Intenta en unos segundos."
 
 
