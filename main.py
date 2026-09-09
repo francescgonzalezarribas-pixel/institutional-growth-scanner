@@ -1333,8 +1333,12 @@ def fetch_fundamentales(ticker):
         if not info:
             return None
 
-        # Precio actual
-        price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
+        # Precio actual en tiempo real via fast_info
+        try:
+            fi = tk.fast_info
+            price = fi.last_price or fi.regular_market_price
+        except:
+            price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
 
         # Valoracion
         pe      = info.get("trailingPE")
@@ -3480,65 +3484,86 @@ def cmd_fundamental(msg):
             "Ejemplos:\n"
             "/fundamental NVDA\n"
             "/fundamental AAPL\n"
-            "/fundamental SAN.MC")
+            "/fundamental IONQ")
         return
     ticker = parts[1].upper()
     m = bot.send_message(msg.chat.id, f"Analizando fundamentales de {ticker}... (10-15s)")
 
     resultado = calcular_fundamental(ticker)
     if not resultado:
-        safe_send(msg.chat.id, f"Sin datos fundamentales para {ticker}.\nPrueba con tickers de EEUU como NVDA, AAPL, MSFT.", message_id=m.message_id)
+        safe_send(msg.chat.id, f"Sin datos para {ticker}.", message_id=m.message_id)
         return
 
-    # Texto resumen
+    # Precio en tiempo real via fetch_quote
+    d = fetch_quote(ticker, "1mo")
+    precio_actual = d["price"] if d else resultado["price"]
+    precio_hoy = d["d1"] if d else 0
+
     cats = resultado["categorias"]
-    lines = [
-        f"{resultado['nombre']} ({ticker})",
-        f"Sector: {resultado['sector']}",
-        f"Precio: {resultado['price']} USD",
-        f"",
-        f"PUNTUACION FUNDAMENTAL: {resultado['score']}/100",
-        f"{resultado['zona']}",
-        f"",
-    ]
+
+    # Texto resumen corto para caption
+    caption = (f"{resultado['nombre']} ({ticker})\n"
+               f"Sector: {resultado['sector']}\n"
+               f"Precio: {precio_actual} USD ({precio_hoy:+.2f}% hoy)\n\n"
+               f"PUNTUACION: {resultado['score']}/100 — {resultado['zona']}\n\n"
+               f"Valoracion:       {cats['Valoracion']['puntos']}/20\n"
+               f"Salud Financiera: {cats['Salud Financiera']['puntos']}/20\n"
+               f"Rentabilidad:     {cats['Rentabilidad']['puntos']}/20\n"
+               f"Crecimiento:      {cats['Crecimiento']['puntos']}/20\n"
+               f"Potencial LP:     {cats['Potencial LP']['puntos']}/20")
+
+    # Texto detallado separado
+    detalles = [f"DETALLE {resultado['nombre']} ({ticker})\n"]
     for cat, datos in cats.items():
-        lines.append(f"{cat}: {datos['puntos']}/20")
+        detalles.append(f"{cat}: {datos['puntos']}/20")
         for nota in datos['notas'][:2]:
-            lines.append(f"  • {nota}")
+            detalles.append(f"  • {nota}")
 
+    # Estimaciones precio — siempre visibles
     if resultado.get('est_1y'):
-        pct_1y = round((resultado['est_1y'] - resultado['price']) / resultado['price'] * 100, 1)
-        pct_3y = round((resultado['est_3y'] - resultado['price']) / resultado['price'] * 100, 1)
-        lines += ["", "ESTIMACIONES:",
-                  f"Precio justo: {resultado['precio_justo']} USD",
-                  f"1 año: {resultado['est_1y']} USD ({pct_1y:+.0f}%)",
-                  f"3 años: {resultado['est_3y']} USD ({pct_3y:+.0f}%)"]
+        pct_1y = round((resultado['est_1y'] - precio_actual) / precio_actual * 100, 1)
+        pct_3y = round((resultado['est_3y'] - precio_actual) / precio_actual * 100, 1)
+        pj_pct = round((resultado['precio_justo'] - precio_actual) / precio_actual * 100, 1)
+        detalles += [
+            "",
+            "ESTIMACIONES DE PRECIO:",
+            f"Precio actual:   {precio_actual} USD",
+            f"Precio justo:    {resultado['precio_justo']} USD ({pj_pct:+.0f}%)",
+            f"Estimacion 1 año: {resultado['est_1y']} USD ({pct_1y:+.0f}%)",
+            f"Estimacion 3 años: {resultado['est_3y']} USD ({pct_3y:+.0f}%)",
+        ]
+    else:
+        detalles.append("\nEstimacion precio: datos insuficientes para calcular DCF")
 
-    texto_resumen = "\n".join(lines)
+    texto_detalle = "\n".join(detalles)
 
-    # Análisis IA
+    # Análisis IA con precio actual
     prompt = (f"Analisis fundamental de {resultado['nombre']} ({ticker}):\n"
+              f"Precio actual HOY: {precio_actual} USD ({precio_hoy:+.2f}% hoy)\n"
               f"Score: {resultado['score']}/100 — {resultado['zona']}\n"
               f"Valoracion: {cats['Valoracion']['puntos']}/20 — {cats['Valoracion']['valores']}\n"
               f"Salud financiera: {cats['Salud Financiera']['puntos']}/20\n"
               f"Rentabilidad: {cats['Rentabilidad']['puntos']}/20 — {cats['Rentabilidad']['valores']}\n"
               f"Crecimiento: {cats['Crecimiento']['puntos']}/20 — {cats['Crecimiento']['valores']}\n"
               f"Potencial LP: {cats['Potencial LP']['puntos']}/20\n\n"
-              "1. Es una buena inversion a largo plazo? Por que?\n"
-              "2. Principal riesgo de esta empresa\n"
-              "3. Principal ventaja competitiva (moat)\n"
-              "4. Veredicto final en 2 lineas")
-    texto_ia = ask_ai(prompt, max_chars=1500)
+              "USA el precio actual indicado arriba. No uses precios de otros años.\n"
+              "1. Es buena inversion a largo plazo? Por que?\n"
+              "2. Principal riesgo\n"
+              "3. Ventaja competitiva (moat)\n"
+              "4. Veredicto final en 2 lineas con precio objetivo a 1 año")
+    texto_ia = ask_ai(prompt, max_chars=2000)
 
     try:
         chart = generate_fundamental_chart(resultado)
         bot.delete_message(msg.chat.id, m.message_id)
-        bot.send_photo(msg.chat.id, chart, caption=texto_resumen[:1020])
+        bot.send_photo(msg.chat.id, chart, caption=caption[:1020])
+        time.sleep(0.5)
+        safe_send(msg.chat.id, texto_detalle)
         time.sleep(0.5)
         safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto_ia}")
     except Exception as e:
         log.warning(f"Fundamental chart error: {e}")
-        safe_send(msg.chat.id, texto_resumen + f"\n\nANALISIS IA\n{texto_ia}", message_id=m.message_id)
+        safe_send(msg.chat.id, caption + "\n\n" + texto_detalle + f"\n\nANALISIS IA\n{texto_ia}", message_id=m.message_id)
 
 
 @bot.message_handler(commands=["valor"])
