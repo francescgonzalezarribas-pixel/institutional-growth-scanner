@@ -39,7 +39,7 @@ SYSTEM = """Eres un analista financiero senior. Reglas:
 
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel(
-    model_name="gemini-2.0-flash",
+    model_name="gemini-3.6-flash",
     system_instruction=SYSTEM
 )
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
