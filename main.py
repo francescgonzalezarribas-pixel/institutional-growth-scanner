@@ -2436,11 +2436,13 @@ def ask_ai(prompt, max_chars=3000):
             texto = resp.text
             return texto[:max_chars] if len(texto) > max_chars else texto
         except Exception as e:
+            espera = 10 * (attempt + 1)  # 10s, 20s, 30s
             if attempt < 2:
-                time.sleep(3)
+                log.warning(f"Gemini rate limit, esperando {espera}s: {e}")
+                time.sleep(espera)
             else:
                 log.error(f"Gemini API: {e}")
-                return "Error IA. Intenta en unos segundos."
+                return "IA ocupada. Intenta en unos segundos."
 
 
 def safe_send(chat_id, text, message_id=None):
