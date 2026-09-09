@@ -20,13 +20,13 @@ matplotlib.use('Agg')
 import mplfinance as mpf
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import google.generativeai as genai
+from groq import Groq
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from collections import defaultdict
 
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
-GEMINI_API_KEY  = os.environ["GEMINI_API_KEY"]
+GROQ_API_KEY    = os.environ["GROQ_API_KEY"]
 ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", 0))
 MADRID = pytz.timezone("Europe/Madrid")
 
@@ -37,11 +37,7 @@ SYSTEM = """Eres un analista financiero senior. Reglas:
 - Da conclusiones concretas y accionables
 - Precios exactos en tus recomendaciones"""
 
-genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel(
-    model_name="gemini-3.6-flash",
-    system_instruction=SYSTEM
-)
+ai_client = Groq(api_key=GROQ_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 ALERTS = defaultdict(list)
 SEGUIMIENTO = defaultdict(list)  # trades abiertos: {ticker, entrada, tp1, tp2, stop, fecha, lado}
@@ -2432,16 +2428,24 @@ def allowed(message):
 def ask_ai(prompt, max_chars=3000):
     for attempt in range(3):
         try:
-            resp = ai_model.generate_content(prompt)
-            texto = resp.text
+            resp = ai_client.chat.completions.create(
+                model="llama-3.1-70b-versatile",
+                messages=[
+                    {"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=1024,
+                temperature=0.7,
+            )
+            texto = resp.choices[0].message.content
             return texto[:max_chars] if len(texto) > max_chars else texto
         except Exception as e:
-            espera = 10 * (attempt + 1)  # 10s, 20s, 30s
+            espera = 10 * (attempt + 1)
             if attempt < 2:
-                log.warning(f"Gemini rate limit, esperando {espera}s: {e}")
+                log.warning(f"Groq rate limit, esperando {espera}s: {e}")
                 time.sleep(espera)
             else:
-                log.error(f"Gemini API: {e}")
+                log.error(f"Groq API: {e}")
                 return "IA ocupada. Intenta en unos segundos."
 
 
