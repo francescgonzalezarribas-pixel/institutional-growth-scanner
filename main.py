@@ -1375,8 +1375,12 @@ def fetch_fundamentales(ticker):
         industry = info.get("industry", "N/D")
         nombre_e = info.get("longName") or info.get("shortName", ticker)
 
-        # Dividendo
-        div_yield = info.get("dividendYield")
+        # Dividendo — normalizar a decimal (0.045 = 4.5%)
+        div_yield_raw = info.get("dividendYield")
+        if div_yield_raw and div_yield_raw > 1:
+            div_yield = div_yield_raw / 100  # ya venía en porcentaje
+        else:
+            div_yield = div_yield_raw
 
         # Insider ownership
         insider_pct = info.get("heldPercentInsiders")
@@ -1463,12 +1467,13 @@ def estimar_precio_por_tipo(f, tipo, price):
 
     elif tipo == "utility" and div_yield > 0:
         # Valoracion por yield objetivo
-        yield_objetivo = 0.04  # 4% yield objetivo para utilities
-        precio_justo = round(price * (div_yield / yield_objetivo), 2)
-        crecimiento_div = 0.03  # utilities crecen dividendo ~3% anual
+        yield_objetivo = 0.045  # 4.5% yield objetivo para utilities
+        div_anual = price * div_yield  # dividendo anual en USD
+        precio_justo = round(div_anual / yield_objetivo, 2)
+        crecimiento_div = 0.03
         est_1y = round(precio_justo * (1 + crecimiento_div), 2)
         est_3y = round(precio_justo * (1 + crecimiento_div) ** 3, 2)
-        metodo = f"Yield objetivo 4% (utility)"
+        metodo = f"Yield objetivo 4.5% (utility) | Div anual: {div_anual:.2f} USD"
 
     elif tipo == "materials" and rev_ttm > 0 and mktcap > 0:
         # Valoracion por EV/Ingresos para materials
