@@ -1076,23 +1076,216 @@ def generate_valor_gauge(resultado):
 
 def generate_halving_chart():
     """
-    Genera gráfico del ciclo de 4 años de Bitcoin basado en halvings.
-    Precio histórico real + fases Bull/Bear/Recovery + proyección futura.
+    Ciclo de 4 años de Bitcoin con datos reales actualizados:
+    - ATH real: $126,080 (Oct 2025)
+    - Bear actual: caída ~50% desde ATH
+    - Proyección suelo: $60-75K (posible ya visto)
+    - Próximo ciclo 2028-2029: objetivo $200-295K
     """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
-    import matplotlib.ticker as mticker
     import numpy as np
     import pandas as pd
 
-    # Obtener precio histórico BTC desde 2012
     try:
         btc = yf.Ticker("BTC-USD")
         hist = btc.history(start="2012-01-01", interval="1mo")
-        if hist.empty or len(hist) < 12:
+        if hist.empty:
             hist = btc.history(period="max", interval="1mo")
     except:
         hist = pd.DataFrame()
+
+    fig, ax = plt.subplots(figsize=(18, 10))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    # Halvings
+    halvings = [
+        {"fecha": "2012-11-28", "label": "1st Halving\nNov 2012"},
+        {"fecha": "2016-07-09", "label": "2nd Halving\nJul 2016"},
+        {"fecha": "2020-05-11", "label": "3rd Halving\nMay 2020"},
+        {"fecha": "2024-04-19", "label": "4th Halving\nApr 2024"},
+        {"fecha": "2028-03-15", "label": "5th Halving\nMar 2028 (est.)"},
+    ]
+
+    # Fases reales actualizadas
+    fases = [
+        {"inicio": "2012-11-01", "fin": "2013-12-31", "tipo": "bull",     "label": "Bull 12m"},
+        {"inicio": "2014-01-01", "fin": "2015-01-31", "tipo": "bear",     "label": "Bear 13m"},
+        {"inicio": "2015-02-01", "fin": "2016-07-01", "tipo": "recovery", "label": "Recovery 17m"},
+        {"inicio": "2016-07-01", "fin": "2017-12-31", "tipo": "bull",     "label": "Bull 18m"},
+        {"inicio": "2018-01-01", "fin": "2019-02-28", "tipo": "bear",     "label": "Bear 14m"},
+        {"inicio": "2019-03-01", "fin": "2020-05-01", "tipo": "recovery", "label": "Recovery 14m"},
+        {"inicio": "2020-05-01", "fin": "2021-11-30", "tipo": "bull",     "label": "Bull 19m"},
+        {"inicio": "2021-12-01", "fin": "2022-11-30", "tipo": "bear",     "label": "Bear 12m"},
+        {"inicio": "2022-12-01", "fin": "2024-04-01", "tipo": "recovery", "label": "Recovery 16m"},
+        # Ciclo 4 REAL
+        {"inicio": "2024-04-01", "fin": "2025-10-06", "tipo": "bull",     "label": "Bull 18m\n(REAL)"},
+        {"inicio": "2025-10-07", "fin": "2026-09-10", "tipo": "bear",     "label": "Bear ← AHORA\n~11m"},
+        # PROYECCION
+        {"inicio": "2026-09-10", "fin": "2027-06-30", "tipo": "recovery", "label": "Recovery\n(proyec.)"},
+        {"inicio": "2027-07-01", "fin": "2029-06-30", "tipo": "bull",     "label": "Bull\n(proyec. 2028-29)"},
+    ]
+
+    colores_fase = {
+        "bull":     {"color": "#0a3a0a", "edge": "#00CC44", "text": "#00CC44"},
+        "bear":     {"color": "#3a0a0a", "edge": "#FF3333", "text": "#FF3333"},
+        "recovery": {"color": "#0a1a3a", "edge": "#4488FF", "text": "#4488FF"},
+    }
+
+    for fase in fases:
+        ini = pd.Timestamp(fase["inicio"])
+        fin = pd.Timestamp(fase["fin"])
+        c = colores_fase[fase["tipo"]]
+        ax.axvspan(ini, fin, alpha=0.22, color=c["color"])
+
+    # Precio histórico real
+    if not hist.empty:
+        precios = hist["Close"]
+        precios_log = np.log10(precios.clip(lower=0.01))
+        ax.plot(precios.index, precios_log,
+               color='white', linewidth=2.5, zorder=5)
+
+        precio_actual = precios.iloc[-1]
+        fecha_actual = precios.index[-1]
+
+        # ⭐ ATH REAL Oct 2025
+        fecha_ath = pd.Timestamp("2025-10-06")
+        precio_ath = 126080
+        ax.plot(fecha_ath, np.log10(precio_ath), '*',
+               color='#FFD700', markersize=22, zorder=10,
+               markeredgecolor='white', markeredgewidth=1.5)
+        ax.annotate(f'ATH REAL\n$126,080\n(Oct 2025)',
+                   xy=(fecha_ath, np.log10(precio_ath)),
+                   xytext=(fecha_ath, np.log10(precio_ath) + 0.22),
+                   fontsize=9, color='#FFD700', fontweight='bold', ha='center',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117',
+                            edgecolor='#FFD700', linewidth=2, alpha=0.95),
+                   arrowprops=dict(arrowstyle='->', color='#FFD700', lw=1.5))
+
+        # 🟡 PRECIO ACTUAL
+        ax.plot(fecha_actual, np.log10(precio_actual), 'o',
+               color='#00FFFF', markersize=16, zorder=10,
+               markeredgecolor='white', markeredgewidth=2.5)
+
+        # Zona suelo posible (franja horizontal)
+        ax.axhspan(np.log10(58000), np.log10(78000), alpha=0.10,
+                  color='#00CC44', zorder=1)
+        ax.text(pd.Timestamp("2026-02-01"), np.log10(67000),
+               '← ZONA SUELO POSIBLE $58K-$78K',
+               fontsize=8.5, color='#00CC44', fontweight='bold', alpha=0.9)
+
+        ax.annotate(f'AHORA\n${precio_actual:,.0f}',
+                   xy=(fecha_actual, np.log10(precio_actual)),
+                   xytext=(fecha_actual, np.log10(precio_actual) + 0.28),
+                   fontsize=10, color='#00FFFF', fontweight='bold', ha='center',
+                   bbox=dict(boxstyle='round,pad=0.4', facecolor='#0d1117',
+                            edgecolor='#00FFFF', linewidth=2.5, alpha=0.95),
+                   arrowprops=dict(arrowstyle='->', color='#00FFFF', lw=2))
+
+    # Proyección próximo ciclo 2028-2029
+    # Consenso analistas: $200K-295K en el pico de 2029
+    fecha_peak_next = pd.Timestamp("2029-06-01")
+    precio_peak_low = 200000
+    precio_peak_high = 295000
+    precio_peak_mid = 250000
+
+    # Rango de proyección (zona sombreada)
+    ax.fill_between(
+        [pd.Timestamp("2028-03-01"), fecha_peak_next],
+        [np.log10(precio_peak_low), np.log10(precio_peak_low)],
+        [np.log10(precio_peak_high), np.log10(precio_peak_high)],
+        alpha=0.20, color='#FFD700', zorder=2
+    )
+    ax.plot(fecha_peak_next, np.log10(precio_peak_mid), '^',
+           color='#FFD700', markersize=18, zorder=10,
+           markeredgecolor='white', markeredgewidth=1.5)
+    ax.annotate(f'OBJETIVO\nPRÓXIMO CICLO\n$200K-295K\n(2029 est.)',
+               xy=(fecha_peak_next, np.log10(precio_peak_mid)),
+               xytext=(fecha_peak_next, np.log10(precio_peak_mid) + 0.20),
+               fontsize=9, color='#FFD700', fontweight='bold', ha='center',
+               bbox=dict(boxstyle='round,pad=0.4', facecolor='#0d1117',
+                        edgecolor='#FFD700', linewidth=2,
+                        alpha=0.95, linestyle='dashed'),
+               arrowprops=dict(arrowstyle='->', color='#FFD700', lw=1.5))
+
+    # Líneas verticales halvings
+    for h in halvings:
+        fecha_h = pd.Timestamp(h["fecha"])
+        ax.axvline(x=fecha_h, color='#9966FF',
+                  linewidth=1.8, linestyle='--', alpha=0.85, zorder=3)
+
+    # Etiquetas halvings abajo
+    for h in halvings:
+        fecha_h = pd.Timestamp(h["fecha"])
+        ax.text(fecha_h, 1.65, h["label"],
+               fontsize=7.5, color='#BB99FF',
+               ha='center', va='bottom', fontweight='bold',
+               bbox=dict(boxstyle='round,pad=0.2', facecolor='#0d1117',
+                        edgecolor='#9966FF', alpha=0.85))
+
+    # Etiquetas de fases
+    for fase in fases:
+        ini = pd.Timestamp(fase["inicio"])
+        fin = pd.Timestamp(fase["fin"])
+        mid = ini + (fin - ini) / 2
+        c = colores_fase[fase["tipo"]]
+        ax.text(mid, 5.15, fase["label"],
+               fontsize=7.5, color=c["text"],
+               ha='center', va='top', fontweight='bold', alpha=0.9)
+
+    # Ejes
+    precios_eje = [100, 1000, 5000, 20000, 50000, 100000, 200000, 500000]
+    ax.set_yticks([np.log10(p) for p in precios_eje])
+    ax.set_yticklabels([f'${p:,}' for p in precios_eje],
+                      color='#AAAAAA', fontsize=9)
+
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax.tick_params(axis='x', colors='#AAAAAA', labelsize=9)
+    ax.set_xlim(pd.Timestamp("2012-01-01"), pd.Timestamp("2030-06-01"))
+    ax.set_ylim(1.6, 5.55)
+
+    ax.set_title('BITCOIN — CICLO DE 4 AÑOS (HALVINGS) | Datos reales + Proyección 2028-2029',
+                fontsize=14, color='white', fontweight='bold', pad=15)
+    ax.set_ylabel('Precio USD (escala logarítmica)', color='#AAAAAA', fontsize=10)
+    ax.grid(axis='y', color='#333333', linestyle='--', alpha=0.4)
+    ax.grid(axis='x', color='#222222', linestyle='--', alpha=0.3)
+    for spine in ax.spines.values():
+        spine.set_color('#333333')
+
+    leyenda = [
+        mpatches.Patch(color='#00CC44', alpha=0.7, label='Bull Phase — subida'),
+        mpatches.Patch(color='#FF3333', alpha=0.7, label='Bear Phase — bajada'),
+        mpatches.Patch(color='#4488FF', alpha=0.7, label='Recovery — acumulación'),
+        mpatches.Patch(color='#9966FF', alpha=0.7, label='Halving'),
+        mpatches.Patch(color='#FFD700', alpha=0.7, label='ATH real / Objetivo próximo ciclo'),
+        mpatches.Patch(color='#00FFFF', alpha=0.9, label='Precio actual'),
+        mpatches.Patch(color='#00CC44', alpha=0.3, label='Zona suelo posible'),
+    ]
+    ax.legend(handles=leyenda, loc='upper left',
+             facecolor='#1a1a2e', edgecolor='#444444',
+             labelcolor='white', fontsize=8.5, framealpha=0.95)
+
+    try:
+        precio_txt = f"${hist['Close'].iloc[-1]:,.0f}" if not hist.empty else "N/D"
+    except:
+        precio_txt = "N/D"
+
+    fig.text(0.5, 0.01,
+             f"ATH real: $126,080 (Oct 2025)  |  Precio actual: {precio_txt}  |  "
+             f"Suelo estimado: $58K-$78K (¿ya visto?)  |  "
+             f"Objetivo próximo ciclo: $200K-295K (2029)  |  5th Halving: Mar 2028",
+             ha='center', fontsize=8.5, color='#888888',
+             bbox=dict(facecolor='#1a1a2e', alpha=0.6, boxstyle='round'))
+
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130,
+               facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
 
     fig, ax = plt.subplots(figsize=(18, 9))
     fig.patch.set_facecolor('#0d1117')
@@ -4139,16 +4332,23 @@ def cmd_halvingbtc(msg):
 
         # Análisis IA
         prompt = (
-            f"Ciclo de 4 años de Bitcoin — análisis actual:\n"
-            f"4th Halving fue el 19 abril 2024\n"
-            f"Han pasado {meses_desde_halving} meses desde el halving\n"
+            f"Ciclo de 4 años Bitcoin — análisis con datos reales:\n"
+            f"4th Halving: 19 abril 2024\n"
+            f"ATH REAL: $126,080 (6 octubre 2025) — NO los 180K estimados\n"
+            f"Caída desde ATH: ~50% — más suave que ciclos anteriores (2018: -84%, 2022: -77%)\n"
             f"Precio actual: ${precio_actual:,.0f}\n"
-            f"Fase actual según patrón histórico: {fase_actual}\n\n"
-            f"Basándote en los 3 ciclos anteriores:\n"
-            f"1. En qué momento exacto del ciclo estamos y qué viene después\n"
-            f"2. Cuánto puede subir según el patrón histórico y cuándo\n"
-            f"3. Qué diferencias hay con ciclos anteriores que pueden afectar la proyección\n"
-            f"4. Estrategia concreta: qué hacer ahora mismo con BTC"
+            f"Meses desde halving: {meses_desde_halving}\n"
+            f"Fase actual: {fase_actual}\n\n"
+            f"Contexto importante:\n"
+            f"- ETFs spot compraron en los mínimos ($58-74K)\n"
+            f"- El suelo posible ya fue visto según algunos analistas\n"
+            f"- Galaxy Digital proyecta suelo en $40-46K (Q4 2026)\n"
+            f"- PrimeXBT proyecta pico próximo ciclo $200-295K (2029)\n"
+            f"- El ciclo de 4 años podría estar mutando por los ETFs institucionales\n\n"
+            f"1. ¿Hemos visto ya el suelo de este bear market? Argumentos a favor y en contra\n"
+            f"2. ¿Qué tan diferente es este ciclo de los anteriores y por qué?\n"
+            f"3. Proyección realista para el próximo bull (2028-2029): ¿$200K o más?\n"
+            f"4. Estrategia concreta ahora mismo: ¿acumular, esperar o qué?"
         )
         texto_ia = ask_ai(prompt, max_chars=2000)
         safe_send(msg.chat.id, f"ANALISIS IA — CICLO HALVING\n\n{texto_ia}")
@@ -4472,42 +4672,53 @@ def cmd_valores(msg):
 def cmd_ayuda(msg):
     if not allowed(msg): return
     safe_send(msg.chat.id,
-        "GUIA DE COMANDOS\n\n"
+        "GUIA COMPLETA DE COMANDOS\n\n"
         "CRYPTO:\n"
-        "/btc - Analisis profundo BTC con derivados Binance\n"
-        "/crypto - BTC ETH SOL BNB precios y RSI\n\n"
-        "SENALES:\n"
-        "/senales_eu - Senales Europa (RSI+MACD+VWAP+2TF)\n"
-        "/senales_us - Senales acciones EEUU\n"
-        "/intraday - Senales intradia 15min\n"
-        "/etfs - ETFs con señales\n\n"
-        "VALOR Y CICLO:\n"
-        "/valor TICKER - Indice 0-100 barato/caro (estilo FREDI)\n"
-        "/valores - Vision rapida BTC/ETH/SP500/DAX/IBEX\n"
-        "/ciclo - Grafico ciclo de mercado BTC/SP500/DAX\n"
-        "/infravaloradas - Acciones castigadas con potencial\n\n"
-        "MERCADO:\n"
-        "/mercados - Indices EU y EEUU\n"
-        "/sectores - Semaforo 11 sectores SP500\n"
-        "/bull_detector - Bull runs nacientes\n"
-        "/anomalias - Volumen anomalo posible rumor\n"
-        "/noticias_impacto - M&A, earnings, FDA\n"
-        "/explosiones - Momentum explosivo\n"
-        "/macro - VIX, DXY, bonos, oro, petroleo\n\n"
+        "/btc — Analisis profundo BTC (derivados Binance)\n"
+        "/crypto — BTC ETH SOL BNB precios y RSI\n"
+        "/halvingbtc — Ciclo 4 años Bitcoin + proyección 2029\n\n"
+        "SEÑALES:\n"
+        "/senales_eu — Europa (RSI+MACD+VWAP+2TF)\n"
+        "/senales_us — Acciones EEUU\n"
+        "/intraday — Señales intradía 15min\n"
+        "/etfs — ETFs con señales\n\n"
+        "ANÁLISIS:\n"
+        "/analisis TICKER — Análisis técnico completo\n"
+        "/fundamental TICKER — Análisis fundamental 0-100\n"
+        "/valor TICKER — Índice barato/caro 0-100\n"
+        "/valores — BTC/ETH/SP500/DAX/IBEX resumen\n\n"
+        "CICLO Y MERCADO:\n"
+        "/ciclo — Ciclo psicológico BTC/SP500/DAX\n"
+        "/halvingbtc — Ciclo 4 años con halvings\n"
+        "/mercados — Índices EU y EEUU\n"
+        "/sectores — Semáforo 11 sectores SP500\n"
+        "/macro — VIX, DXY, bonos, oro, petróleo\n\n"
+        "SMART MONEY:\n"
+        "/insiders — Compras masivas de directivos\n"
+        "/insiders NVDA — Insiders de una empresa\n"
+        "/carteras — Grandes fondos (Buffett, ARK...)\n"
+        "/carteras BUFFETT — Posiciones de Berkshire\n"
+        "/carteras ARK — Cathie Wood\n"
+        "/carteras BURRY — Michael Burry\n\n"
+        "DETECTORES:\n"
+        "/infravaloradas — Acciones caídas con potencial\n"
+        "/bull_detector — Bull runs nacientes\n"
+        "/anomalias — Volumen anómalo posible rumor\n"
+        "/explosiones — Momentum explosivo\n"
+        "/noticias_impacto — M&A, earnings, FDA\n\n"
         "HERRAMIENTAS:\n"
-        "/seguimiento - Ver P&L trades abiertos\n"
+        "/seguimiento — Ver P&L trades abiertos\n"
         "/seguimiento add NVDA 890 865 920 950\n"
         "/seguimiento close 1\n"
-        "/alerta NVDA 950 - Avisa cuando llegue\n"
-        "/alertas - Ver alertas activas\n"
+        "/alerta NVDA 950 — Avisa cuando llegue\n"
+        "/alertas — Ver alertas activas\n"
         "/borra_alerta 1\n"
         "/riesgo 10000 2 NVDA 890 865\n"
-        "/analisis TICKER - Analisis completo\n"
-        "/backtest - Historico aciertos sistema\n"
-        "/resumen_semana - Balance semanal\n\n"
+        "/backtest — Histórico aciertos sistema\n"
+        "/resumen_semana — Balance semanal\n\n"
         "OTROS:\n"
         "/metales /ipos /calendario /sr\n"
-        "Pregunta libre - IA responde con precio real")
+        "Pregunta libre — IA responde con precio real")
 
 
 @bot.message_handler(func=lambda m: True)
