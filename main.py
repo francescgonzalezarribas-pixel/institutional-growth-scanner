@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.dates as mdates
 import mplfinance as mpf
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -1068,6 +1069,211 @@ def generate_valor_gauge(resultado):
 
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+
+def generate_halving_chart():
+    """
+    Genera gráfico del ciclo de 4 años de Bitcoin basado en halvings.
+    Precio histórico real + fases Bull/Bear/Recovery + proyección futura.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import matplotlib.ticker as mticker
+    import numpy as np
+    import pandas as pd
+
+    # Obtener precio histórico BTC desde 2012
+    try:
+        btc = yf.Ticker("BTC-USD")
+        hist = btc.history(start="2012-01-01", interval="1mo")
+        if hist.empty or len(hist) < 12:
+            hist = btc.history(period="max", interval="1mo")
+    except:
+        hist = pd.DataFrame()
+
+    fig, ax = plt.subplots(figsize=(18, 9))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    # Halvings históricos y proyectado
+    halvings = [
+        {"fecha": "2012-11-28", "label": "1st Halving\n(Nov 2012)", "num": 1},
+        {"fecha": "2016-07-09", "label": "2nd Halving\n(Jul 2016)", "num": 2},
+        {"fecha": "2020-05-11", "label": "3rd Halving\n(May 2020)", "num": 3},
+        {"fecha": "2024-04-19", "label": "4th Halving\n(Apr 2024)", "num": 4},
+        {"fecha": "2028-03-15", "label": "5th Halving\n(Mar 2028 est.)", "num": 5},
+    ]
+
+    # Fases del ciclo (basado en patron historico)
+    # Bull: ~12 meses post halving
+    # Bear: ~13 meses
+    # Recovery: ~22-23 meses
+    fases = [
+        # Ciclo 1 (2012)
+        {"inicio": "2012-11-01", "fin": "2013-11-30", "tipo": "bull",     "label": "Bull\n12m"},
+        {"inicio": "2013-12-01", "fin": "2015-01-31", "tipo": "bear",     "label": "Bear\n13m"},
+        {"inicio": "2015-02-01", "fin": "2016-07-01", "tipo": "recovery", "label": "Recovery\n17m"},
+        # Ciclo 2 (2016)
+        {"inicio": "2016-07-01", "fin": "2017-12-31", "tipo": "bull",     "label": "Bull\n18m"},
+        {"inicio": "2018-01-01", "fin": "2019-02-28", "tipo": "bear",     "label": "Bear\n14m"},
+        {"inicio": "2019-03-01", "fin": "2020-05-01", "tipo": "recovery", "label": "Recovery\n14m"},
+        # Ciclo 3 (2020)
+        {"inicio": "2020-05-01", "fin": "2021-11-30", "tipo": "bull",     "label": "Bull\n19m"},
+        {"inicio": "2021-12-01", "fin": "2022-11-30", "tipo": "bear",     "label": "Bear\n12m"},
+        {"inicio": "2022-12-01", "fin": "2024-04-01", "tipo": "recovery", "label": "Recovery\n16m"},
+        # Ciclo 4 (2024) — actual
+        {"inicio": "2024-04-01", "fin": "2025-10-31", "tipo": "bull",     "label": "Bull\n(actual)"},
+        {"inicio": "2025-11-01", "fin": "2026-11-30", "tipo": "bear",     "label": "Bear\n(proyec.)"},
+        {"inicio": "2026-12-01", "fin": "2028-03-01", "tipo": "recovery", "label": "Recovery\n(proyec.)"},
+    ]
+
+    colores_fase = {
+        "bull":     {"color": "#1a4a1a", "edge": "#00CC44", "text": "#00CC44"},
+        "bear":     {"color": "#4a1a1a", "edge": "#FF3333", "text": "#FF3333"},
+        "recovery": {"color": "#1a2a4a", "edge": "#4488FF", "text": "#4488FF"},
+    }
+
+    # Dibujar fases como franjas de fondo
+    for fase in fases:
+        ini = pd.Timestamp(fase["inicio"])
+        fin = pd.Timestamp(fase["fin"])
+        c = colores_fase[fase["tipo"]]
+        ax.axvspan(ini, fin, alpha=0.25, color=c["color"])
+
+    # Precio histórico real
+    if not hist.empty:
+        precios = hist["Close"]
+        precios_log = np.log10(precios.clip(lower=0.01))
+        ax.plot(precios.index, precios_log, color='white', linewidth=2.5, zorder=5, label='BTC precio')
+
+        # Precio actual marcado
+        precio_actual = precios.iloc[-1]
+        fecha_actual = precios.index[-1]
+        ax.plot(fecha_actual, np.log10(precio_actual), 'o',
+               color='#FFD700', markersize=14, zorder=10,
+               markeredgecolor='white', markeredgewidth=2)
+        ax.annotate(f'AHORA\n${precio_actual:,.0f}',
+                   xy=(fecha_actual, np.log10(precio_actual)),
+                   xytext=(fecha_actual, np.log10(precio_actual) + 0.25),
+                   fontsize=10, color='#FFD700', fontweight='bold',
+                   ha='center',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117',
+                            edgecolor='#FFD700', alpha=0.9),
+                   arrowprops=dict(arrowstyle='->', color='#FFD700', lw=1.5))
+
+    # Proyección precio futuro basada en ciclos anteriores
+    # Techo estimado ciclo 4: ~150k-200k (patron de menores rendimientos)
+    try:
+        fecha_techo_est = pd.Timestamp("2025-10-01")
+        precio_techo_est = 180000
+        ax.plot(fecha_techo_est, np.log10(precio_techo_est), '*',
+               color='#FFD700', markersize=18, zorder=10,
+               markeredgecolor='white', markeredgewidth=1)
+        ax.annotate(f'TECHO EST.\n~${precio_techo_est//1000}K',
+                   xy=(fecha_techo_est, np.log10(precio_techo_est)),
+                   xytext=(fecha_techo_est, np.log10(precio_techo_est) + 0.2),
+                   fontsize=9, color='#FFD700', fontweight='bold', ha='center',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117',
+                            edgecolor='#FFD700', alpha=0.8, linestyle='dashed'))
+
+        # Suelo estimado bear: ~40k-50k
+        fecha_suelo_est = pd.Timestamp("2026-11-01")
+        precio_suelo_est = 45000
+        ax.plot(fecha_suelo_est, np.log10(precio_suelo_est), 'v',
+               color='#FF3333', markersize=14, zorder=10,
+               markeredgecolor='white', markeredgewidth=1)
+        ax.annotate(f'SUELO EST.\n~${precio_suelo_est//1000}K',
+                   xy=(fecha_suelo_est, np.log10(precio_suelo_est)),
+                   xytext=(fecha_suelo_est, np.log10(precio_suelo_est) - 0.25),
+                   fontsize=9, color='#FF3333', fontweight='bold', ha='center',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117',
+                            edgecolor='#FF3333', alpha=0.8))
+    except:
+        pass
+
+    # Líneas verticales de halvings
+    for h in halvings:
+        fecha_h = pd.Timestamp(h["fecha"])
+        ax.axvline(x=fecha_h, color='#9966FF', linewidth=1.5,
+                  linestyle='--', alpha=0.8, zorder=3)
+        ax.text(fecha_h, ax.get_ylim()[0] if ax.get_ylim()[0] != 0 else -0.5,
+               h["label"], fontsize=7.5, color='#9966FF',
+               ha='center', va='bottom', fontweight='bold',
+               bbox=dict(boxstyle='round,pad=0.2', facecolor='#0d1117',
+                        edgecolor='#9966FF', alpha=0.8))
+
+    # Etiquetas de fases sobre las franjas
+    for fase in fases:
+        ini = pd.Timestamp(fase["inicio"])
+        fin = pd.Timestamp(fase["fin"])
+        mid = ini + (fin - ini) / 2
+        c = colores_fase[fase["tipo"]]
+        ypos = 4.8  # arriba del gráfico
+        ax.text(mid, ypos, fase["label"],
+               fontsize=8, color=c["text"],
+               ha='center', va='top', fontweight='bold', alpha=0.9)
+
+    # Eje Y en escala log con precios reales
+    precios_eje = [100, 1000, 10000, 50000, 100000, 200000, 500000]
+    ax.set_yticks([np.log10(p) for p in precios_eje])
+    ax.set_yticklabels([f'${p:,}' for p in precios_eje],
+                      color='#AAAAAA', fontsize=9)
+
+    # Eje X con años
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax.tick_params(axis='x', colors='#AAAAAA', labelsize=9)
+
+    # Rango X hasta 2028
+    ax.set_xlim(pd.Timestamp("2012-01-01"), pd.Timestamp("2028-12-31"))
+
+    # Límites Y
+    ax.set_ylim(1.5, 5.5)
+
+    # Título y labels
+    ax.set_title('BITCOIN — CICLO DE 4 AÑOS (HALVINGS)',
+                fontsize=16, color='white', fontweight='bold', pad=20)
+    ax.set_ylabel('Precio USD (escala log)', color='#AAAAAA', fontsize=10)
+
+    # Grid sutil
+    ax.grid(axis='y', color='#333333', linestyle='--', alpha=0.4)
+    ax.grid(axis='x', color='#222222', linestyle='--', alpha=0.3)
+
+    for spine in ax.spines.values():
+        spine.set_color('#333333')
+
+    # Leyenda
+    leyenda = [
+        mpatches.Patch(color='#00CC44', alpha=0.7, label='Bull Phase (subida)'),
+        mpatches.Patch(color='#FF3333', alpha=0.7, label='Bear Phase (bajada)'),
+        mpatches.Patch(color='#4488FF', alpha=0.7, label='Recovery Phase (acumulacion)'),
+        mpatches.Patch(color='#9966FF', alpha=0.7, label='Halving'),
+        mpatches.Patch(color='#FFD700', alpha=0.9, label='Precio actual / Objetivos'),
+    ]
+    ax.legend(handles=leyenda, loc='upper left',
+             facecolor='#1a1a2e', edgecolor='#333333',
+             labelcolor='white', fontsize=9, framealpha=0.9)
+
+    # Info textual
+    try:
+        precio_actual_txt = f"${hist['Close'].iloc[-1]:,.0f}" if not hist.empty else "N/D"
+    except:
+        precio_actual_txt = "N/D"
+
+    fig.text(0.5, 0.01,
+             f"4th Halving: Abril 2024  |  Precio actual: {precio_actual_txt}  |  "
+             f"Techo estimado: ~$180K (Oct 2025)  |  Suelo bear: ~$45K (Nov 2026)  |  "
+             f"5th Halving estimado: Mar 2028",
+             ha='center', fontsize=9, color='#888888',
+             bbox=dict(facecolor='#1a1a2e', alpha=0.5, boxstyle='round'))
+
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130,
+               facecolor='#0d1117', bbox_inches='tight')
     plt.close()
     buf.seek(0)
     return buf
@@ -2681,6 +2887,7 @@ def main_kb():
            InlineKeyboardButton("Fundamental", callback_data="fundamental_info"))
     kb.row(InlineKeyboardButton("Insiders", callback_data="insiders"),
            InlineKeyboardButton("Carteras", callback_data="carteras"))
+    kb.row(InlineKeyboardButton("Halving BTC", callback_data="halvingbtc"))
     return kb
 
 
@@ -3878,6 +4085,79 @@ def fetch_13f_posiciones(fondo_key):
         return fondo["nombre"] if fondo else fondo_key, []
 
 
+@bot.message_handler(commands=["halvingbtc"])
+def cmd_halvingbtc(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id,
+        "Generando ciclo de 4 años de Bitcoin con datos históricos reales... (15-20s)")
+    try:
+        chart = generate_halving_chart()
+
+        # Obtener precio actual
+        try:
+            btc_data = yf.Ticker("BTC-USD").history(period="5d")
+            precio_actual = btc_data["Close"].iloc[-1] if not btc_data.empty else 0
+        except:
+            precio_actual = 0
+
+        # Determinar fase actual
+        import datetime as dt_mod
+        hoy = dt_mod.date.today()
+        halving4 = dt_mod.date(2024, 4, 19)
+        dias_desde_halving = (hoy - halving4).days
+        meses_desde_halving = dias_desde_halving // 30
+
+        if meses_desde_halving < 18:
+            fase_actual = "BULL PHASE"
+            fase_color = "🟢"
+            tiempo_restante = f"~{18 - meses_desde_halving} meses hasta el techo estimado"
+        elif meses_desde_halving < 30:
+            fase_actual = "BEAR PHASE"
+            fase_color = "🔴"
+            tiempo_restante = f"~{30 - meses_desde_halving} meses hasta el suelo estimado"
+        else:
+            fase_actual = "RECOVERY PHASE"
+            fase_color = "🔵"
+            tiempo_restante = "Acumulando para el próximo bull"
+
+        caption = (
+            f"BITCOIN — CICLO DE 4 AÑOS\n\n"
+            f"4th Halving: 19 Abril 2024\n"
+            f"Meses desde halving: {meses_desde_halving}\n"
+            f"Precio actual: ${precio_actual:,.0f}\n\n"
+            f"FASE ACTUAL: {fase_color} {fase_actual}\n"
+            f"{tiempo_restante}\n\n"
+            f"PROYECCION BASADA EN PATRON HISTORICO:\n"
+            f"Techo estimado: ~$180,000 (Oct 2025)\n"
+            f"Suelo bear: ~$45,000 (Nov 2026)\n"
+            f"5th Halving: ~Mar 2028\n\n"
+            f"Patron: Bull 12-18m → Bear 13m → Recovery 22m"
+        )
+
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, chart, caption=caption[:1020])
+
+        # Análisis IA
+        prompt = (
+            f"Ciclo de 4 años de Bitcoin — análisis actual:\n"
+            f"4th Halving fue el 19 abril 2024\n"
+            f"Han pasado {meses_desde_halving} meses desde el halving\n"
+            f"Precio actual: ${precio_actual:,.0f}\n"
+            f"Fase actual según patrón histórico: {fase_actual}\n\n"
+            f"Basándote en los 3 ciclos anteriores:\n"
+            f"1. En qué momento exacto del ciclo estamos y qué viene después\n"
+            f"2. Cuánto puede subir según el patrón histórico y cuándo\n"
+            f"3. Qué diferencias hay con ciclos anteriores que pueden afectar la proyección\n"
+            f"4. Estrategia concreta: qué hacer ahora mismo con BTC"
+        )
+        texto_ia = ask_ai(prompt, max_chars=2000)
+        safe_send(msg.chat.id, f"ANALISIS IA — CICLO HALVING\n\n{texto_ia}")
+
+    except Exception as e:
+        log.error(f"halvingbtc error: {e}")
+        safe_send(msg.chat.id, f"Error generando el gráfico: {e}", message_id=m.message_id)
+
+
 @bot.message_handler(commands=["insiders"])
 def cmd_insiders(msg):
     if not allowed(msg): return
@@ -4274,6 +4554,7 @@ def handle_callback(call):
         "fundamental_info": lambda m: safe_send(m.chat.id, "Uso: /fundamental TICKER\nEj: /fundamental NVDA"),
         "insiders": cmd_insiders,
         "carteras": cmd_carteras,
+        "halvingbtc": cmd_halvingbtc,
         "riesgo_info": lambda m: safe_send(m.chat.id, "Uso: /riesgo CAPITAL RIESGO% TICKER ENTRADA STOP\nEj: /riesgo 10000 2 NVDA 890 865"),
     }
     if call.data == "valor_btc":
