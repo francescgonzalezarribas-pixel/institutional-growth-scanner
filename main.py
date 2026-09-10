@@ -1075,28 +1075,30 @@ def generate_valor_gauge(resultado):
 
 def generate_cycle_chart(mercados):
     """
-    Genera imagen del ciclo de mercado con los puntos actuales marcados.
-    mercados: lista de dicts con {nombre, fase_num, color_punto}
+    Genera imagen del ciclo de mercado mejorada:
+    - Zonas COMPRA/VENTA claramente marcadas
+    - Flechas de direccion en cada mercado
+    - % del ciclo completado
+    - Potencial restante
     """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
+    import matplotlib.patheffects as pe
     import numpy as np
 
-    fig, ax = plt.subplots(figsize=(14, 8))
+    fig, ax = plt.subplots(figsize=(16, 9))
     fig.patch.set_facecolor('#0d1117')
     ax.set_facecolor('#0d1117')
 
-    # Generar la curva del ciclo de mercado
+    # Curva del ciclo
     t = np.linspace(0, 4 * np.pi, 1000)
-    # Curva personalizada: subida suave, bajada brusca, recuperacion lenta
     y = (np.sin(t - np.pi/2) +
          0.3 * np.sin(2*t) +
          0.15 * np.sin(3*t) +
          0.05 * np.sin(5*t))
-    # Normalizar
     y = (y - y.min()) / (y.max() - y.min())
 
-    # Colorear la curva por segmentos
+    # Colorear curva por segmentos
     colores_curva = [
         '#8B0000','#B22222','#CD853F','#DAA520','#9ACD32',
         '#32CD32','#00FF00','#7CFC00','#FFD700','#FFA500',
@@ -1108,44 +1110,81 @@ def generate_cycle_chart(mercados):
         inicio = i * paso
         fin = min((i+1) * paso + 1, len(t))
         ax.plot(t[inicio:fin], y[inicio:fin],
-                color=colores_curva[i], linewidth=4, alpha=0.9)
+                color=colores_curva[i], linewidth=5, alpha=0.9)
 
-    # Posiciones aproximadas de cada fase en la curva
+    # Posiciones en la curva
     FASE_POSICION = {
-        0: 0.08,   # Depresion
-        1: 0.12,   # Incredulidad
-        2: 0.18,   # Esperanza
-        3: 0.25,   # Optimismo
-        4: 0.32,   # Creencia
-        5: 0.40,   # Emocion
-        6: 0.50,   # Euforia (cuspide)
-        7: 0.58,   # Complacencia
-        8: 0.65,   # Ansiedad
-        9: 0.72,   # Negacion
-        10: 0.78,  # Panico
-        11: 0.83,  # Capitulacion
-        12: 0.90,  # Ira
+        0: 0.08, 1: 0.12, 2: 0.18, 3: 0.25, 4: 0.32,
+        5: 0.40, 6: 0.50, 7: 0.58, 8: 0.65, 9: 0.72,
+        10: 0.78, 11: 0.83, 12: 0.90,
     }
-
     FASE_NOMBRES = [
         "DEPRESION","INCREDULIDAD","ESPERANZA","OPTIMISMO","CREENCIA",
         "EMOCION","EUFORIA","COMPLACENCIA","ANSIEDAD","NEGACION",
         "PANICO","CAPITULACION","IRA"
     ]
 
-    # Etiquetas de fases en la curva
+    # Si una fase va hacia arriba o bajando
+    FASE_DIRECCION = {
+        0: "↑", 1: "↑", 2: "↑", 3: "↑", 4: "↑",
+        5: "↑", 6: "→", 7: "↓", 8: "↓", 9: "↓",
+        10: "↓", 11: "↓", 12: "↑",
+    }
+
+    # % del ciclo completado (0=suelo, 100=haber pasado por todo)
+    FASE_PCT_CICLO = {
+        0: 5, 1: 12, 2: 20, 3: 30, 4: 40,
+        5: 50, 6: 60, 7: 70, 8: 78, 9: 84,
+        10: 88, 11: 92, 12: 96,
+    }
+
+    # Potencial alcista desde cada fase hasta el techo
+    FASE_POTENCIAL = {
+        0: "+400%", 1: "+300%", 2: "+200%", 3: "+150%", 4: "+100%",
+        5: "+60%",  6: "TECHO", 7: "-10%", 8: "-25%", 9: "-40%",
+        10: "-55%", 11: "-70%", 12: "+50%",
+    }
+
+    # Zona de cada fase
+    FASE_ZONA = {
+        0: "COMPRA", 1: "COMPRA", 2: "COMPRA", 3: "ACUMULAR", 4: "ACUMULAR",
+        5: "NEUTRO", 6: "VENDER", 7: "VENDER", 8: "REDUCIR", 9: "REDUCIR",
+        10: "ESPERAR", 11: "ESPERAR", 12: "COMPRA",
+    }
+
+    ZONA_COLOR = {
+        "COMPRA": "#00CC44", "ACUMULAR": "#88DD00",
+        "NEUTRO": "#FFCC00", "VENDER": "#FF3333",
+        "REDUCIR": "#FF6600", "ESPERAR": "#FF9900",
+    }
+
+    # Zonas de fondo
+    # Zona compra (izquierda — fases 0-2)
+    ax.axvspan(t[0], t[int(0.22*len(t))], alpha=0.07, color='#00CC44')
+    ax.axvspan(t[int(0.78*len(t))], t[-1], alpha=0.07, color='#00CC44')
+    # Zona venta (arriba — fases 5-8)
+    ax.axvspan(t[int(0.38*len(t))], t[int(0.70*len(t))], alpha=0.07, color='#FF3333')
+
+    # Etiquetas de zona en el fondo
+    ax.text(t[int(0.10*len(t))], 0.08, '🟢 ZONA\nCOMPRA', fontsize=10,
+            color='#00CC44', ha='center', alpha=0.8, fontweight='bold')
+    ax.text(t[int(0.54*len(t))], 0.08, '🔴 ZONA\nVENTA', fontsize=10,
+            color='#FF3333', ha='center', alpha=0.8, fontweight='bold')
+    ax.text(t[int(0.85*len(t))], 0.08, '🟢 ZONA\nCOMPRA', fontsize=10,
+            color='#00CC44', ha='center', alpha=0.8, fontweight='bold')
+
+    # Etiquetas pequeñas de fases
     for fase_n, pos_pct in FASE_POSICION.items():
         idx = int(pos_pct * len(t))
         idx = min(idx, len(t)-1)
-        offset_y = 0.06 if fase_n in [6,7] else (-0.08 if fase_n in [11,12,0] else 0.05)
+        offset_y = 0.07 if fase_n in [6,7] else (-0.09 if fase_n in [11,12,0] else 0.06)
         ax.annotate(FASE_NOMBRES[fase_n],
                    xy=(t[idx], y[idx]),
                    xytext=(t[idx], y[idx] + offset_y),
-                   fontsize=7, color='#888888',
-                   ha='center', va='center',
-                   fontweight='bold')
+                   fontsize=6.5, color='#777777',
+                   ha='center', va='center', fontweight='bold')
 
-    # Marcar los mercados actuales
+    # Marcar mercados
     colores_mercado = ['#00FFFF', '#FFD700', '#FF69B4', '#7FFF00']
     for i, m in enumerate(mercados):
         fase_n = m["fase_num"]
@@ -1154,48 +1193,65 @@ def generate_cycle_chart(mercados):
         idx = min(idx, len(t)-1)
         color_m = colores_mercado[i % len(colores_mercado)]
 
-        # Punto grande
+        direccion = FASE_DIRECCION[fase_n]
+        pct_ciclo = FASE_PCT_CICLO[fase_n]
+        potencial = FASE_POTENCIAL[fase_n]
+        zona = FASE_ZONA[fase_n]
+        zona_color = ZONA_COLOR[zona]
+
+        # Punto grande con borde
         ax.plot(t[idx], y[idx], 'o',
-                color=color_m, markersize=18,
-                markeredgecolor='white', markeredgewidth=2,
+                color=color_m, markersize=20,
+                markeredgecolor='white', markeredgewidth=2.5,
                 zorder=10)
 
-        # Etiqueta del mercado
-        offset = 0.12 + i * 0.05
-        ax.annotate(f"{m['nombre']}\n{m['fase']}",
+        # Flecha de dirección dentro del punto
+        ax.text(t[idx], y[idx], direccion, ha='center', va='center',
+               fontsize=11, color='white', fontweight='bold', zorder=11)
+
+        # Etiqueta mejorada
+        offset_base = 0.18 + i * 0.07
+        label = (f"{m['nombre']}\n"
+                 f"{m['fase']}\n"
+                 f"Ciclo: {pct_ciclo}% completado\n"
+                 f"Potencial: {potencial}\n"
+                 f"Acción: {zona}")
+
+        ax.annotate(label,
                    xy=(t[idx], y[idx]),
-                   xytext=(t[idx], y[idx] + offset),
-                   fontsize=9, color=color_m,
+                   xytext=(t[idx], y[idx] + offset_base),
+                   fontsize=8, color=color_m,
                    ha='center', va='bottom',
                    fontweight='bold',
-                   arrowprops=dict(arrowstyle='->', color=color_m, lw=1.5),
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#1a1a2e',
-                            edgecolor=color_m, alpha=0.9))
+                   arrowprops=dict(arrowstyle='->', color=color_m, lw=2),
+                   bbox=dict(boxstyle='round,pad=0.4',
+                            facecolor='#0d1117',
+                            edgecolor=zona_color,
+                            linewidth=2.5, alpha=0.95))
 
-    # Etiquetas de zona
-    ax.text(t[int(0.35*len(t))], 0.15, 'EXPANSION', fontsize=11,
-            color='#32CD32', alpha=0.5, ha='center', fontweight='bold')
-    ax.text(t[int(0.75*len(t))], 0.15, 'CONTRACCION', fontsize=11,
-            color='#FF6347', alpha=0.5, ha='center', fontweight='bold')
+    # Etiquetas EXPANSION / CONTRACCION
+    ax.text(t[int(0.30*len(t))], 0.02, 'EXPANSION  ↑',
+            fontsize=12, color='#32CD32', ha='center', alpha=0.6, fontweight='bold')
+    ax.text(t[int(0.75*len(t))], 0.02, 'CONTRACCION  ↓',
+            fontsize=12, color='#FF6347', ha='center', alpha=0.6, fontweight='bold')
 
-    ax.set_title('CICLO DE MERCADO - DONDE ESTAMOS AHORA',
+    ax.set_title('CICLO DE MERCADO — DONDE ESTAMOS Y HACIA DONDE VAMOS',
                 fontsize=14, color='white', fontweight='bold', pad=15)
     ax.set_xlabel('TIEMPO', color='#888888', fontsize=10)
     ax.set_ylabel('PRECIO', color='#888888', fontsize=10)
     ax.tick_params(colors='#888888')
-    ax.spines['bottom'].set_color('#333333')
-    ax.spines['left'].set_color('#333333')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+    for spine in ax.spines.values():
+        spine.set_color('#333333')
     ax.set_xticks([])
     ax.set_yticks([])
 
     # Leyenda
     legend_elements = [mpatches.Patch(facecolor=colores_mercado[i],
-                       label=m['nombre']) for i, m in enumerate(mercados)]
+                       label=f"{m['nombre']} — {FASE_DIRECCION[m['fase_num']]} {FASE_ZONA[m['fase_num']]}")
+                       for i, m in enumerate(mercados)]
     ax.legend(handles=legend_elements, loc='lower right',
              facecolor='#1a1a2e', edgecolor='#333333',
-             labelcolor='white', fontsize=9)
+             labelcolor='white', fontsize=10)
 
     plt.tight_layout()
     buf = io.BytesIO()
