@@ -1168,12 +1168,15 @@ def generate_halving_chart():
                color='#00FFFF', markersize=16, zorder=10,
                markeredgecolor='white', markeredgewidth=2.5)
 
-        # Zona suelo posible (franja horizontal)
-        ax.axhspan(np.log10(58000), np.log10(78000), alpha=0.10,
+        # Zona suelo posible (franja horizontal solo en zona actual)
+        ax.axhspan(np.log10(58000), np.log10(78000), alpha=0.08,
                   color='#00CC44', zorder=1)
-        ax.text(pd.Timestamp("2026-02-01"), np.log10(67000),
-               '← ZONA SUELO POSIBLE $58K-$78K',
-               fontsize=8.5, color='#00CC44', fontweight='bold', alpha=0.9)
+        ax.text(pd.Timestamp("2025-06-01"), np.log10(66000),
+               'ZONA SUELO POSIBLE\n$58K - $78K',
+               fontsize=8, color='#00CC44', fontweight='bold',
+               alpha=0.85, ha='center', va='center',
+               bbox=dict(boxstyle='round,pad=0.2', facecolor='#0d1117',
+                        edgecolor='#00CC44', alpha=0.7))
 
         ax.annotate(f'AHORA\n${precio_actual:,.0f}',
                    xy=(fecha_actual, np.log10(precio_actual)),
@@ -4320,11 +4323,14 @@ def cmd_halvingbtc(msg):
             f"Precio actual: ${precio_actual:,.0f}\n\n"
             f"FASE ACTUAL: {fase_color} {fase_actual}\n"
             f"{tiempo_restante}\n\n"
-            f"PROYECCION BASADA EN PATRON HISTORICO:\n"
-            f"Techo estimado: ~$180,000 (Oct 2025)\n"
-            f"Suelo bear: ~$45,000 (Nov 2026)\n"
+            f"DATOS REALES:\n"
+            f"ATH real: $126,080 (Oct 2025)\n"
+            f"Caída desde ATH: ~{round((1 - precio_actual/126080)*100)}%\n\n"
+            f"PROYECCION PROXIMO CICLO:\n"
+            f"Suelo estimado: $58K-$78K (¿ya visto?)\n"
+            f"Objetivo 2029: $200K-$295K\n"
             f"5th Halving: ~Mar 2028\n\n"
-            f"Patron: Bull 12-18m → Bear 13m → Recovery 22m"
+            f"Patron: Bull 18m → Bear → Recovery → Bull 2029"
         )
 
         bot.delete_message(msg.chat.id, m.message_id)
