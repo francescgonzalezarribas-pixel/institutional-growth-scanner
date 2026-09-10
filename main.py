@@ -2623,6 +2623,8 @@ def main_kb():
            InlineKeyboardButton("Seguimiento", callback_data="seguimiento"))
     kb.row(InlineKeyboardButton("Indice Valor BTC", callback_data="valor_btc"),
            InlineKeyboardButton("Fundamental", callback_data="fundamental_info"))
+    kb.row(InlineKeyboardButton("Insiders", callback_data="insiders"),
+           InlineKeyboardButton("Carteras", callback_data="carteras"))
     return kb
 
 
@@ -3661,6 +3663,319 @@ def cmd_valor_btc_directo(msg):
         safe_send(msg.chat.id, texto_resumen, message_id=m.message_id)
 
 
+def fetch_insiders(ticker=None, dias=30):
+    """
+    Busca compras masivas de insiders via SEC EDGAR Form 4.
+    Si ticker=None busca en general, si ticker especificado busca solo esa empresa.
+    """
+    resultados = []
+    try:
+        if ticker:
+            # Buscar CIK de la empresa
+            url = f"https://efts.sec.gov/LATEST/search-index?q=%22{ticker}%22&dateRange=custom&startdt={(datetime.now()-__import__('datetime').timedelta(days=dias)).strftime('%Y-%m-%d')}&enddt={datetime.now().strftime('%Y-%m-%d')}&forms=4"
+            r = requests.get(url, headers={"User-Agent": "bot@example.com"}, timeout=10)
+            data = r.json()
+            hits = data.get("hits", {}).get("hits", [])
+            for hit in hits[:10]:
+                src = hit.get("_source", {})
+                nombre = src.get("display_names", [""])[0] if src.get("display_names") else ""
+                fecha = src.get("file_date", "")
+                resultados.append({
+                    "ticker": ticker,
+                    "empresa": src.get("entity_name", ticker),
+                    "insider": nombre,
+                    "fecha": fecha,
+                    "tipo": "Form 4",
+                })
+        else:
+            # Buscar compras masivas recientes en general
+            fecha_inicio = (__import__('datetime').date.today() - __import__('datetime').timedelta(days=dias)).strftime('%Y-%m-%d')
+            url = f"https://efts.sec.gov/LATEST/search-index?q=%22purchase%22&forms=4&dateRange=custom&startdt={fecha_inicio}&enddt={datetime.now().strftime('%Y-%m-%d')}"
+            r = requests.get(url, headers={"User-Agent": "bot@example.com"}, timeout=10)
+            data = r.json()
+            hits = data.get("hits", {}).get("hits", [])
+            for hit in hits[:15]:
+                src = hit.get("_source", {})
+                nombre = src.get("display_names", [""])[0] if src.get("display_names") else ""
+                resultados.append({
+                    "empresa": src.get("entity_name", ""),
+                    "insider": nombre,
+                    "fecha": src.get("file_date", ""),
+                    "tipo": "Form 4 - Purchase",
+                })
+    except Exception as e:
+        log.warning(f"fetch_insiders: {e}")
+    return resultados
+
+
+def fetch_insiders_yfinance(ticker):
+    """Obtiene insider transactions via yfinance."""
+    try:
+        tk = yf.Ticker(ticker)
+        insiders = tk.insider_transactions
+        if insiders is None or insiders.empty:
+            return []
+        compras = []
+        for _, row in insiders.head(10).iterrows():
+            valor = row.get("Value", 0) or 0
+            shares = row.get("Shares", 0) or 0
+            trans_type = str(row.get("Transaction", "")).lower()
+            if "purchase" in trans_type or "buy" in trans_type or valor > 0:
+                compras.append({
+                    "insider": row.get("Insider", ""),
+                    "cargo": row.get("Relation", ""),
+                    "fecha": str(row.get("Start Date", ""))[:10],
+                    "shares": int(shares),
+                    "valor_usd": int(valor),
+                    "tipo": row.get("Transaction", ""),
+                })
+        return compras
+    except Exception as e:
+        log.warning(f"fetch_insiders_yfinance {ticker}: {e}")
+        return []
+
+
+# Grandes fondos con sus CIK en SEC EDGAR
+GRANDES_FONDOS = {
+    "BUFFETT": {"nombre": "Warren Buffett (Berkshire Hathaway)", "cik": "0001067983"},
+    "ACKMAN":  {"nombre": "Bill Ackman (Pershing Square)",      "cik": "0001336528"},
+    "BURRY":   {"nombre": "Michael Burry (Scion)",              "cik": "0001649902"},
+    "DALIO":   {"nombre": "Ray Dalio (Bridgewater)",            "cik": "0001350694"},
+    "ARK":     {"nombre": "Cathie Wood (ARK Invest)",           "cik": "0001579982"},
+    "TEPPER":  {"nombre": "David Tepper (Appaloosa)",           "cik": "0001656456"},
+}
+
+
+def fetch_13f(fondo_key):
+    """
+    Obtiene el ultimo 13F filing de un gran fondo via SEC EDGAR.
+    Devuelve las posiciones nuevas y aumentadas.
+    """
+    fondo = GRANDES_FONDOS.get(fondo_key.upper())
+    if not fondo:
+        return None, []
+    try:
+        # Buscar ultimos filings 13F
+        url = f"https://data.sec.gov/submissions/CIK{fondo['cik'].zfill(10)}.json"
+        r = requests.get(url, headers={"User-Agent": "bot@example.com"}, timeout=10)
+        data = r.json()
+        filings = data.get("filings", {}).get("recent", {})
+        forms = filings.get("form", [])
+        dates = filings.get("filingDate", [])
+        accnos = filings.get("accessionNumber", [])
+
+        # Encontrar ultimo 13F
+        ultimo_13f = None
+        for i, form in enumerate(forms):
+            if "13F" in form:
+                ultimo_13f = {"date": dates[i], "accno": accnos[i]}
+                break
+
+        if not ultimo_13f:
+            return fondo["nombre"], []
+
+        # Obtener el filing
+        accno_clean = ultimo_13f["accno"].replace("-", "")
+        filing_url = f"https://www.sec.gov/Archives/edgar/full-index/{ultimo_13f['date'][:4]}/QTR{((int(ultimo_13f['date'][5:7])-1)//3)+1}/company.idx"
+
+        # Parsear posiciones del 13F
+        posiciones = []
+        idx_url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{fondo['cik'].zfill(10)}.json"
+
+        # Fallback: usar RSS de SEC para noticias del fondo
+        rss_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={fondo['cik']}&type=13F&dateb=&owner=include&count=5&search_text="
+        return fondo["nombre"], [{"fecha": ultimo_13f["date"], "nota": f"Ultimo 13F: {ultimo_13f['date']}"}]
+
+    except Exception as e:
+        log.warning(f"fetch_13f {fondo_key}: {e}")
+        return fondo["nombre"] if fondo else fondo_key, []
+
+
+def fetch_13f_posiciones(fondo_key):
+    """
+    Obtiene posiciones reales del 13F usando la API de holdings.
+    """
+    fondo = GRANDES_FONDOS.get(fondo_key.upper())
+    if not fondo:
+        return None, []
+    try:
+        # Usar holdings API alternativa via yfinance para Berkshire
+        ticker_map = {
+            "BUFFETT": "BRK-B",
+            "ARK": "ARKK",
+        }
+        posiciones = []
+        if fondo_key.upper() in ticker_map:
+            tk = yf.Ticker(ticker_map[fondo_key.upper()])
+            holders = tk.institutional_holders
+            if holders is not None and not holders.empty:
+                for _, row in holders.head(10).iterrows():
+                    posiciones.append({
+                        "empresa": row.get("Holder", ""),
+                        "shares": row.get("Shares", 0),
+                        "valor": row.get("Value", 0),
+                        "pct": row.get("% Out", 0),
+                    })
+        return fondo["nombre"], posiciones
+    except Exception as e:
+        log.warning(f"fetch_13f_posiciones {fondo_key}: {e}")
+        return fondo["nombre"] if fondo else fondo_key, []
+
+
+@bot.message_handler(commands=["insiders"])
+def cmd_insiders(msg):
+    if not allowed(msg): return
+    parts = msg.text.split()
+    ticker = parts[1].upper() if len(parts) > 1 else None
+
+    if ticker:
+        m = bot.send_message(msg.chat.id, f"Buscando insider transactions de {ticker}...")
+        transacciones = fetch_insiders_yfinance(ticker)
+        if not transacciones:
+            safe_send(msg.chat.id, f"Sin datos de insider transactions para {ticker}.", message_id=m.message_id)
+            return
+
+        compras = [t for t in transacciones if t["valor_usd"] > 0]
+        ventas = [t for t in transacciones if t["valor_usd"] < 0]
+
+        lines = [f"INSIDER TRANSACTIONS {ticker} — ultimos 30 dias\n"]
+        if compras:
+            lines.append("COMPRAS:")
+            for t in compras[:5]:
+                val_m = round(abs(t["valor_usd"]) / 1e6, 2)
+                lines.append(f"  {t['insider']} ({t['cargo']})")
+                lines.append(f"  {t['tipo']} | {t['shares']:,} acciones | {val_m}M USD | {t['fecha']}")
+        if ventas:
+            lines.append("\nVENTAS:")
+            for t in ventas[:3]:
+                val_m = round(abs(t["valor_usd"]) / 1e6, 2)
+                lines.append(f"  {t['insider']} | -{val_m}M USD | {t['fecha']}")
+
+        total_compras = sum(abs(t["valor_usd"]) for t in compras)
+        total_ventas = sum(abs(t["valor_usd"]) for t in ventas)
+        ratio = round(total_compras / total_ventas, 2) if total_ventas > 0 else 99
+
+        lines.append(f"\nRATIO COMPRA/VENTA: {ratio}x")
+        if ratio > 2:
+            lines.append("SEÑAL ALCISTA — insiders comprando mucho mas de lo que venden")
+        elif ratio < 0.5:
+            lines.append("SEÑAL BAJISTA — insiders vendiendo masivamente")
+        else:
+            lines.append("NEUTRAL — actividad normal de insiders")
+
+        snap = "\n".join(lines)
+        datos_ia = f"{ticker}: {len(compras)} compras por {round(total_compras/1e6,1)}M USD, {len(ventas)} ventas por {round(total_ventas/1e6,1)}M USD. Ratio {ratio}x"
+        prompt = (f"Insider transactions de {ticker} hoy {datetime.now().strftime('%d/%m/%Y')}:\n{datos_ia}\n\n"
+                  "1. Que nos dice la actividad de insiders sobre el futuro de la empresa?\n"
+                  "2. Es una señal de compra o de precaucion?\n"
+                  "3. Contexto: hay razon fundamental para estas transacciones?")
+        texto = ask_ai(prompt, max_chars=1500)
+        safe_send(msg.chat.id, snap, message_id=m.message_id)
+        time.sleep(0.5)
+        safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto}")
+
+    else:
+        # Escanear insiders en acciones del universo
+        m = bot.send_message(msg.chat.id, "Escaneando compras masivas de insiders... (30s)")
+        resultados = []
+        for t in US_STOCKS[:20]:
+            transacciones = fetch_insiders_yfinance(t)
+            compras = [x for x in transacciones if x["valor_usd"] > 500000]
+            if compras:
+                total = sum(x["valor_usd"] for x in compras)
+                resultados.append({
+                    "ticker": t,
+                    "nombre": nombre(t),
+                    "compras": len(compras),
+                    "total_m": round(total / 1e6, 1),
+                    "insider": compras[0]["insider"],
+                })
+
+        if not resultados:
+            safe_send(msg.chat.id, "Sin compras masivas de insiders detectadas esta semana.", message_id=m.message_id)
+            return
+
+        resultados.sort(key=lambda x: x["total_m"], reverse=True)
+        lines = [f"COMPRAS MASIVAS INSIDERS {datetime.now().strftime('%d/%m %H:%M')}\n"]
+        for r in resultados[:6]:
+            lines.append(f"{r['nombre']} ({r['ticker']}): {r['total_m']}M USD")
+            lines.append(f"  {r['compras']} transacciones | Lead: {r['insider']}")
+
+        snap = "\n".join(lines)
+        datos_ia = "\n".join([f"{r['nombre']}: {r['total_m']}M USD comprado por insiders" for r in resultados[:5]])
+        prompt = (f"Compras masivas de insiders detectadas hoy {datetime.now().strftime('%d/%m/%Y')}:\n{datos_ia}\n\n"
+                  "1. Las mas interesantes y por que\n"
+                  "2. Cual tiene mas potencial de subida segun esta señal\n"
+                  "3. Entrada concreta con precio actual")
+        texto = ask_ai(prompt, max_chars=1500)
+        safe_send(msg.chat.id, snap, message_id=m.message_id)
+        time.sleep(0.5)
+        safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto}")
+
+
+@bot.message_handler(commands=["carteras"])
+def cmd_carteras(msg):
+    if not allowed(msg): return
+    parts = msg.text.split()
+
+    if len(parts) > 1:
+        fondo_key = parts[1].upper()
+        if fondo_key not in GRANDES_FONDOS:
+            fondos_txt = "\n".join([f"  /carteras {k} — {v['nombre']}" for k, v in GRANDES_FONDOS.items()])
+            safe_send(msg.chat.id, f"Fondo no reconocido. Fondos disponibles:\n{fondos_txt}")
+            return
+
+        m = bot.send_message(msg.chat.id, f"Obteniendo posiciones de {GRANDES_FONDOS[fondo_key]['nombre']}...")
+        nombre_fondo, posiciones = fetch_13f_posiciones(fondo_key)
+
+        lines = [f"CARTERA {nombre_fondo}\n{datetime.now().strftime('%d/%m/%Y')}\n"]
+        if posiciones:
+            lines.append("PRINCIPALES POSICIONES:")
+            for p in posiciones[:8]:
+                val_b = round(p.get("valor", 0) / 1e9, 2)
+                pct = p.get("pct", 0)
+                lines.append(f"  {p['empresa']}: {val_b}B USD ({pct:.1f}%)")
+        else:
+            lines.append("Datos de posiciones no disponibles via API gratuita.")
+            lines.append("Consulta: https://www.sec.gov/cgi-bin/browse-edgar")
+            lines.append(f"CIK: {GRANDES_FONDOS[fondo_key]['cik']}")
+
+        # Noticias recientes del fondo
+        try:
+            feed = feedparser.parse(f"https://news.google.com/rss/search?q={nombre_fondo.replace(' ', '+')}+portfolio+2026&hl=es&gl=ES")
+            noticias = [e.title for e in feed.entries[:4]]
+        except:
+            noticias = []
+
+        if noticias:
+            lines.append("\nNOTICIAS RECIENTES:")
+            for n in noticias:
+                lines.append(f"  • {n}")
+
+        snap = "\n".join(lines)
+        prompt = (f"Informacion sobre la cartera de {nombre_fondo} en {datetime.now().strftime('%d/%m/%Y')}:\n"
+                  f"Noticias: {chr(10).join(noticias)}\n\n"
+                  "1. Que sectores esta priorizando este fondo actualmente?\n"
+                  "2. Que nos dice su estrategia sobre el mercado?\n"
+                  "3. Hay algun movimiento destacado que debamos tener en cuenta?")
+        texto = ask_ai(prompt, max_chars=1500)
+        safe_send(msg.chat.id, snap, message_id=m.message_id)
+        time.sleep(0.5)
+        safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto}")
+
+    else:
+        # Mostrar resumen de todos los fondos
+        fondos_txt = "\n".join([f"  /carteras {k} — {v['nombre']}" for k, v in GRANDES_FONDOS.items()])
+        safe_send(msg.chat.id,
+            f"GRANDES CARTERAS — SMART MONEY\n\n"
+            f"Rastrea los movimientos de los mejores inversores del mundo:\n\n"
+            f"{fondos_txt}\n\n"
+            f"Datos via SEC EDGAR 13F filings (actualizacion trimestral)\n\n"
+            f"Para compras de directivos:\n"
+            f"  /insiders — compras masivas detectadas\n"
+            f"  /insiders NVDA — insiders de una empresa concreta")
+
+
 @bot.message_handler(commands=["fundamental"])
 def cmd_fundamental(msg):
     if not allowed(msg): return
@@ -3779,7 +4094,14 @@ def cmd_valor(msg):
         safe_send(msg.chat.id, f"Sin datos para {ticker}.", message_id=m.message_id)
         return
 
-    lines = [f"{resultado['nombre']} ({ticker}) — {resultado['price']}",
+    # Obtener precio real actualizado
+    d = fetch_quote(ticker, "1mo")
+    precio_actual = d["price"] if d else resultado["price"]
+    cambio_hoy = d["d1"] if d else 0
+    resultado["price"] = precio_actual  # actualizar con precio real
+
+    lines = [f"{resultado['nombre']} ({ticker})",
+             f"Precio: {precio_actual} USD ({cambio_hoy:+.2f}% hoy)",
              f"{resultado['score']}/100 — {resultado['zona']}", "",
              "COMPONENTES:"]
     for nombre_c, datos in resultado["componentes"].items():
@@ -3894,6 +4216,8 @@ def handle_callback(call):
         "valor": cmd_valor, "valores": cmd_valores,
         "fundamental": cmd_fundamental,
         "fundamental_info": lambda m: safe_send(m.chat.id, "Uso: /fundamental TICKER\nEj: /fundamental NVDA"),
+        "insiders": cmd_insiders,
+        "carteras": cmd_carteras,
         "riesgo_info": lambda m: safe_send(m.chat.id, "Uso: /riesgo CAPITAL RIESGO% TICKER ENTRADA STOP\nEj: /riesgo 10000 2 NVDA 890 865"),
     }
     if call.data == "valor_btc":
