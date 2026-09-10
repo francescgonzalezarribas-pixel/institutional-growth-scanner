@@ -2429,7 +2429,7 @@ def ask_ai(prompt, max_chars=3000):
     for attempt in range(3):
         try:
             resp = ai_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=[
                     {"role": "system", "content": SYSTEM},
                     {"role": "user", "content": prompt}
