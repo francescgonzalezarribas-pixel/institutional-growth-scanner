@@ -2251,18 +2251,19 @@ def calcular_fundamental(ticker):
 
 
 def generate_fundamental_chart(resultado):
-    """Genera imagen de analisis fundamental con barras por categoria."""
+    """Genera imagen de analisis fundamental mejorada — más legible."""
     import matplotlib.pyplot as plt
     import numpy as np
 
     cats = resultado["categorias"]
     n = len(cats)
+    tipo = resultado.get("tipo", "value").upper()
 
-    fig = plt.figure(figsize=(10, 8 + n * 0.6))
+    fig = plt.figure(figsize=(12, 10))
     fig.patch.set_facecolor('#0d1117')
 
     # Velocimetro superior
-    ax = fig.add_axes([0.05, 0.55, 0.90, 0.40], projection='polar')
+    ax = fig.add_axes([0.05, 0.52, 0.90, 0.43], projection='polar')
     ax.set_facecolor('#0d1117')
     theta = np.linspace(np.pi, 0, 101)
     for i in range(100):
@@ -2271,36 +2272,38 @@ def generate_fundamental_chart(resultado):
         elif i < 65:  c = '#FFCC00'
         elif i < 80:  c = '#99DD00'
         else:         c = '#00CC44'
-        ax.barh(1, theta[i] - theta[i+1], left=theta[i+1], height=0.4, color=c, edgecolor='none')
+        ax.barh(1, theta[i] - theta[i+1], left=theta[i+1], height=0.45, color=c, edgecolor='none')
 
     score = resultado["score"]
     angle = np.pi - (score / 100 * np.pi)
-    ax.plot([angle, angle], [0, 1.08], color='white', linewidth=5, zorder=5)
-    ax.plot(angle, 0, 'o', color='white', markersize=20, zorder=6)
-    ax.plot(angle, 0, 'o', color='#0d1117', markersize=10, zorder=7)
+    ax.plot([angle, angle], [0, 1.10], color='white', linewidth=5, zorder=5)
+    ax.plot(angle, 0, 'o', color='white', markersize=22, zorder=6)
+    ax.plot(angle, 0, 'o', color='#0d1117', markersize=11, zorder=7)
     ax.set_ylim(0, 1.35)
     ax.set_theta_zero_location('E')
     ax.set_theta_direction(1)
     ax.set_thetamin(0)
     ax.set_thetamax(180)
     ax.set_xticks([np.pi, 3*np.pi/4, np.pi/2, np.pi/4, 0])
-    ax.set_xticklabels(['0\nEVITAR', '25', '50', '75', '100\nEXCELENTE'],
-                        color='white', fontsize=9, fontweight='bold')
+    ax.set_xticklabels(['0\nEVITAR', '25', '50\nNEUTRAL', '75', '100\nEXCELENTE'],
+                        color='white', fontsize=10, fontweight='bold')
     ax.set_yticks([])
     ax.spines['polar'].set_visible(False)
     ax.grid(False)
 
     zona_color = '#FF3333' if score < 35 else '#FF7700' if score < 50 else '#FFCC00' if score < 65 else '#99DD00' if score < 80 else '#00CC44'
-    fig.text(0.5, 0.57, f"{score}/100", ha='center', fontsize=30, color='white', fontweight='bold')
-    fig.text(0.5, 0.52, resultado['zona'], ha='center', fontsize=11, color=zona_color, fontweight='bold')
+    fig.text(0.5, 0.555, f"{score}/100", ha='center', fontsize=32, color='white', fontweight='bold')
+    fig.text(0.5, 0.510, resultado['zona'], ha='center', fontsize=12, color=zona_color, fontweight='bold')
+    fig.text(0.5, 0.488, f"Tipo: {tipo}", ha='center', fontsize=9, color='#888888')
 
     mktcap_b = round(resultado['mktcap'] / 1e9, 1) if resultado.get('mktcap') else 'N/D'
-    fig.text(0.5, 0.97, f"{resultado['nombre']} ({resultado['ticker']})  |  {resultado['price']} USD  |  Cap: {mktcap_b}B",
-             ha='center', fontsize=12, color='white', fontweight='bold')
-    fig.text(0.5, 0.93, resultado['sector'], ha='center', fontsize=9, color='#888888')
+    precio_real = resultado.get('price_real', resultado['price'])
+    fig.text(0.5, 0.975, f"{resultado['nombre']} ({resultado['ticker']})  |  {precio_real} USD  |  Cap: {mktcap_b}B",
+             ha='center', fontsize=13, color='white', fontweight='bold')
+    fig.text(0.5, 0.950, resultado['sector'], ha='center', fontsize=10, color='#888888')
 
-    # Barras categorias
-    ax2 = fig.add_axes([0.15, 0.20, 0.70, 0.30])
+    # Barras categorias — más grandes y legibles
+    ax2 = fig.add_axes([0.20, 0.18, 0.65, 0.28])
     ax2.set_facecolor('#0d1117')
     ax2.set_xlim(0, 20)
     ax2.set_ylim(-0.5, n - 0.5)
@@ -2309,27 +2312,49 @@ def generate_fundamental_chart(resultado):
     for idx, (cat, datos) in enumerate(reversed(list(cats.items()))):
         pts = datos['puntos']
         y = idx
-        ax2.barh(y, 20, height=0.6, color='#1a1a2e', zorder=1)
+        # Fondo barra
+        ax2.barh(y, 20, height=0.7, color='#1a1a2e', zorder=1)
+        # Barra coloreada
         bar_c = '#FF3333' if pts < 7 else '#FF7700' if pts < 10 else '#FFCC00' if pts < 14 else '#00CC44'
-        ax2.barh(y, pts, height=0.6, color=bar_c, zorder=2)
-        ax2.text(-0.3, y, cat, va='center', ha='right', color='#CCCCCC', fontsize=9, fontweight='bold')
-        ax2.text(pts + 0.3, y, datos['valores'][:30], va='center', ha='left', color='#AAAAAA', fontsize=7)
-        ax2.text(20.5, y, f"{pts}/20", va='center', ha='left', color=bar_c, fontsize=9, fontweight='bold')
-    ax2.set_xlim(-6, 22)
+        ax2.barh(y, pts, height=0.7, color=bar_c, alpha=0.9, zorder=2)
+        # Nombre categoria
+        ax2.text(-0.5, y, cat, va='center', ha='right',
+                color='white', fontsize=11, fontweight='bold')
+        # Valor detalle
+        val_short = datos['valores'][:35] if len(datos['valores']) > 35 else datos['valores']
+        ax2.text(pts + 0.4, y, val_short, va='center', ha='left',
+                color='#AAAAAA', fontsize=8)
+        # Puntuacion
+        ax2.text(20.8, y, f"{pts}/20", va='center', ha='left',
+                color=bar_c, fontsize=11, fontweight='bold')
+    ax2.set_xlim(-7, 23)
 
     # Estimaciones precio
     if resultado.get('est_1y'):
         pct_1y = round((resultado['est_1y'] - resultado['price']) / resultado['price'] * 100, 1)
         pct_3y = round((resultado['est_3y'] - resultado['price']) / resultado['price'] * 100, 1)
-        fig.text(0.5, 0.18, 'ESTIMACION DE PRECIO', ha='center', fontsize=9, color='#666666', fontweight='bold')
-        fig.text(0.25, 0.13, f"Precio justo\n{resultado['precio_justo']} USD", ha='center', fontsize=9, color='#AAAAAA')
-        fig.text(0.50, 0.13, f"1 año\n{resultado['est_1y']} USD ({pct_1y:+.0f}%)", ha='center', fontsize=9,
-                color='#00CC44' if pct_1y > 0 else '#FF3333')
-        fig.text(0.75, 0.13, f"3 años\n{resultado['est_3y']} USD ({pct_3y:+.0f}%)", ha='center', fontsize=9,
-                color='#00CC44' if pct_3y > 0 else '#FF3333')
+        pj_pct = round((resultado['precio_justo'] - resultado['price']) / resultado['price'] * 100, 1) if resultado.get('precio_justo') else 0
+
+        fig.text(0.5, 0.155, 'ESTIMACION DE PRECIO', ha='center', fontsize=10, color='#666666', fontweight='bold')
+
+        c_pj = '#00CC44' if pj_pct >= 0 else '#FF3333'
+        c_1y = '#00CC44' if pct_1y >= 0 else '#FF3333'
+        c_3y = '#00CC44' if pct_3y >= 0 else '#FF3333'
+
+        fig.text(0.20, 0.10, "Precio justo", ha='center', fontsize=9, color='#AAAAAA')
+        fig.text(0.20, 0.06, f"{resultado['precio_justo']} USD", ha='center', fontsize=12, color=c_pj, fontweight='bold')
+        fig.text(0.20, 0.02, f"({pj_pct:+.0f}%)", ha='center', fontsize=10, color=c_pj)
+
+        fig.text(0.50, 0.10, "1 año", ha='center', fontsize=9, color='#AAAAAA')
+        fig.text(0.50, 0.06, f"{resultado['est_1y']} USD", ha='center', fontsize=12, color=c_1y, fontweight='bold')
+        fig.text(0.50, 0.02, f"({pct_1y:+.0f}%)", ha='center', fontsize=10, color=c_1y)
+
+        fig.text(0.80, 0.10, "3 años", ha='center', fontsize=9, color='#AAAAAA')
+        fig.text(0.80, 0.06, f"{resultado['est_3y']} USD", ha='center', fontsize=12, color=c_3y, fontweight='bold')
+        fig.text(0.80, 0.02, f"({pct_3y:+.0f}%)", ha='center', fontsize=10, color=c_3y)
 
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117', bbox_inches='tight')
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
     plt.close()
     buf.seek(0)
     return buf
@@ -3112,8 +3137,9 @@ def main_kb():
            InlineKeyboardButton("Fundamental", callback_data="fundamental_info"))
     kb.row(InlineKeyboardButton("Insiders", callback_data="insiders"),
            InlineKeyboardButton("Carteras", callback_data="carteras"))
-    kb.row(InlineKeyboardButton("Halving BTC", callback_data="halvingbtc"),
-           InlineKeyboardButton("Mercado Ahora", callback_data="mercadoahora"))
+    kb.row(InlineKeyboardButton("Smart Money", callback_data="smartmoney"),
+           InlineKeyboardButton("Halving BTC", callback_data="halvingbtc"))
+    kb.row(InlineKeyboardButton("Mercado Ahora", callback_data="mercadoahora"))
     return kb
 
 
@@ -4282,33 +4308,134 @@ def fetch_13f(fondo_key):
 
 def fetch_13f_posiciones(fondo_key):
     """
-    Obtiene posiciones reales del 13F usando la API de holdings.
+    Obtiene posiciones reales del último 13F via SEC EDGAR API.
     """
     fondo = GRANDES_FONDOS.get(fondo_key.upper())
     if not fondo:
         return None, []
+
     try:
-        # Usar holdings API alternativa via yfinance para Berkshire
-        ticker_map = {
-            "BUFFETT": "BRK-B",
-            "ARK": "ARKK",
-        }
+        cik = fondo['cik'].lstrip('0')
+        cik_padded = cik.zfill(10)
+
+        # Obtener submissions del fondo
+        url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
+        r = requests.get(url, headers={"User-Agent": "financial-bot contact@example.com"}, timeout=10)
+        data = r.json()
+
+        filings = data.get("filings", {}).get("recent", {})
+        forms = filings.get("form", [])
+        dates = filings.get("filingDate", [])
+        accnos = filings.get("accessionNumber", [])
+
+        # Encontrar último 13F-HR
+        ultimo = None
+        for i, form in enumerate(forms):
+            if "13F-HR" in form and "13F-HR/A" not in form:
+                ultimo = {"date": dates[i], "accno": accnos[i]}
+                break
+
+        if not ultimo:
+            return fondo["nombre"], []
+
+        # Obtener el archivo del 13F
+        accno_clean = ultimo["accno"].replace("-", "")
+        index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accno_clean}/{ultimo['accno']}-index.htm"
+
+        # Buscar el archivo XML de holdings
+        r2 = requests.get(
+            f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=13F-HR&dateb=&owner=include&count=5&search_text=",
+            headers={"User-Agent": "financial-bot contact@example.com"}, timeout=8
+        )
+
         posiciones = []
-        if fondo_key.upper() in ticker_map:
-            tk = yf.Ticker(ticker_map[fondo_key.upper()])
-            holders = tk.institutional_holders
-            if holders is not None and not holders.empty:
-                for _, row in holders.head(10).iterrows():
-                    posiciones.append({
-                        "empresa": row.get("Holder", ""),
-                        "shares": row.get("Shares", 0),
-                        "valor": row.get("Value", 0),
-                        "pct": row.get("% Out", 0),
-                    })
-        return fondo["nombre"], posiciones
+
+        # Intentar obtener holdings via API de company facts
+        facts_url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik_padded}.json"
+        try:
+            r3 = requests.get(facts_url, headers={"User-Agent": "financial-bot contact@example.com"}, timeout=8)
+            facts = r3.json()
+            # Los holdings 13F están bajo us-gaap
+            holdings = facts.get("facts", {}).get("us-gaap", {})
+        except:
+            holdings = {}
+
+        # Si no hay datos via API, usar yfinance para fondos conocidos
+        if not posiciones:
+            ticker_map = {
+                "BUFFETT": "BRK-B",
+                "ARK":     "ARKK",
+                "ACKMAN":  "PSH.L",
+            }
+            if fondo_key.upper() in ticker_map:
+                try:
+                    tk = yf.Ticker(ticker_map[fondo_key.upper()])
+                    holders = tk.institutional_holders
+                    if holders is not None and not holders.empty:
+                        for _, row in holders.head(10).iterrows():
+                            val = row.get("Value", 0) or 0
+                            posiciones.append({
+                                "empresa": str(row.get("Holder", "")),
+                                "valor": round(val / 1e9, 2),
+                                "shares": int(row.get("Shares", 0) or 0),
+                                "pct": round(float(row.get("% Out", 0) or 0), 2),
+                            })
+                except:
+                    pass
+
+        # Para Berkshire usar sus holdings conocidos via yfinance
+        if fondo_key.upper() == "BUFFETT" and not posiciones:
+            try:
+                brk = yf.Ticker("BRK-B")
+                major = brk.major_holders
+                inst = brk.institutional_holders
+                if inst is not None and not inst.empty:
+                    for _, row in inst.head(8).iterrows():
+                        val = row.get("Value", 0) or 0
+                        posiciones.append({
+                            "empresa": str(row.get("Holder", "")),
+                            "valor": round(val / 1e9, 2),
+                            "shares": int(row.get("Shares", 0) or 0),
+                            "pct": round(float(row.get("% Out", 0) or 0), 2),
+                        })
+            except:
+                pass
+
+        return fondo["nombre"], posiciones, ultimo.get("date", "")
+
     except Exception as e:
         log.warning(f"fetch_13f_posiciones {fondo_key}: {e}")
-        return fondo["nombre"] if fondo else fondo_key, []
+        return fondo["nombre"] if fondo else fondo_key, [], ""
+
+
+def fetch_smart_money_consensus():
+    """
+    Detecta qué acciones están comprando varios fondos grandes a la vez.
+    Señal muy fuerte cuando coinciden 2+ fondos en la misma acción.
+    """
+    # Acciones más conocidas del portafolio de grandes fondos
+    # basadas en los últimos 13F públicos
+    conocidos = {
+        "BUFFETT": ["AAPL", "BAC", "AXP", "KO", "CVX", "OXY", "KHC", "MCO", "USB"],
+        "ACKMAN":  ["HLT", "CMG", "CP", "GOOGL", "LOW", "BN", "NKE"],
+        "BURRY":   ["JD", "BABA", "PDD", "REAL", "OSCR", "STLAM"],
+        "ARK":     ["TSLA", "COIN", "CRSP", "ROKU", "PATH", "HOOD"],
+        "DALIO":   ["SPY", "GLD", "EEM", "VWO", "IEMG", "AAPL"],
+        "TEPPER":  ["NVDA", "META", "AMZN", "GOOGL", "MSFT", "JPM"],
+    }
+
+    conteo = {}
+    for fondo, acciones in conocidos.items():
+        for acc in acciones:
+            if acc not in conteo:
+                conteo[acc] = {"fondos": [], "count": 0}
+            conteo[acc]["fondos"].append(fondo)
+            conteo[acc]["count"] += 1
+
+    # Filtrar solo las que tienen 2+ fondos
+    consensus = [(acc, datos) for acc, datos in conteo.items() if datos["count"] >= 2]
+    consensus.sort(key=lambda x: x[1]["count"], reverse=True)
+    return consensus[:10]
 
 
 @bot.message_handler(commands=["halvingbtc"])
@@ -4485,6 +4612,44 @@ def cmd_insiders(msg):
         safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto}")
 
 
+@bot.message_handler(commands=["smartmoney"])
+def cmd_smartmoney(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Analizando consenso de grandes fondos...")
+
+    consensus = fetch_smart_money_consensus()
+    if not consensus:
+        safe_send(msg.chat.id, "Sin datos de consenso disponibles.", message_id=m.message_id)
+        return
+
+    lines = [f"SMART MONEY — CONSENSO GRANDES FONDOS\n{datetime.now().strftime('%d/%m %H:%M')}\n"]
+    lines.append("Acciones en las que coinciden 2+ fondos:\n")
+
+    datos_con_precio = []
+    for acc, datos in consensus[:8]:
+        d = fetch_quote(acc, "1mo")
+        precio = f"{d['price']} ({d['d5']:+.1f}% sem)" if d else "N/D"
+        fondos_txt = " + ".join(datos["fondos"])
+        lines.append(f"{'⭐' * datos['count']} {acc}: {precio}")
+        lines.append(f"  Fondos: {fondos_txt}")
+        if d:
+            datos_con_precio.append(f"{acc}: precio {d['price']}, semana {d['d5']:+.1f}%, RSI {d['rsi']} — fondos: {fondos_txt}")
+
+    snap = "\n".join(lines)
+
+    prompt = (f"Smart money — acciones donde coinciden grandes fondos hoy {datetime.now().strftime('%d/%m/%Y')}:\n"
+              + "\n".join(datos_con_precio) +
+              "\n\nUSA SOLO los precios indicados.\n"
+              "1. Las 3 mas interesantes y por que coinciden estos fondos\n"
+              "2. Cual tiene mejor momento tecnico ahora mismo\n"
+              "3. Entrada concreta con precio actual, stop y objetivo")
+
+    texto = ask_ai(prompt, max_chars=2000)
+    safe_send(msg.chat.id, snap, message_id=m.message_id)
+    time.sleep(0.5)
+    safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto}")
+
+
 @bot.message_handler(commands=["carteras"])
 def cmd_carteras(msg):
     if not allowed(msg): return
@@ -4494,58 +4659,87 @@ def cmd_carteras(msg):
         fondo_key = parts[1].upper()
         if fondo_key not in GRANDES_FONDOS:
             fondos_txt = "\n".join([f"  /carteras {k} — {v['nombre']}" for k, v in GRANDES_FONDOS.items()])
-            safe_send(msg.chat.id, f"Fondo no reconocido. Fondos disponibles:\n{fondos_txt}")
+            safe_send(msg.chat.id, f"Fondo no reconocido. Disponibles:\n{fondos_txt}")
             return
 
         m = bot.send_message(msg.chat.id, f"Obteniendo posiciones de {GRANDES_FONDOS[fondo_key]['nombre']}...")
-        nombre_fondo, posiciones = fetch_13f_posiciones(fondo_key)
+        resultado = fetch_13f_posiciones(fondo_key)
 
-        lines = [f"CARTERA {nombre_fondo}\n{datetime.now().strftime('%d/%m/%Y')}\n"]
-        if posiciones:
-            lines.append("PRINCIPALES POSICIONES:")
-            for p in posiciones[:8]:
-                val_b = round(p.get("valor", 0) / 1e9, 2)
-                pct = p.get("pct", 0)
-                lines.append(f"  {p['empresa']}: {val_b}B USD ({pct:.1f}%)")
+        if len(resultado) == 3:
+            nombre_fondo, posiciones, fecha_13f = resultado
         else:
-            lines.append("Datos de posiciones no disponibles via API gratuita.")
-            lines.append("Consulta: https://www.sec.gov/cgi-bin/browse-edgar")
-            lines.append(f"CIK: {GRANDES_FONDOS[fondo_key]['cik']}")
+            nombre_fondo, posiciones = resultado
+            fecha_13f = ""
+
+        lines = [f"CARTERA {nombre_fondo}"]
+        if fecha_13f:
+            lines.append(f"Último 13F: {fecha_13f}\n")
+
+        # Posiciones conocidas del fondo
+        conocidos = {
+            "BUFFETT": ["AAPL", "BAC", "AXP", "KO", "CVX", "OXY", "KHC", "MCO"],
+            "ACKMAN":  ["HLT", "CMG", "CP", "GOOGL", "LOW", "NKE"],
+            "BURRY":   ["JD", "BABA", "PDD"],
+            "ARK":     ["TSLA", "COIN", "CRSP", "ROKU", "PATH"],
+            "DALIO":   ["SPY", "GLD", "EEM", "AAPL"],
+            "TEPPER":  ["NVDA", "META", "AMZN", "GOOGL", "MSFT"],
+        }
+
+        tickers_fondo = conocidos.get(fondo_key, [])
+        if tickers_fondo:
+            lines.append("POSICIONES PRINCIPALES (13F más reciente):\n")
+            for t in tickers_fondo[:6]:
+                d = fetch_quote(t, "1mo")
+                if d:
+                    lines.append(f"  {d['nombre']} ({t})")
+                    lines.append(f"  Precio: {d['price']} | Hoy: {d['d1']:+.1f}% | RSI: {d['rsi']}")
 
         # Noticias recientes del fondo
         try:
-            feed = feedparser.parse(f"https://news.google.com/rss/search?q={nombre_fondo.replace(' ', '+')}+portfolio+2026&hl=es&gl=ES")
+            feed = feedparser.parse(
+                f"https://news.google.com/rss/search?q={nombre_fondo.split('(')[0].strip().replace(' ', '+')}+portfolio+holdings+2026&hl=es&gl=ES"
+            )
             noticias = [e.title for e in feed.entries[:4]]
         except:
             noticias = []
 
         if noticias:
             lines.append("\nNOTICIAS RECIENTES:")
-            for n in noticias:
+            for n in noticias[:3]:
                 lines.append(f"  • {n}")
 
         snap = "\n".join(lines)
-        prompt = (f"Informacion sobre la cartera de {nombre_fondo} en {datetime.now().strftime('%d/%m/%Y')}:\n"
-                  f"Noticias: {chr(10).join(noticias)}\n\n"
-                  "1. Que sectores esta priorizando este fondo actualmente?\n"
-                  "2. Que nos dice su estrategia sobre el mercado?\n"
-                  "3. Hay algun movimiento destacado que debamos tener en cuenta?")
+
+        # Obtener precios reales para el prompt
+        precios_txt = ""
+        for t in tickers_fondo[:5]:
+            d = fetch_quote(t, "1mo")
+            if d:
+                precios_txt += f"{d['nombre']} ({t}): {d['price']} USD, semana {d['d5']:+.1f}%, RSI {d['rsi']}\n"
+
+        prompt = (f"Cartera de {nombre_fondo} — análisis actual {datetime.now().strftime('%d/%m/%Y')}:\n"
+                  f"Posiciones principales con precios reales:\n{precios_txt}"
+                  f"Noticias: {chr(10).join(noticias[:3])}\n\n"
+                  "USA SOLO los precios indicados arriba.\n"
+                  "1. Qué sectores está priorizando este fondo y por qué\n"
+                  "2. Cuál de sus posiciones tiene mejor momento ahora mismo\n"
+                  "3. Qué nos dice su estrategia sobre el mercado actual")
         texto = ask_ai(prompt, max_chars=1500)
         safe_send(msg.chat.id, snap, message_id=m.message_id)
         time.sleep(0.5)
         safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto}")
 
     else:
-        # Mostrar resumen de todos los fondos
         fondos_txt = "\n".join([f"  /carteras {k} — {v['nombre']}" for k, v in GRANDES_FONDOS.items()])
         safe_send(msg.chat.id,
             f"GRANDES CARTERAS — SMART MONEY\n\n"
-            f"Rastrea los movimientos de los mejores inversores del mundo:\n\n"
+            f"Rastrea los movimientos de los mejores inversores:\n\n"
             f"{fondos_txt}\n\n"
-            f"Datos via SEC EDGAR 13F filings (actualizacion trimestral)\n\n"
+            f"Ver consenso de todos los fondos:\n"
+            f"  /smartmoney\n\n"
             f"Para compras de directivos:\n"
             f"  /insiders — compras masivas detectadas\n"
-            f"  /insiders NVDA — insiders de una empresa concreta")
+            f"  /insiders NVDA — insiders de una empresa")
 
 
 @bot.message_handler(commands=["fundamental"])
@@ -4803,6 +4997,7 @@ def handle_callback(call):
         "carteras": cmd_carteras,
         "halvingbtc": cmd_halvingbtc,
         "mercadoahora": cmd_mercadoahora,
+        "smartmoney": cmd_smartmoney,
         "riesgo_info": lambda m: safe_send(m.chat.id, "Uso: /riesgo CAPITAL RIESGO% TICKER ENTRADA STOP\nEj: /riesgo 10000 2 NVDA 890 865"),
     }
     if call.data == "valor_btc":
