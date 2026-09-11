@@ -1884,6 +1884,10 @@ def detectar_tipo_empresa(f):
         return "materials"
     if any(s in industry for s in ["biotech", "pharmaceutical", "drug"]):
         return "biotech"
+    if any(s in sector for s in ["consumer", "retail", "apparel", "footwear", "restaurant", "beverage"]):
+        return "consumer"
+    if any(s in industry for s in ["apparel", "footwear", "sporting", "luxury", "restaurant", "beverage"]):
+        return "consumer"
     if rev_growth > 0.30 and fcf < 0:
         return "growth"
     if div_yield > 0.03:
@@ -1894,14 +1898,27 @@ def detectar_tipo_empresa(f):
 
 
 def estimar_precio_por_tipo(f, tipo, price):
-    """Estimacion de precio segun tipo de empresa."""
+    """Estimacion de precio segun tipo de empresa — con filtros anti-distorsion."""
     rev_growth = f.get("rev_growth") or 0.05
     rev_ttm = f.get("rev_ttm") or 0
     mktcap = f.get("mktcap") or 0
     fcf = f.get("fcf") or 0
     div_yield = f.get("div_yield") or 0
     pe_fwd = f.get("pe_fwd") or f.get("pe") or 20
-    earn_growth = f.get("earn_growth") or rev_growth
+
+    # FILTRO CRITICO: earn_growth puntual (one-off contable) no debe usarse en estimaciones
+    # Si ingresos caen pero beneficios suben >100% = one-off. Usar rev_growth como proxy.
+    earn_growth_raw = f.get("earn_growth") or rev_growth
+    if earn_growth_raw and rev_growth and earn_growth_raw > 1.0 and rev_growth < 0.05:
+        earn_growth = min(rev_growth + 0.05, 0.15)  # cap conservador
+    elif earn_growth_raw and earn_growth_raw > 3.0:
+        earn_growth = min(earn_growth_raw, 0.30)  # cap maximo 30%
+    else:
+        earn_growth = earn_growth_raw or rev_growth
+
+    # Cap absoluto para evitar estimaciones absurdas
+    earn_growth = max(min(earn_growth, 0.30), -0.20)
+    rev_growth = max(min(rev_growth, 0.50), -0.20)
 
     precio_justo = None
     est_1y = None
@@ -1909,59 +1926,71 @@ def estimar_precio_por_tipo(f, tipo, price):
     metodo = ""
 
     if tipo == "growth" and rev_ttm > 0 and mktcap > 0:
-        # Valoracion por multiplo de ventas (P/S)
         ps_actual = mktcap / rev_ttm
-        ps_objetivo = min(ps_actual * 0.8, 15)  # descuento al actual
-        rev_1y = rev_ttm * (1 + rev_growth)
-        rev_3y = rev_ttm * (1 + rev_growth) ** 3
+        ps_objetivo = min(ps_actual * 0.8, 15)
         precio_justo = round(price * (ps_objetivo / ps_actual), 2)
         est_1y = round(price * (1 + rev_growth * 0.7), 2)
         est_3y = round(price * (1 + rev_growth * 0.5) ** 3, 2)
-        metodo = f"P/S x{ps_objetivo:.1f} (empresa crecimiento, FCF negativo)"
+        metodo = f"P/S x{ps_objetivo:.1f} (empresa crecimiento)"
 
     elif tipo == "utility" and div_yield > 0:
-        # Valoracion por yield objetivo
-        yield_objetivo = 0.045  # 4.5% yield objetivo para utilities
-        div_anual = price * div_yield  # dividendo anual en USD
+        yield_objetivo = 0.045
+        div_anual = price * div_yield
         precio_justo = round(div_anual / yield_objetivo, 2)
-        crecimiento_div = 0.03
-        est_1y = round(precio_justo * (1 + crecimiento_div), 2)
-        est_3y = round(precio_justo * (1 + crecimiento_div) ** 3, 2)
-        metodo = f"Yield objetivo 4.5% (utility) | Div anual: {div_anual:.2f} USD"
+        est_1y = round(precio_justo * 1.03, 2)
+        est_3y = round(precio_justo * (1.03 ** 3), 2)
+        metodo = f"Yield objetivo 4.5% | Div anual: {div_anual:.2f} USD"
 
     elif tipo == "materials" and rev_ttm > 0 and mktcap > 0:
-        # Valoracion por EV/Ingresos para materials
         ev_rev = mktcap / rev_ttm
         ev_rev_objetivo = max(ev_rev * 0.9, 2)
         precio_justo = round(price * (ev_rev_objetivo / ev_rev), 2)
         est_1y = round(price * (1 + max(rev_growth, 0.10)), 2)
         est_3y = round(price * (1 + max(rev_growth * 0.6, 0.08)) ** 3, 2)
-        metodo = f"EV/Ingresos ajustado ciclo commodities"
+        metodo = "EV/Ingresos ajustado ciclo commodities"
 
     elif tipo == "biotech":
-        # Biotech: muy especulativo, usamos crecimiento de ingresos con descuento
         est_1y = round(price * (1 + max(rev_growth * 0.5, 0.05)), 2)
         est_3y = round(price * (1 + max(rev_growth * 0.4, 0.08)) ** 3, 2)
         precio_justo = round(price * 0.85, 2)
-        metodo = "Especulativo (biotech sin beneficios)"
+        metodo = "Especulativo (biotech)"
+
+    elif tipo == "consumer":
+        # Consumer: multiplo P/E historico del sector
+        pe_actual = f.get("pe") or 20
+        pe_historico_sector = 22  # P/E medio historico consumer staples/cyclical
+        precio_justo = round(price * (pe_historico_sector / pe_actual), 2) if pe_actual > 0 else price
+        crecimiento_normalizado = max(min(earn_growth, 0.12), -0.05)
+        est_1y = round(precio_justo * (1 + crecimiento_normalizado), 2)
+        est_3y = round(precio_justo * (1 + crecimiento_normalizado) ** 3, 2)
+        metodo = f"P/E historico sector consumer {pe_historico_sector}x"
 
     elif fcf > 0 and mktcap > 0:
-        # DCF clasico para empresas con FCF positivo
         tasa_desc = 0.10
         tasa_crec_fcf = min(max(earn_growth, 0.03), 0.25)
         fcf_yield = fcf / mktcap
         precio_justo = round(price * (fcf_yield + tasa_crec_fcf) / tasa_desc, 2)
+        # Cap: precio justo no puede ser mas de 3x el precio actual
+        precio_justo = min(precio_justo, price * 3)
         est_1y = round(price * (1 + max(earn_growth, 0.05)), 2)
         est_3y = round(price * (1 + max(earn_growth * 0.7, 0.05)) ** 3, 2)
         metodo = "DCF (Free Cash Flow)"
 
     elif pe_fwd and pe_fwd > 0:
-        # Valoracion por PER forward
-        pe_objetivo = min(pe_fwd * 0.9, 25)
+        pe_objetivo = min(pe_fwd * 0.9, 30)
         precio_justo = round(price * (pe_objetivo / pe_fwd), 2)
+        precio_justo = min(precio_justo, price * 2.5)
         est_1y = round(price * (1 + max(earn_growth, 0.05)), 2)
         est_3y = round(price * (1 + max(earn_growth * 0.7, 0.05)) ** 3, 2)
         metodo = f"PER forward {pe_fwd:.1f}x"
+
+    # Validacion final — si las estimaciones son absurdas, reemplazar
+    if est_1y and (est_1y > price * 4 or est_1y < price * 0.3):
+        est_1y = round(price * (1 + max(min(earn_growth, 0.20), -0.10)), 2)
+    if est_3y and (est_3y > price * 10 or est_3y < price * 0.2):
+        est_3y = round(price * (1 + max(min(earn_growth, 0.15), -0.08)) ** 3, 2)
+    if precio_justo and (precio_justo > price * 4 or precio_justo < price * 0.2):
+        precio_justo = round(price * 1.1, 2)
 
     return precio_justo, est_1y, est_3y, metodo
 
@@ -3083,7 +3112,8 @@ def main_kb():
            InlineKeyboardButton("Fundamental", callback_data="fundamental_info"))
     kb.row(InlineKeyboardButton("Insiders", callback_data="insiders"),
            InlineKeyboardButton("Carteras", callback_data="carteras"))
-    kb.row(InlineKeyboardButton("Halving BTC", callback_data="halvingbtc"))
+    kb.row(InlineKeyboardButton("Halving BTC", callback_data="halvingbtc"),
+           InlineKeyboardButton("Mercado Ahora", callback_data="mercadoahora"))
     return kb
 
 
@@ -4772,6 +4802,7 @@ def handle_callback(call):
         "insiders": cmd_insiders,
         "carteras": cmd_carteras,
         "halvingbtc": cmd_halvingbtc,
+        "mercadoahora": cmd_mercadoahora,
         "riesgo_info": lambda m: safe_send(m.chat.id, "Uso: /riesgo CAPITAL RIESGO% TICKER ENTRADA STOP\nEj: /riesgo 10000 2 NVDA 890 865"),
     }
     if call.data == "valor_btc":
@@ -4919,7 +4950,148 @@ def job_check_alerts():
                 log.warning(f"Alert check: {e}")
 
 
-def job_anomalias_scanner():
+def generate_market_bars(datos):
+    """
+    Genera imagen de barras horizontales verde/rojo estilo Trade Republic
+    mostrando variaciones del mercado.
+    datos: lista de {nombre, ticker, cambio_pct, categoria}
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Ordenar por cambio (mayores primero)
+    datos = sorted(datos, key=lambda x: x["cambio_pct"], reverse=True)
+    n = len(datos)
+
+    fig, ax = plt.subplots(figsize=(10, max(4, n * 0.6)))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    max_abs = max(abs(d["cambio_pct"]) for d in datos) if datos else 3
+    max_abs = max(max_abs, 1)
+
+    for i, d in enumerate(datos):
+        y = n - 1 - i
+        pct = d["cambio_pct"]
+        color = '#00CC44' if pct >= 0 else '#FF3333'
+        width = (abs(pct) / max_abs) * 8
+
+        # Barra
+        ax.barh(y, width if pct >= 0 else -width,
+               height=0.55, color=color, alpha=0.85, zorder=2)
+
+        # Línea central
+        ax.axvline(x=0, color='#444444', linewidth=1, zorder=1)
+
+        # Nombre ticker
+        ax.text(-0.3, y, d["nombre"], va='center', ha='right',
+               color='white', fontsize=10, fontweight='bold')
+
+        # Porcentaje
+        offset = width + 0.2 if pct >= 0 else -width - 0.2
+        ha = 'left' if pct >= 0 else 'right'
+        signo = "+" if pct >= 0 else ""
+        ax.text(offset, y, f"{signo}{pct:.2f}%",
+               va='center', ha=ha, color=color,
+               fontsize=11, fontweight='bold')
+
+    ax.set_xlim(-max_abs * 1.4, max_abs * 1.4)
+    ax.set_ylim(-0.5, n - 0.5)
+    ax.axis('off')
+
+    titulo = f"MERCADOS — {datetime.now().strftime('%d/%m %H:%M')}"
+    ax.set_title(titulo, color='white', fontsize=13,
+                fontweight='bold', pad=12)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130,
+               facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+
+def get_market_snapshot():
+    """Obtiene variaciones de todos los mercados clave."""
+    activos = [
+        # Indices
+        ("^GSPC",    "S&P 500",   "indice"),
+        ("^IXIC",    "Nasdaq",    "indice"),
+        ("^GDAXI",   "DAX",       "indice"),
+        ("^IBEX",    "IBEX 35",   "indice"),
+        ("^FCHI",    "CAC 40",    "indice"),
+        # Crypto
+        ("BTC-USD",  "Bitcoin",   "crypto"),
+        ("ETH-USD",  "Ethereum",  "crypto"),
+        # Macro
+        ("GC=F",     "Oro",       "macro"),
+        ("CL=F",     "Petróleo",  "macro"),
+        ("DX-Y.NYB", "USD Index", "macro"),
+    ]
+    resultado = []
+    for ticker, nom, cat in activos:
+        try:
+            d = fetch_quote(ticker, "5d")
+            if d:
+                resultado.append({
+                    "ticker": ticker,
+                    "nombre": nom,
+                    "cambio_pct": round(d["d1"], 2),
+                    "precio": d["price"],
+                    "categoria": cat,
+                })
+        except:
+            pass
+    return resultado
+
+
+@bot.message_handler(commands=["mercadoahora"])
+def cmd_mercadoahora(msg):
+    if not allowed(msg): return
+    m = bot.send_message(msg.chat.id, "Obteniendo snapshot del mercado...")
+    datos = get_market_snapshot()
+    if not datos:
+        safe_send(msg.chat.id, "Sin datos disponibles.", message_id=m.message_id)
+        return
+    try:
+        chart = generate_market_bars(datos)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, chart)
+    except Exception as e:
+        log.warning(f"mercadoahora chart: {e}")
+        lines = [f"MERCADOS {datetime.now().strftime('%d/%m %H:%M')}\n"]
+        for d in datos:
+            s = "🟢" if d["cambio_pct"] >= 0 else "🔴"
+            lines.append(f"{s} {d['nombre']}: {d['cambio_pct']:+.2f}%")
+        safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
+
+
+def job_monitor_mercado():
+    """Cada 30min dias laborables — alerta si hay movimientos importantes."""
+    if not es_dia_laborable():
+        return
+    datos = get_market_snapshot()
+    if not datos:
+        return
+
+    # Filtrar solo movimientos significativos
+    umbrales = {"indice": 1.0, "crypto": 3.0, "macro": 1.5}
+    alertas = [d for d in datos
+               if abs(d["cambio_pct"]) >= umbrales.get(d["categoria"], 1.5)]
+
+    if not alertas:
+        return  # Sin movimientos importantes — no molestar
+
+    try:
+        chart = generate_market_bars(datos)  # Siempre mostrar todos con contexto
+        caption = f"⚡ MOVIMIENTO DESTACADO {datetime.now().strftime('%H:%M')}\n"
+        for a in alertas:
+            s = "🟢" if a["cambio_pct"] >= 0 else "🔴"
+            caption += f"{s} {a['nombre']}: {a['cambio_pct']:+.2f}%\n"
+        bot.send_photo(ALLOWED_USER_ID, chart, caption=caption[:1020])
+    except Exception as e:
+        log.warning(f"job_monitor_mercado: {e}")
     """Cada 2h dias laborables — Anomalias volumen."""
     if not es_dia_laborable():
         return
@@ -5155,6 +5327,8 @@ if __name__ == "__main__":
         scheduler.add_job(job_crypto_weekend,    "cron", hour=10, minute=0)
         # Alertas precio siempre
         scheduler.add_job(job_check_alerts,      "interval", minutes=5)
+        # Monitor mercado cada 30min
+        scheduler.add_job(job_monitor_mercado,   "interval", minutes=30)
         # Alerta funding rate cada hora
         scheduler.add_job(job_alerta_funding,    "interval", hours=1)
         # Alerta Fear&Greed cada 6h
