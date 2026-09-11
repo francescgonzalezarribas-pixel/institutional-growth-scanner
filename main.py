@@ -4997,6 +4997,16 @@ def cmd_trial(msg):
     expiry = activar_suscripcion(chat_id, dias=TRIAL_DIAS)
     SUSCRIPTORES[chat_id]["trial_used"] = True
 
+    # Notificar al admin
+    nombre_u = msg.from_user.first_name or "Desconocido"
+    username = f"@{msg.from_user.username}" if msg.from_user.username else "sin username"
+    safe_send(ALLOWED_USER_ID,
+        f"🆕 NUEVO TRIAL ACTIVADO\n"
+        f"Nombre: {nombre_u}\n"
+        f"Username: {username}\n"
+        f"Chat ID: {chat_id}\n"
+        f"Expira: {expiry.strftime('%d/%m/%Y')}")
+
     safe_send(chat_id,
         f"✅ TRIAL ACTIVADO — 7 días gratis\n\n"
         f"Expira: {expiry.strftime('%d/%m/%Y a las %H:%M')}\n\n"
@@ -5166,54 +5176,146 @@ def cmd_suscriptores(msg):
 @bot.message_handler(commands=["ayuda"])
 def cmd_ayuda(msg):
     if not allowed(msg): return
+
+    # Mandamos en varios mensajes para que no se corte
     safe_send(msg.chat.id,
-        "GUIA COMPLETA DE COMANDOS\n\n"
-        "CRYPTO:\n"
-        "/btc — Analisis profundo BTC (derivados Binance)\n"
-        "/crypto — BTC ETH SOL BNB precios y RSI\n"
-        "/halvingbtc — Ciclo 4 años Bitcoin + proyección 2029\n\n"
-        "SEÑALES:\n"
-        "/senales_eu — Europa (RSI+MACD+VWAP+2TF)\n"
-        "/senales_us — Acciones EEUU\n"
+        "GUIA COMPLETA — ANALISIS PRO\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "CRYPTO\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/btc — Análisis profundo Bitcoin\n"
+        "Incluye: precio Binance real, Fear&Greed, dominancias BTC/ETH/USDT, funding rate, open interest, long/short ratio, liquidaciones, soportes y resistencias, análisis IA\n\n"
+        "/crypto — Resumen rápido BTC, ETH, SOL, BNB\n"
+        "Precio actual, RSI, variación diaria y semanal de las 4 cryptos principales\n\n"
+        "/halvingbtc — Ciclo de 4 años Bitcoin\n"
+        "Gráfico histórico desde 2012 con las fases Bull/Bear/Recovery marcadas, ATH real, zona suelo posible y proyección del próximo ciclo 2028-2029\n\n"
+        "⚠️ TICKERS CRYPTO: usa siempre el formato TICKER-USD\n"
+        "Ejemplos: BTC-USD, ETH-USD, SOL-USD, XRP-USD, AVAX-USD, LINK-USD\n"
+        "/analisis XRP-USD → análisis técnico de XRP\n"
+        "/valor XRP-USD → índice barato/caro de XRP")
+
+    time.sleep(0.5)
+    safe_send(msg.chat.id,
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "SEÑALES DE TRADING\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/senales_eu — Mejores setups Europa\n"
+        "Escanea IBEX 35 completo + CAC + DAX + FTSE. Filtra por RSI diario + RSI semanal + VWAP + volumen + tendencia EMA. Score mínimo 12/28. Incluye gráfico con velas, VWAP, Bollinger y niveles\n\n"
+        "/senales_us — Mejores setups EEUU\n"
+        "Escanea 60+ acciones: grandes caps (NVDA, AAPL...) + mid caps especulativas (PLTR, COIN, RKLB...). Solo acciones, sin crypto\n\n"
         "/intraday — Señales intradía 15min\n"
-        "/etfs — ETFs con señales\n\n"
-        "ANÁLISIS:\n"
+        "Para operaciones del mismo día. Usa datos de 15 minutos. Criterios: VWAP + MACD + volumen elevado. TP más cercanos que swing\n\n"
+        "/etfs — ETFs con señales\n"
+        "Índices (SPY, QQQ, IWM), sectoriales (XLK, XLF, XLE...) y temáticos (BOTZ, ARKK, SOXX, ICLN...)")
+
+    time.sleep(0.5)
+    safe_send(msg.chat.id,
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "ANÁLISIS INDIVIDUAL\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
         "/analisis TICKER — Análisis técnico completo\n"
+        "Precio real, RSI diario, RSI semanal, MACD, VWAP, EMA20, EMA50, ATR, soportes, resistencias, niveles psicológicos y análisis IA\n"
+        "Ejemplos: /analisis NVDA | /analisis SAN.MC | /analisis XRP-USD\n\n"
         "/fundamental TICKER — Análisis fundamental 0-100\n"
+        "5 categorías: Valoración (P/E, PEG, EV/EBITDA) + Salud financiera (deuda, caja, liquidez) + Rentabilidad (FCF, márgenes, ROE) + Crecimiento (ingresos, beneficios) + Potencial LP (moat, insiders, dividendo). Ajustado por tipo de empresa (utility, growth, consumer, materials, biotech). Incluye estimación precio justo, 1 año y 3 años\n"
+        "Ejemplos: /fundamental NVDA | /fundamental NKE | /fundamental SAN.MC\n\n"
         "/valor TICKER — Índice barato/caro 0-100\n"
-        "/valores — BTC/ETH/SP500/DAX/IBEX resumen\n\n"
-        "CICLO Y MERCADO:\n"
-        "/ciclo — Ciclo psicológico BTC/SP500/DAX\n"
-        "/halvingbtc — Ciclo 4 años con halvings\n"
-        "/mercados — Índices EU y EEUU\n"
+        "Estilo FREDI. 100=muy barato, 0=muy caro. Componentes distintos según tipo de activo:\n"
+        "Crypto: Fear&Greed + RSI + EMA200 + Funding Rate + DXY + Volumen\n"
+        "Acciones: RSI + EMA200 + VIX + RSI semanal + Dist. máximo 52s + Volumen\n"
+        "Ejemplos: /valor BTC-USD | /valor NVDA | /valor ^GSPC")
+
+    time.sleep(0.5)
+    safe_send(msg.chat.id,
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "CICLO Y MERCADO\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/ciclo — Ciclo psicológico de mercado\n"
+        "Muestra en qué fase del ciclo están BTC, SP500 y DAX. Con flechas de dirección, % completado, potencial restante y acción recomendada (COMPRAR/VENDER/REDUCIR). Zonas verde (compra) y roja (venta) marcadas\n\n"
+        "/mercadoahora — Snapshot visual del mercado\n"
+        "Gráfico de barras verde/rojo con variación del día: SP500, Nasdaq, DAX, IBEX, CAC, Bitcoin, Ethereum, Oro, Petróleo, DXY. Se actualiza automáticamente cada 30 minutos si hay movimientos importantes\n\n"
+        "/macro — Datos macroeconómicos\n"
+        "VIX (miedo), DXY (dólar), US10Y (bono EEUU), Oro y Petróleo WTI con variación diaria y semanal + análisis IA\n\n"
         "/sectores — Semáforo 11 sectores SP500\n"
-        "/macro — VIX, DXY, bonos, oro, petróleo\n\n"
-        "SMART MONEY:\n"
+        "Estado BULL/NEUTRO/BEAR de tecnología, finanzas, salud, energía, consumo, industrial, utilities, materiales, inmobiliario, comunicaciones\n\n"
+        "/mercados — Índices EU y EEUU\n"
+        "SP500, Dow Jones, Nasdaq, Euro Stoxx, DAX, FTSE, IBEX, CAC")
+
+    time.sleep(0.5)
+    safe_send(msg.chat.id,
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "SMART MONEY\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/smartmoney — Consenso grandes fondos\n"
+        "Detecta qué acciones están comprando simultáneamente 2 o más grandes fondos. Señal muy potente cuando Buffett + Tepper + Dalio coinciden en la misma acción\n\n"
+        "/carteras — Posiciones de grandes inversores\n"
+        "/carteras BUFFETT → Warren Buffett (Berkshire)\n"
+        "/carteras ARK → Cathie Wood (ARK Invest)\n"
+        "/carteras BURRY → Michael Burry (Scion)\n"
+        "/carteras ACKMAN → Bill Ackman (Pershing)\n"
+        "/carteras DALIO → Ray Dalio (Bridgewater)\n"
+        "/carteras TEPPER → David Tepper (Appaloosa)\n\n"
         "/insiders — Compras masivas de directivos\n"
-        "/insiders NVDA — Insiders de una empresa\n"
-        "/carteras — Grandes fondos (Buffett, ARK...)\n"
-        "/carteras BUFFETT — Posiciones de Berkshire\n"
-        "/carteras ARK — Cathie Wood\n"
-        "/carteras BURRY — Michael Burry\n\n"
-        "DETECTORES:\n"
+        "Cuando el CEO o CFO compran acciones de su propia empresa es señal muy alcista. Escanea compras >500.000 USD en los últimos 30 días\n"
+        "/insiders NVDA → insiders de Nvidia concretamente")
+
+    time.sleep(0.5)
+    safe_send(msg.chat.id,
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "DETECTORES\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
         "/infravaloradas — Acciones caídas con potencial\n"
+        "Busca acciones que han caído >20% desde máximos pero muestran señales de rebote: RSI en zona de compra, volumen creciendo silenciosamente (acumulación institucional), rebote desde mínimos. Escanea 100+ activos\n\n"
         "/bull_detector — Bull runs nacientes\n"
-        "/anomalias — Volumen anómalo posible rumor\n"
+        "Detecta sectores y acciones que están iniciando tendencias alcistas antes de que sean evidentes\n\n"
+        "/anomalias — Volumen anómalo\n"
+        "Detecta activos con volumen 2.5x superior a la media. Suele preceder noticias de M&A, resultados o movimientos institucionales\n\n"
         "/explosiones — Momentum explosivo\n"
-        "/noticias_impacto — M&A, earnings, FDA\n\n"
-        "HERRAMIENTAS:\n"
-        "/seguimiento — Ver P&L trades abiertos\n"
-        "/seguimiento add NVDA 890 865 920 950\n"
-        "/seguimiento close 1\n"
-        "/alerta NVDA 950 — Avisa cuando llegue\n"
-        "/alertas — Ver alertas activas\n"
-        "/borra_alerta 1\n"
+        "Acciones con volumen 1.8x + subida >3% + cerca de máximo anual. Las que están a punto de romper\n\n"
+        "/noticias_impacto — M&A, earnings, FDA\n"
+        "Filtra noticias de alto impacto: fusiones y adquisiciones, resultados sorpresa, aprobaciones FDA, contratos importantes")
+
+    time.sleep(0.5)
+    safe_send(msg.chat.id,
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "HERRAMIENTAS\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/seguimiento — Ver P&L de tus trades abiertos\n"
+        "/seguimiento add NVDA 890 865 920 950 → añadir trade (ticker, entrada, stop, TP1, TP2)\n"
+        "/seguimiento close 1 → cerrar el trade número 1\n\n"
+        "/alerta NVDA 950 — Alerta de precio\n"
+        "Te avisa cuando NVDA llegue a 950. Funciona 24/7 también en crypto\n"
+        "/alertas → ver alertas activas\n"
+        "/borra_alerta 1 → eliminar alerta número 1\n\n"
         "/riesgo 10000 2 NVDA 890 865\n"
-        "/backtest — Histórico aciertos sistema\n"
-        "/resumen_semana — Balance semanal\n\n"
-        "OTROS:\n"
-        "/metales /ipos /calendario /sr\n"
-        "Pregunta libre — IA responde con precio real")
+        "Calcula cuántas acciones comprar con 10.000€ arriesgando el 2%, con entrada en 890 y stop en 865\n\n"
+        "/backtest — Histórico de aciertos del sistema\n"
+        "Analiza los últimos 3 meses: cuántas señales dieron TP y cuántas tocaron stop\n\n"
+        "/resumen_semana — Balance semanal\n"
+        "Ganadores y perdedores de la semana + perspectiva para la siguiente\n\n"
+        "/valores — Vista rápida 0-100 de BTC/ETH/SP500/DAX/IBEX\n\n"
+        "/metales /ipos /calendario /oportunidades\n\n"
+        "Pregunta libre → la IA responde con datos reales actuales\n"
+        "Ejemplo: 'cómo está el sector nuclear?' o 'análisis de Tesla'")
+
+    time.sleep(0.5)
+    safe_send(msg.chat.id,
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "TU SUSCRIPCIÓN\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/mistatus → ver cuándo expira tu acceso\n"
+        "/premium → renovar suscripción (19 USDT/mes)\n"
+        "/verificar HASH → activar acceso tras pagar\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "TICKERS DE REFERENCIA\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "IBEX: SAN.MC BBVA.MC ITX.MC REP.MC TEF.MC\n"
+        "CAC: BNP.PA AIR.PA OR.PA MC.PA\n"
+        "DAX: BMW.DE SAP SIE.DE BAYN.DE\n"
+        "EEUU: AAPL MSFT NVDA AMZN GOOGL META TSLA\n"
+        "Crypto: BTC-USD ETH-USD SOL-USD XRP-USD BNB-USD\n"
+        "ETFs: SPY QQQ GLD ARKK BOTZ SOXX\n"
+        "Macro: ^VIX ^GSPC ^GDAXI GC=F CL=F")
 
 
 @bot.message_handler(func=lambda m: True)
