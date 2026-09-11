@@ -5118,6 +5118,33 @@ def job_monitor_mercado():
     safe_send(ALLOWED_USER_ID, f"ANOMALIA VOLUMEN {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
 
 
+def job_anomalias_scanner():
+    """Cada 2h dias laborables — Anomalias volumen."""
+    if not es_dia_laborable():
+        return
+    todos = US_STOCKS + EU_STOCKS[:10] + ETFS_ESPECIALES
+    anomalias = scan_anomalias(todos)
+    if not anomalias:
+        return
+    top = anomalias[:4]
+    fecha = datetime.now().strftime('%d/%m/%Y %H:%M')
+    rows = []
+    datos_ai = []
+    for a in top:
+        d1 = a['d1'] if not (a['d1'] != a['d1']) else 0.0
+        rows.append(f"{a['nombre']} ({a['ticker']}): vol {a['vol_rel']}x | hoy {d1:+.2f}% | precio {a['price']}")
+        datos_ai.append(f"{a['nombre']} ({a['ticker']}): precio actual {a['price']} USD, volumen {a['vol_rel']}x la media, variacion hoy {d1:+.2f}%")
+    bloque = "\n".join(rows)
+    prompt = (f"Anomalias de volumen detectadas hoy {fecha}:\n"
+              + "\n".join(datos_ai) +
+              "\n\nUSA SOLO los precios indicados. No uses precios de otros años.\n"
+              "1. Hay noticia detras de cada anomalia?\n"
+              "2. Cual es la mas interesante y por que\n"
+              "3. Como operar con precio exacto, stop y objetivo")
+    texto = ask_ai(prompt)
+    safe_send(ALLOWED_USER_ID, f"ANOMALIA VOLUMEN {datetime.now().strftime('%H:%M')}\n\n{bloque}\n\n{texto}")
+
+
 def job_noticias_impacto():
     """Cada 3h — Noticias alto impacto."""
     noticias = get_noticias_impacto()
