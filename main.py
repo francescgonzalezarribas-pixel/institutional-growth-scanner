@@ -26,10 +26,19 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from collections import defaultdict
 
-TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
-GROQ_API_KEY    = os.environ["GROQ_API_KEY"]
-ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", 0))
+TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
+GROQ_API_KEY     = os.environ["GROQ_API_KEY"]
+ALLOWED_USER_ID  = int(os.environ.get("ALLOWED_USER_ID", 0))
+NOWPAYMENTS_KEY  = os.environ.get("NOWPAYMENTS_API_KEY", "")
+NOWPAYMENTS_IPN  = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
+WALLET_USDT      = os.environ.get("WALLET_USDT", "")
 MADRID = pytz.timezone("Europe/Madrid")
+
+# Sistema de suscripciones
+# {chat_id: {"expiry": datetime, "trial_used": bool, "activo": bool}}
+SUSCRIPTORES = {}
+TRIAL_DIAS = 7
+PRECIO_MENSUAL = 19  # USDT
 
 SYSTEM = """Eres un analista financiero senior. Reglas:
 - Responde SIEMPRE en espanol
@@ -2941,10 +2950,71 @@ def run_backtest(stocks):
     return results
 
 
+def is_premium(chat_id):
+    """Comprueba si un usuario tiene acceso premium activo."""
+    if chat_id == ALLOWED_USER_ID:
+        return True  # El dueño siempre tiene acceso
+    sub = SUSCRIPTORES.get(chat_id)
+    if not sub:
+        return False
+    if not sub.get("activo"):
+        return False
+    expiry = sub.get("expiry")
+    if expiry and datetime.now() > expiry:
+        SUSCRIPTORES[chat_id]["activo"] = False
+        return False
+    return True
+
+
 def allowed(message):
-    if ALLOWED_USER_ID == 0:
-        return True
-    return message.from_user.id == ALLOWED_USER_ID
+    return is_premium(message.from_user.id)
+
+
+def crear_pago_nowpayments(chat_id, descripcion="Premium 1 mes"):
+    """Crea un pago en NOWPayments y devuelve el enlace."""
+    try:
+        url = "https://api.nowpayments.io/v1/invoice"
+        headers = {
+            "x-api-key": NOWPAYMENTS_KEY,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "price_amount": PRECIO_MENSUAL,
+            "price_currency": "usd",
+            "pay_currency": "usdttrc20",
+            "order_id": f"premium_{chat_id}_{int(datetime.now().timestamp())}",
+            "order_description": descripcion,
+            "ipn_callback_url": "",  # sin webhook por ahora
+            "success_url": "https://t.me/",
+            "cancel_url": "https://t.me/",
+        }
+        r = requests.post(url, json=payload, headers=headers, timeout=10)
+        data = r.json()
+        if "invoice_url" in data:
+            return data["invoice_url"], data.get("id")
+        return None, None
+    except Exception as e:
+        log.error(f"NOWPayments crear pago: {e}")
+        return None, None
+
+
+def activar_suscripcion(chat_id, dias=30):
+    """Activa o renueva la suscripción de un usuario."""
+    import datetime as dt
+    ahora = datetime.now()
+    sub = SUSCRIPTORES.get(chat_id, {})
+    # Si ya tiene suscripción activa, extender desde la fecha de expiración
+    if sub.get("activo") and sub.get("expiry") and sub["expiry"] > ahora:
+        nueva_expiry = sub["expiry"] + __import__('datetime').timedelta(days=dias)
+    else:
+        nueva_expiry = ahora + __import__('datetime').timedelta(days=dias)
+    SUSCRIPTORES[chat_id] = {
+        "activo": True,
+        "expiry": nueva_expiry,
+        "trial_used": sub.get("trial_used", False),
+        "activado": ahora,
+    }
+    return nueva_expiry
 
 
 def ask_ai(prompt, max_chars=3000):
@@ -3157,29 +3227,28 @@ def main_kb():
 
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
-    if not allowed(msg): return
-    bot.send_message(msg.chat.id,
-        "Financial Bot - Version Completa\n\n"
-        "CRYPTO:\n"
-        "/btc - Analisis profundo Bitcoin (Fear&Greed, dominancias, S/R)\n"
-        "/crypto - BTC ETH SOL BNB\n\n"
-        "MERCADO:\n"
-        "/senales_eu /senales_us - Senales con grafico\n"
-        "/etfs - ETFs indices, sectoriales, tematicos\n"
-        "/sectores - Semaforo 11 sectores SP500\n"
-        "/bull_detector - Bull runs nacientes\n"
-        "/anomalias - Volumen anomalo posible rumor\n"
-        "/noticias_impacto - M&A, earnings, FDA\n\n"
-        "HERRAMIENTAS:\n"
-        "/alerta TICKER PRECIO\n"
-        "/alertas /borra_alerta 1\n"
-        "/riesgo CAPITAL % TICKER ENTRADA STOP\n"
-        "/analisis TICKER\n"
-        "/macro /backtest /calendario\n"
-        "/metales /ipos /oportunidades\n"
-        "Pregunta libre - IA con precio actual",
-        reply_markup=main_kb()
-    )
+    chat_id = msg.from_user.id
+    nombre_usuario = msg.from_user.first_name or "inversor"
+
+    if is_premium(chat_id):
+        # Usuario con acceso — mostrar menú completo
+        bot.send_message(chat_id,
+            f"Bienvenido de nuevo {nombre_usuario}! 👋\n"
+            f"Usa /ayuda para ver todos los comandos.",
+            reply_markup=main_kb())
+        return
+
+    # Usuario sin acceso — mostrar bienvenida con trial
+    safe_send(chat_id,
+        f"Hola {nombre_usuario}! 👋\n\n"
+        f"Soy un bot de análisis financiero profesional.\n\n"
+        f"📊 Señales con RSI+MACD+VWAP\n"
+        f"🔍 Análisis fundamental 0-100\n"
+        f"📈 Ciclo Bitcoin (halvings)\n"
+        f"💰 Smart money — Buffett, ARK, Burry...\n"
+        f"⚡ Monitor mercado en tiempo real\n\n"
+        f"🎁 Prueba 7 días GRATIS: /trial\n"
+        f"💳 Suscripción: 19 USDT/mes → /premium")
 
 
 @bot.message_handler(commands=["btc"])
@@ -4906,6 +4975,192 @@ def cmd_valores(msg):
             lines.append(f"{r['nombre']}: {r['score']}/100 [{barra}]")
             lines.append(f"  {r['zona']}")
     safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
+
+
+@bot.message_handler(commands=["trial"])
+def cmd_trial(msg):
+    chat_id = msg.from_user.id
+    sub = SUSCRIPTORES.get(chat_id, {})
+
+    if sub.get("trial_used"):
+        safe_send(chat_id,
+            "Ya usaste el trial gratuito.\n\n"
+            "Para continuar con acceso completo:\n"
+            "/premium — 19 USDT/mes")
+        return
+
+    if is_premium(chat_id):
+        safe_send(chat_id, "Ya tienes acceso activo. Usa /mistatus para ver cuándo expira.")
+        return
+
+    # Activar trial 7 días
+    expiry = activar_suscripcion(chat_id, dias=TRIAL_DIAS)
+    SUSCRIPTORES[chat_id]["trial_used"] = True
+
+    safe_send(chat_id,
+        f"✅ TRIAL ACTIVADO — 7 días gratis\n\n"
+        f"Expira: {expiry.strftime('%d/%m/%Y a las %H:%M')}\n\n"
+        f"Tienes acceso completo a todos los comandos.\n"
+        f"Escribe /ayuda para ver todo lo disponible.\n\n"
+        f"Al terminar el trial puedes continuar con:\n"
+        f"/premium — 19 USDT/mes")
+
+
+@bot.message_handler(commands=["premium"])
+def cmd_premium(msg):
+    chat_id = msg.from_user.id
+
+    if is_premium(chat_id):
+        sub = SUSCRIPTORES.get(chat_id, {})
+        expiry = sub.get("expiry")
+        expiry_txt = expiry.strftime('%d/%m/%Y') if expiry else "indefinido"
+        safe_send(chat_id,
+            f"Ya tienes acceso premium activo ✅\n"
+            f"Expira: {expiry_txt}\n\n"
+            f"Para renovar antes de que expire usa /premium renovar")
+        return
+
+    enlace, payment_id = crear_pago_nowpayments(chat_id)
+
+    if enlace:
+        safe_send(chat_id,
+            f"SUSCRIPCIÓN PREMIUM\n\n"
+            f"✅ Acceso completo a todos los comandos\n"
+            f"✅ Señales automáticas diarias\n"
+            f"✅ Análisis fundamental + Smart Money\n"
+            f"✅ Monitor de mercado 24/7\n\n"
+            f"Precio: 19 USDT/mes (red TRC20)\n\n"
+            f"👇 Enlace de pago:\n{enlace}\n\n"
+            f"Después de pagar escribe /verificar para activar tu acceso.")
+    else:
+        # Fallback — pago manual
+        safe_send(chat_id,
+            f"SUSCRIPCIÓN PREMIUM — 19 USDT/mes\n\n"
+            f"Envía 19 USDT (red TRC20) a:\n"
+            f"`{WALLET_USDT}`\n\n"
+            f"Después envía el hash de la transacción aquí y activo tu acceso.")
+
+
+@bot.message_handler(commands=["verificar"])
+def cmd_verificar(msg):
+    chat_id = msg.from_user.id
+    parts = msg.text.split()
+
+    if len(parts) < 2:
+        safe_send(chat_id,
+            "Uso: /verificar HASH_TRANSACCION\n\n"
+            "Ejemplo:\n/verificar abc123def456...")
+        return
+
+    tx_hash = parts[1]
+
+    # Verificar pago en blockchain TRC20
+    try:
+        r = requests.get(
+            f"https://apilist.tronscan.org/api/transaction-info?hash={tx_hash}",
+            timeout=10
+        )
+        data = r.json()
+        confirmado = data.get("confirmed", False)
+        cantidad = 0
+
+        # Buscar USDT en los tokens transferidos
+        token_transfers = data.get("tokenTransferInfo", {})
+        if token_transfers:
+            cantidad = float(token_transfers.get("amount_str", "0")) / 1e6
+
+        if not confirmado:
+            safe_send(chat_id, "Transacción no confirmada aún. Espera unos minutos y vuelve a intentarlo.")
+            return
+
+        if cantidad >= PRECIO_MENSUAL * 0.95:  # 5% de tolerancia
+            expiry = activar_suscripcion(chat_id, dias=30)
+            safe_send(chat_id,
+                f"✅ PAGO VERIFICADO — {cantidad:.2f} USDT\n\n"
+                f"Acceso premium activado hasta {expiry.strftime('%d/%m/%Y')}\n\n"
+                f"Escribe /ayuda para ver todos los comandos disponibles.")
+            # Notificar al dueño
+            safe_send(ALLOWED_USER_ID,
+                f"💰 NUEVO SUSCRIPTOR\n"
+                f"Chat ID: {chat_id}\n"
+                f"Nombre: {msg.from_user.first_name}\n"
+                f"Pago: {cantidad:.2f} USDT\n"
+                f"TX: {tx_hash[:20]}...")
+        else:
+            safe_send(chat_id,
+                f"Pago detectado pero cantidad insuficiente ({cantidad:.2f} USDT).\n"
+                f"Se necesitan {PRECIO_MENSUAL} USDT.")
+
+    except Exception as e:
+        log.error(f"Verificar pago: {e}")
+        safe_send(chat_id,
+            "No pude verificar automáticamente.\n"
+            f"Envía el hash al administrador para verificación manual.")
+
+
+@bot.message_handler(commands=["mistatus"])
+def cmd_mistatus(msg):
+    chat_id = msg.from_user.id
+
+    if chat_id == ALLOWED_USER_ID:
+        total = len([s for s in SUSCRIPTORES.values() if s.get("activo")])
+        safe_send(chat_id, f"Eres el administrador.\nSuscriptores activos: {total}")
+        return
+
+    sub = SUSCRIPTORES.get(chat_id)
+    if not sub or not sub.get("activo"):
+        safe_send(chat_id,
+            "No tienes suscripción activa.\n\n"
+            "/trial — 7 días gratis\n"
+            "/premium — 19 USDT/mes")
+        return
+
+    expiry = sub.get("expiry")
+    dias_restantes = (expiry - datetime.now()).days if expiry else 0
+    tipo = "TRIAL" if sub.get("trial_used") and dias_restantes > 0 else "PREMIUM"
+
+    safe_send(chat_id,
+        f"ESTADO DE TU SUSCRIPCIÓN\n\n"
+        f"Tipo: {tipo}\n"
+        f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'N/D'}\n"
+        f"Días restantes: {dias_restantes}\n\n"
+        f"{'Renueva con /premium' if dias_restantes < 5 else '✅ Acceso activo'}")
+
+
+@bot.message_handler(commands=["activar"])
+def cmd_activar(msg):
+    """Solo el administrador puede activar manualmente."""
+    if msg.from_user.id != ALLOWED_USER_ID:
+        return
+    parts = msg.text.split()
+    if len(parts) < 2:
+        safe_send(msg.chat.id, "Uso: /activar CHAT_ID [dias]\nEjemplo: /activar 123456789 30")
+        return
+    try:
+        target_id = int(parts[1])
+        dias = int(parts[2]) if len(parts) > 2 else 30
+        expiry = activar_suscripcion(target_id, dias=dias)
+        safe_send(msg.chat.id, f"✅ Activado usuario {target_id} hasta {expiry.strftime('%d/%m/%Y')}")
+        safe_send(target_id, f"✅ Tu acceso premium ha sido activado hasta {expiry.strftime('%d/%m/%Y')}\n\nEscribe /ayuda para ver todos los comandos.")
+    except Exception as e:
+        safe_send(msg.chat.id, f"Error: {e}")
+
+
+@bot.message_handler(commands=["suscriptores"])
+def cmd_suscriptores(msg):
+    """Solo el administrador."""
+    if msg.from_user.id != ALLOWED_USER_ID:
+        return
+    activos = [(cid, s) for cid, s in SUSCRIPTORES.items() if s.get("activo")]
+    if not activos:
+        safe_send(msg.chat.id, "Sin suscriptores activos.")
+        return
+    lines = [f"SUSCRIPTORES ACTIVOS: {len(activos)}\n"]
+    for cid, s in activos:
+        expiry = s.get("expiry")
+        dias = (expiry - datetime.now()).days if expiry else 0
+        lines.append(f"ID: {cid} — {dias} días restantes")
+    safe_send(msg.chat.id, "\n".join(lines))
 
 
 @bot.message_handler(commands=["ayuda"])
