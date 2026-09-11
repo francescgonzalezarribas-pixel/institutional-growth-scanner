@@ -967,6 +967,7 @@ def calcular_indice_valor(ticker):
         "ticker": ticker,
         "nombre": nombre(ticker),
         "price": d["price"],
+        "cambio_hoy": d.get("d1", 0),
         "score": score_final,
         "zona": zona,
         "componentes": componentes,
@@ -975,19 +976,19 @@ def calcular_indice_valor(ticker):
 
 
 def generate_valor_gauge(resultado):
-    """Genera gauge visual con velocimetro + barras de componentes estilo FREDI."""
+    """Genera gauge visual mejorado — velocimetro + barras de componentes legibles."""
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     import numpy as np
 
     componentes = resultado.get("componentes", {})
     n_comp = len(componentes)
+    tipo = resultado.get("tipo", "").upper()
 
-    # Layout: velocimetro arriba, barras abajo
-    fig = plt.figure(figsize=(10, 7 + n_comp * 0.5))
+    fig = plt.figure(figsize=(12, 8 + n_comp * 0.55))
     fig.patch.set_facecolor('#0d1117')
 
-    # Velocimetro (parte superior)
+    # Velocimetro superior
     ax = fig.add_axes([0.05, 0.45, 0.90, 0.50], projection='polar')
     ax.set_facecolor('#0d1117')
 
@@ -999,13 +1000,13 @@ def generate_valor_gauge(resultado):
         elif i < 65:  color = '#FFCC00'
         elif i < 80:  color = '#99DD00'
         else:         color = '#00CC44'
-        ax.barh(1, theta[i] - theta[i+1], left=theta[i+1], height=0.4, color=color, edgecolor='none')
+        ax.barh(1, theta[i] - theta[i+1], left=theta[i+1], height=0.45, color=color, edgecolor='none')
 
     score = resultado['score']
     angle = np.pi - (score / 100 * np.pi)
-    ax.plot([angle, angle], [0, 1.08], color='white', linewidth=5, zorder=5)
-    ax.plot(angle, 0, 'o', color='white', markersize=20, zorder=6)
-    ax.plot(angle, 0, 'o', color='#0d1117', markersize=10, zorder=7)
+    ax.plot([angle, angle], [0, 1.10], color='white', linewidth=6, zorder=5)
+    ax.plot(angle, 0, 'o', color='white', markersize=22, zorder=6)
+    ax.plot(angle, 0, 'o', color='#0d1117', markersize=11, zorder=7)
 
     ax.set_ylim(0, 1.35)
     ax.set_theta_zero_location('E')
@@ -1013,27 +1014,38 @@ def generate_valor_gauge(resultado):
     ax.set_thetamin(0)
     ax.set_thetamax(180)
     ax.set_xticks([np.pi, 3*np.pi/4, np.pi/2, np.pi/4, 0])
-    ax.set_xticklabels(['0\nCARO', '25', '50\nNEUTRAL', '75', '100\nBARATÉ'],
-                        color='white', fontsize=9, fontweight='bold')
+    ax.set_xticklabels(['0\nCARO', '25', '50\nNEUTRAL', '75', '100\nBARATÓ'],
+                        color='white', fontsize=10, fontweight='bold')
     ax.set_yticks([])
     ax.spines['polar'].set_visible(False)
     ax.grid(False)
 
-    # Score central
-    fig.text(0.5, 0.47, f"{score}/100", ha='center', va='center',
-             fontsize=32, color='white', fontweight='bold')
-
-    # Zona
+    # Score y zona
     zona_color = '#FF3333' if score < 30 else '#FF7700' if score < 45 else '#FFCC00' if score < 65 else '#99DD00' if score < 80 else '#00CC44'
-    fig.text(0.5, 0.42, resultado['zona'], ha='center', va='center',
-             fontsize=11, color=zona_color, fontweight='bold')
+    fig.text(0.5, 0.475, f"{score}/100", ha='center', va='center',
+             fontsize=34, color='white', fontweight='bold')
+    fig.text(0.5, 0.430, resultado['zona'], ha='center', va='center',
+             fontsize=13, color=zona_color, fontweight='bold')
 
-    # Titulo
-    fig.text(0.5, 0.97, f"{resultado['nombre']} ({resultado['ticker']})  —  {resultado['price']}",
-             ha='center', va='top', fontsize=13, color='white', fontweight='bold')
+    # Precio actual y tipo
+    precio = resultado.get('price', '')
+    cambio = resultado.get('cambio_hoy', 0)
+    cambio_txt = f"  ({cambio:+.2f}% hoy)" if cambio else ""
+    fig.text(0.5, 0.975, f"{resultado['nombre']} ({resultado['ticker']})",
+             ha='center', va='top', fontsize=14, color='white', fontweight='bold')
+    fig.text(0.5, 0.950, f"{precio} USD{cambio_txt}",
+             ha='center', va='top', fontsize=11, color='#AAAAAA')
+    if tipo:
+        fig.text(0.5, 0.927, f"Tipo: {tipo}",
+                ha='center', va='top', fontsize=9, color='#666666')
 
-    # Barras de componentes (parte inferior)
-    ax2 = fig.add_axes([0.05, 0.02, 0.90, 0.38])
+    # Separador
+    fig.text(0.5, 0.408, '─' * 60, ha='center', color='#333333', fontsize=8)
+    fig.text(0.5, 0.400, 'COMPONENTES', ha='center',
+             fontsize=10, color='#666666', fontweight='bold')
+
+    # Barras componentes — más grandes
+    ax2 = fig.add_axes([0.05, 0.03, 0.90, 0.36])
     ax2.set_facecolor('#0d1117')
     ax2.set_xlim(0, 10)
     ax2.set_ylim(-0.5, n_comp - 0.5)
@@ -1044,31 +1056,29 @@ def generate_valor_gauge(resultado):
         val = datos['valor']
         y = idx
 
-        # Fondo barra
-        ax2.barh(y, 10, height=0.55, left=0, color='#1a1a2e', zorder=1)
+        # Fondo
+        ax2.barh(y, 10, height=0.65, left=0, color='#1a1a2e', zorder=1)
 
         # Barra coloreada
         bar_color = '#FF3333' if pts <= 3 else '#FF7700' if pts <= 5 else '#FFCC00' if pts <= 7 else '#00CC44'
-        ax2.barh(y, pts, height=0.55, left=0, color=bar_color, zorder=2)
+        ax2.barh(y, pts, height=0.65, left=0, color=bar_color, alpha=0.9, zorder=2)
 
         # Nombre componente
-        ax2.text(-0.1, y, nombre_c, va='center', ha='right',
-                color='#AAAAAA', fontsize=9, fontweight='bold')
+        ax2.text(-0.2, y, nombre_c, va='center', ha='right',
+                color='white', fontsize=11, fontweight='bold')
 
-        # Valor
-        ax2.text(pts + 0.1, y, str(val), va='center', ha='left',
-                color='white', fontsize=8)
+        # Valor en la barra
+        ax2.text(pts + 0.15, y, str(val), va='center', ha='left',
+                color='#CCCCCC', fontsize=9)
 
         # Puntuacion
-        ax2.text(10.1, y, f"{pts}/10", va='center', ha='left',
-                color=bar_color, fontsize=9, fontweight='bold')
+        ax2.text(10.2, y, f"{pts}/10", va='center', ha='left',
+                color=bar_color, fontsize=11, fontweight='bold')
 
-    ax2.set_xlim(-3, 11)
-    fig.text(0.5, 0.40, 'COMPONENTES', ha='center',
-             fontsize=9, color='#666666', fontweight='bold')
+    ax2.set_xlim(-3.5, 11.5)
 
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117', bbox_inches='tight')
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
     plt.close()
     buf.seek(0)
     return buf
