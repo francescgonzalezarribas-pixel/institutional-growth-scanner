@@ -4,6 +4,7 @@ yfinance==0.2.52
 feedparser>=6.0.10
 requests>=2.31.0
 pandas>=2.0.0
+
 numpy>=1.24.0
 pytz>=2024.1
 apscheduler>=3.10.0
