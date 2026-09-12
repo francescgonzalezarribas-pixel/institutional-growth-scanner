@@ -1313,16 +1313,23 @@ def calcular_indice_valor(ticker):
         componentes["EMA 200"] = {"valor": "N/D", "puntos": 5}
 
     if es_crypto:
-        # RSI diario — útil para timing de entrada
-        rsi = d["rsi"]
-        if rsi < 25:   pts_rsi = 10; rsi_txt = f"{rsi} — sobreventa extrema"
-        elif rsi < 35: pts_rsi = 8;  rsi_txt = f"{rsi} — sobreventa"
-        elif rsi < 45: pts_rsi = 6;  rsi_txt = f"{rsi} — zona de compra"
-        elif rsi < 55: pts_rsi = 5;  rsi_txt = f"{rsi} — neutral"
-        elif rsi < 65: pts_rsi = 3;  rsi_txt = f"{rsi} — sobrecompra leve"
-        elif rsi < 75: pts_rsi = 2;  rsi_txt = f"{rsi} — sobrecompra"
-        else:          pts_rsi = 1;  rsi_txt = f"{rsi} — sobrecompra extrema"
-        componentes["RSI 14d"] = {"valor": rsi_txt, "puntos": pts_rsi}
+        log.info(f"calcular_indice_valor {ticker}: entrando bloque crypto")
+        # RSI diario
+        try:
+            rsi = d["rsi"]
+            if rsi < 25:   pts_rsi = 10; rsi_txt = f"{rsi} — sobreventa extrema"
+            elif rsi < 35: pts_rsi = 8;  rsi_txt = f"{rsi} — sobreventa"
+            elif rsi < 45: pts_rsi = 6;  rsi_txt = f"{rsi} — zona de compra"
+            elif rsi < 55: pts_rsi = 5;  rsi_txt = f"{rsi} — neutral"
+            elif rsi < 65: pts_rsi = 3;  rsi_txt = f"{rsi} — sobrecompra leve"
+            elif rsi < 75: pts_rsi = 2;  rsi_txt = f"{rsi} — sobrecompra"
+            else:          pts_rsi = 1;  rsi_txt = f"{rsi} — sobrecompra extrema"
+            componentes["RSI 14d"] = {"valor": rsi_txt, "puntos": pts_rsi}
+            log.info(f"calcular_indice_valor {ticker}: RSI OK {rsi}")
+        except Exception as e:
+            log.error(f"calcular_indice_valor {ticker}: RSI error: {e}")
+            pts_rsi = 5
+            componentes["RSI 14d"] = {"valor": "N/D", "puntos": 5}
 
         # 1. FEAR & GREED
         fg = get_fear_greed()
@@ -1491,6 +1498,7 @@ def calcular_indice_valor(ticker):
         max_pts = 60
 
     score_final = max(0, min(100, round(total_pts / max_pts * 100)))
+    log.info(f"calcular_indice_valor {ticker}: score={score_final} total_pts={total_pts} max_pts={max_pts}")
 
     if score_final >= 80:    zona = "BARATO — ACUMULACION FUERTE"
     elif score_final >= 65:  zona = "BARATO — BUENA ZONA DE COMPRA"
