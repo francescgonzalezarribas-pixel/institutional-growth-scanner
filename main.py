@@ -375,6 +375,97 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     return macd, sig
 
 
+def fetch_stooq(ticker, days=100):
+    """
+    Obtiene datos históricos via Stooq — alternativa a yfinance para índices.
+    Sin rate limit, sin bloqueo de IPs de servidor.
+    Tickers: ^SPX, ^NDX, ^GDAX, ^IBEX, ^VIX, etc.
+    """
+    import datetime as dt_mod
+    # Convertir tickers yfinance a formato Stooq
+    stooq_map = {
+        "^GSPC": "^spx",   "^IXIC": "^ndx",   "^GDAXI": "^dax",
+        "^IBEX": "^ibex",  "^FCHI": "^cac",    "^FTSE": "^ukx",
+        "^VIX":  "^vix",   "^TNX":  "^tnx",    "DX-Y.NYB": "usdidx",
+        "GC=F":  "xauusd", "CL=F":  "cl.f",    "^RUT": "^rut",
+        "^STOXX50E": "^sx5e",
+    }
+    stooq_ticker = stooq_map.get(ticker, ticker.lower().replace("^", "").replace("=f", ".f"))
+
+    try:
+        fecha_ini = (dt_mod.date.today() - dt_mod.timedelta(days=days+30)).strftime("%Y%m%d")
+        fecha_fin = dt_mod.date.today().strftime("%Y%m%d")
+        url = f"https://stooq.com/q/d/l/?s={stooq_ticker}&d1={fecha_ini}&d2={fecha_fin}&i=d"
+        r = requests.get(url, timeout=10,
+                        headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200 or "No data" in r.text or len(r.text) < 50:
+            return None
+
+        from io import StringIO
+        df = pd.read_csv(StringIO(r.text))
+        if df.empty or len(df) < 5:
+            return None
+
+        df.columns = [c.strip() for c in df.columns]
+        df = df.sort_values("Date")
+
+        c   = df["Close"].astype(float)
+        h   = df["High"].astype(float)
+        lo  = df["Low"].astype(float)
+        vol = df["Volume"].astype(float) if "Volume" in df.columns else pd.Series([1e6]*len(c))
+
+        price = float(c.iloc[-1])
+        d1  = float((price - c.iloc[-2]) / c.iloc[-2] * 100) if len(c) > 1 else 0
+        d5  = float((price - c.iloc[-6]) / c.iloc[-6] * 100) if len(c) > 5 else 0
+        d20 = float((price - c.iloc[-21]) / c.iloc[-21] * 100) if len(c) > 20 else 0
+
+        hi52 = float(h.max()); lo52 = float(lo.min())
+        pivot = (h.iloc[-1] + lo.iloc[-1] + price) / 3
+        r1 = round(2*pivot - lo.iloc[-1], 2); s1 = round(2*pivot - h.iloc[-1], 2)
+        hi20 = float(h.tail(20).max()); lo20 = float(lo.tail(20).min())
+        rng = hi20 - lo20
+        r2 = round(hi20 + rng*0.382, 2); s2 = round(lo20 - rng*0.382, 2)
+
+        rsi = float(calc_rsi(c).iloc[-1]) if len(c) >= 14 else 50
+        macd_l, macd_s = calc_macd(c)
+        macd_cross_up = (len(macd_l) >= 2 and
+                        macd_l.iloc[-1] > macd_s.iloc[-1] and
+                        macd_l.iloc[-2] <= macd_s.iloc[-2])
+
+        avg_vol = vol.tail(20).mean()
+        vol_rel = float(vol.iloc[-1] / avg_vol) if avg_vol > 0 else 1.0
+        ema20 = c.ewm(span=20, adjust=False).mean()
+        ema50 = c.ewm(span=50, adjust=False).mean()
+        typical = (h + lo + c) / 3
+        vwap_val = float((typical * vol).tail(20).sum() / vol.tail(20).sum()) if vol.tail(20).sum() > 0 else price
+        hl = h - lo; hc = (h - c.shift()).abs(); lc = (lo - c.shift()).abs()
+        tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+        atr = float(tr.ewm(span=14, adjust=False).mean().iloc[-1])
+        max20 = hi20
+        dist_breakout = round((max20 - price) / max20 * 100, 2) if max20 > 0 else 99
+
+        return {
+            "ticker": ticker, "nombre": nombre(ticker), "price": round(price, 2),
+            "d1": round(d1, 2), "d5": round(d5, 2), "d20": round(d20, 2),
+            "hi52": round(hi52, 2), "lo52": round(lo52, 2),
+            "pivot": round(pivot, 2), "r1": r1, "r2": r2, "s1": s1, "s2": s2,
+            "rsi": round(rsi, 1), "macd_cross_up": macd_cross_up,
+            "vol_rel": round(vol_rel, 2), "atr": round(atr, 2),
+            "ema20": round(float(ema20.iloc[-1]), 2), "ema50": round(float(ema50.iloc[-1]), 2),
+            "sobre_ema20": price > float(ema20.iloc[-1]),
+            "sobre_ema50": price > float(ema50.iloc[-1]),
+            "tendencia_alcista": float(ema20.iloc[-1]) > float(ema50.iloc[-1]),
+            "ema20_subiendo": float(ema20.iloc[-1]) > float(ema20.iloc[-3]),
+            "vwap": round(vwap_val, 2), "sobre_vwap": price > vwap_val,
+            "max20": round(max20, 2), "dist_breakout": dist_breakout,
+            "cerca_breakout": dist_breakout <= 2.0,
+            "fuerza_relativa": d20 > 5,
+        }
+    except Exception as e:
+        log.warning(f"fetch_stooq {ticker}: {e}")
+        return None
+
+
 def fetch_fmp_quote(ticker, days=100):
     """
     Obtiene datos de precio via Financial Modeling Prep API.
@@ -602,6 +693,14 @@ def _fetch_quote_real(ticker, period="3mo"):
             except Exception as e:
                 log.warning(f"Binance fetch_quote {ticker}: {e}")
                 # Continuar con yfinance como fallback
+
+    # Para índices usar Stooq (sin rate limit de IP)
+    STOOQ_TICKERS = {"^GSPC","^IXIC","^GDAXI","^IBEX","^FCHI","^FTSE",
+                     "^VIX","^TNX","DX-Y.NYB","GC=F","CL=F","^RUT","^STOXX50E"}
+    if ticker in STOOQ_TICKERS or ticker.startswith("^") or "=F" in ticker:
+        resultado = fetch_stooq(ticker)
+        if resultado:
+            return resultado
 
     # Para acciones usar FMP si está disponible (sin rate limit de IP)
     if FMP_API_KEY and "-USD" not in ticker and not ticker.startswith("^") and "=F" not in ticker:
