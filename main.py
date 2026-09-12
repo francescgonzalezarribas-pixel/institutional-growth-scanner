@@ -12,20 +12,6 @@ Financial Telegram Bot - Version Completa v6
 
 import os, io, logging, time, feedparser
 import yfinance as yf
-
-# Fix Yahoo Finance rate limit — User-Agent personalizado
-import requests as _req_session
-_yf_session = _req_session.Session()
-_yf_session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-})
-try:
-    from requests import Session as _Session
-    yf.base.requests = _yf_session
-except:
-    pass
 import requests, pytz
 import numpy as np
 import pandas as pd
@@ -40,20 +26,10 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from collections import defaultdict
 
-TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
-GROQ_API_KEY     = os.environ["GROQ_API_KEY"]
-ALLOWED_USER_ID  = int(os.environ.get("ALLOWED_USER_ID", 0))
-NOWPAYMENTS_KEY  = os.environ.get("NOWPAYMENTS_API_KEY", "")
-NOWPAYMENTS_IPN  = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
-WALLET_USDT      = os.environ.get("WALLET_USDT", "")
-FMP_API_KEY      = os.environ.get("FMP_API_KEY", "")
+TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
+GROQ_API_KEY    = os.environ["GROQ_API_KEY"]
+ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", 0))
 MADRID = pytz.timezone("Europe/Madrid")
-
-# Sistema de suscripciones
-# {chat_id: {"expiry": datetime, "trial_used": bool, "activo": bool}}
-SUSCRIPTORES = {}
-TRIAL_DIAS = 7
-PRECIO_MENSUAL = 19  # USDT
 
 SYSTEM = """Eres un analista financiero senior. Reglas:
 - Responde SIEMPRE en espanol
@@ -375,255 +351,13 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     return macd, sig
 
 
-def fetch_fmp_quote(ticker, days=100):
-    """
-    Obtiene datos de precio via Financial Modeling Prep API.
-    Sin rate limit de IP — reemplaza yfinance para acciones.
-    """
-    if not FMP_API_KEY:
-        return None
-    try:
-        import datetime as dt_mod
-        fecha_ini = (dt_mod.date.today() - dt_mod.timedelta(days=days+30)).strftime("%Y-%m-%d")
-
-        # Precio actual
-        r_quote = requests.get(
-            f"https://financialmodelingprep.com/stable/quote",
-            params={"symbol": ticker, "apikey": FMP_API_KEY},
-            timeout=8
-        )
-        if r_quote.status_code != 200:
-            return None
-        quote_data = r_quote.json()
-        if not quote_data or not isinstance(quote_data, list):
-            return None
-        q = quote_data[0]
-
-        # Histórico OHLCV
-        r_hist = requests.get(
-            f"https://financialmodelingprep.com/stable/historical-price-eod/light",
-            params={"symbol": ticker, "from": fecha_ini, "apikey": FMP_API_KEY},
-            timeout=10
-        )
-        if r_hist.status_code != 200:
-            return None
-        hist_data = r_hist.json()
-        if not hist_data or not isinstance(hist_data, list) or len(hist_data) < 5:
-            return None
-
-        # Ordenar por fecha ascendente
-        hist_data.sort(key=lambda x: x.get("date", ""))
-
-        closes = [float(x["close"]) for x in hist_data]
-        highs  = [float(x["high"])  for x in hist_data]
-        lows   = [float(x["low"])   for x in hist_data]
-        vols   = [float(x.get("volume", 0)) for x in hist_data]
-
-        c   = pd.Series(closes)
-        h   = pd.Series(highs)
-        lo  = pd.Series(lows)
-        vol = pd.Series(vols)
-
-        price = float(q.get("price", c.iloc[-1]))
-        d1    = float(q.get("changesPercentage", 0))
-        d5    = float((price - c.iloc[-6])  / c.iloc[-6]  * 100) if len(c) > 5  else 0
-        d20   = float((price - c.iloc[-21]) / c.iloc[-21] * 100) if len(c) > 20 else 0
-
-        hi52  = float(q.get("yearHigh",  h.max()))
-        lo52  = float(q.get("yearLow",   lo.min()))
-        pivot = (h.iloc[-1] + lo.iloc[-1] + price) / 3
-        r1 = round(2*pivot - lo.iloc[-1], 2)
-        s1 = round(2*pivot - h.iloc[-1],  2)
-        hi20 = h.tail(20).max(); lo20 = lo.tail(20).min()
-        rng  = hi20 - lo20
-        r2   = round(hi20 + rng * 0.382, 2)
-        s2   = round(lo20 - rng * 0.382, 2)
-
-        rsi = float(calc_rsi(c).iloc[-1]) if len(c) >= 14 else 50
-        macd_l, macd_s = calc_macd(c)
-        macd_cross_up = (len(macd_l) >= 2 and
-                        macd_l.iloc[-1] > macd_s.iloc[-1] and
-                        macd_l.iloc[-2] <= macd_s.iloc[-2])
-
-        avg_vol = vol.tail(20).mean()
-        vol_rel = float(vol.iloc[-1] / avg_vol) if avg_vol > 0 else 1.0
-
-        ema20 = c.ewm(span=20, adjust=False).mean()
-        ema50 = c.ewm(span=50, adjust=False).mean()
-        typical = (h + lo + c) / 3
-        vwap_val = float((typical * vol).tail(20).sum() / vol.tail(20).sum()) if vol.tail(20).sum() > 0 else price
-
-        hl  = h - lo
-        hc  = (h - c.shift()).abs()
-        lc  = (lo - c.shift()).abs()
-        tr  = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-        atr = float(tr.ewm(span=14, adjust=False).mean().iloc[-1])
-
-        max20 = float(hi20)
-        dist_breakout = round((max20 - price) / max20 * 100, 2) if max20 > 0 else 99
-
-        return {
-            "ticker": ticker, "nombre": q.get("name", nombre(ticker)), "price": round(price, 2),
-            "d1": round(d1, 2), "d5": round(d5, 2), "d20": round(d20, 2),
-            "hi52": round(hi52, 2), "lo52": round(lo52, 2),
-            "pivot": round(pivot, 2), "r1": r1, "r2": r2, "s1": s1, "s2": s2,
-            "rsi": round(rsi, 1), "macd_cross_up": macd_cross_up,
-            "vol_rel": round(vol_rel, 2), "atr": round(atr, 2),
-            "ema20": round(float(ema20.iloc[-1]), 2), "ema50": round(float(ema50.iloc[-1]), 2),
-            "sobre_ema20": price > float(ema20.iloc[-1]),
-            "sobre_ema50": price > float(ema50.iloc[-1]),
-            "tendencia_alcista": float(ema20.iloc[-1]) > float(ema50.iloc[-1]),
-            "ema20_subiendo": float(ema20.iloc[-1]) > float(ema20.iloc[-3]),
-            "vwap": round(vwap_val, 2), "sobre_vwap": price > vwap_val,
-            "max20": round(max20, 2), "dist_breakout": dist_breakout,
-            "cerca_breakout": dist_breakout <= 2.0,
-            "fuerza_relativa": d20 > 5,
-        }
-    except Exception as e:
-        log.warning(f"fetch_fmp_quote {ticker}: {e}")
-        return None
-
-
-# Cache para evitar rate limit de Yahoo Finance
-_QUOTE_CACHE = {}
-_QUOTE_CACHE_TTL = 300  # 5 minutos
-
-# Tickers macro que se usan en múltiples funciones — precalentar caché
-MACRO_CACHE_TICKERS = ["DX-Y.NYB", "^VIX", "^TNX", "GC=F", "CL=F", "IBIT", "^GSPC", "^GDAXI", "^IBEX"]
-
-
-def precalentar_cache():
-    """Descarga tickers macro en batch al arrancar para evitar rate limit."""
-    try:
-        log.info("Precalentando caché de tickers macro...")
-        batch = batch_download(MACRO_CACHE_TICKERS, period="1mo")
-        now = datetime.now().timestamp()
-        for t, df in batch.items():
-            d = quote_from_df(t, df)
-            if d:
-                _QUOTE_CACHE[f"{t}_1mo"] = (d, now)
-                _QUOTE_CACHE[f"{t}_3mo"] = (d, now)
-        log.info(f"Caché precalentado: {len(batch)} tickers")
-    except Exception as e:
-        log.warning(f"precalentar_cache: {e}")
-
-
 def fetch_quote(ticker, period="3mo"):
-    # Caché 5 minutos para evitar rate limit
-    cache_key = f"{ticker}_{period}"
-    now = datetime.now().timestamp()
-    if cache_key in _QUOTE_CACHE:
-        data, ts = _QUOTE_CACHE[cache_key]
-        if now - ts < _QUOTE_CACHE_TTL:
-            return data
-
-    resultado = _fetch_quote_real(ticker, period)
-    if resultado:
-        _QUOTE_CACHE[cache_key] = (resultado, now)
-    return resultado
-
-
-def _fetch_quote_real(ticker, period="3mo"):
-    if "-USD" in ticker or ticker in ["BTC", "ETH", "SOL", "BNB"]:
-        binance_map = {
-            "BTC-USD": "BTCUSDT", "ETH-USD": "ETHUSDT",
-            "SOL-USD": "SOLUSDT", "BNB-USD": "BNBUSDT",
-            "XRP-USD": "XRPUSDT", "ADA-USD": "ADAUSDT",
-            "AVAX-USD": "AVAXUSDT", "LINK-USD": "LINKUSDT",
-            "DOT-USD": "DOTUSDT", "MATIC-USD": "MATICUSDT",
-            "DOGE-USD": "DOGEUSDT",
-        }
-        symbol = binance_map.get(ticker)
-        if symbol:
-            try:
-                # Klines diarios de Binance
-                r = requests.get(
-                    f"https://api.binance.com/api/v3/klines",
-                    params={"symbol": symbol, "interval": "1d", "limit": 100},
-                    timeout=8
-                )
-                if r.status_code == 200:
-                    klines = r.json()
-                    if len(klines) >= 5:
-                        closes = [float(k[4]) for k in klines]
-                        highs  = [float(k[2]) for k in klines]
-                        lows   = [float(k[3]) for k in klines]
-                        vols   = [float(k[5]) for k in klines]
-                        c  = pd.Series(closes)
-                        h  = pd.Series(highs)
-                        lo = pd.Series(lows)
-                        vol = pd.Series(vols)
-                        price = c.iloc[-1]
-                        d1  = (price - c.iloc[-2]) / c.iloc[-2] * 100 if len(c) > 1 else 0
-                        d5  = (price - c.iloc[-6]) / c.iloc[-6] * 100 if len(c) > 5 else 0
-                        d20 = (price - c.iloc[-21]) / c.iloc[-21] * 100 if len(c) > 20 else 0
-                        hi52 = h.max(); lo52 = lo.min()
-                        pivot = (h.iloc[-1] + lo.iloc[-1] + price) / 3
-                        r1 = 2*pivot - lo.iloc[-1]; s1 = 2*pivot - h.iloc[-1]
-                        hi20 = h.tail(20).max(); lo20 = lo.tail(20).min()
-                        rng = hi20 - lo20
-                        r2 = hi20 + rng * 0.382; s2 = lo20 - rng * 0.382
-                        rsi = calc_rsi(c).iloc[-1] if len(c) >= 14 else 50
-                        macd_l, macd_s = calc_macd(c)
-                        macd_cross_up = (len(macd_l) >= 2 and
-                                        macd_l.iloc[-1] > macd_s.iloc[-1] and
-                                        macd_l.iloc[-2] <= macd_s.iloc[-2])
-                        avg_vol = vol.tail(20).mean()
-                        vol_rel = vol.iloc[-1] / avg_vol if avg_vol > 0 else 1.0
-                        ema20 = c.ewm(span=20, adjust=False).mean()
-                        ema50 = c.ewm(span=50, adjust=False).mean()
-                        typical = (h + lo + c) / 3
-                        vwap = (typical * vol).tail(20).sum() / vol.tail(20).sum()
-                        high_low = h - lo
-                        high_close = (h - c.shift()).abs()
-                        low_close = (lo - c.shift()).abs()
-                        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-                        atr = tr.ewm(span=14, adjust=False).mean().iloc[-1]
-                        max20 = hi20; dist_breakout = round((max20 - price) / max20 * 100, 2)
-                        cerca_breakout = dist_breakout <= 2.0
-                        fuerza_relativa = d20 > 5
-                        return {
-                            "ticker": ticker, "nombre": nombre(ticker), "price": round(price, 2),
-                            "d1": round(d1, 2), "d5": round(d5, 2), "d20": round(d20, 2),
-                            "hi52": round(hi52, 2), "lo52": round(lo52, 2),
-                            "pivot": round(pivot, 2), "r1": round(r1, 2), "r2": round(r2, 2),
-                            "s1": round(s1, 2), "s2": round(s2, 2),
-                            "rsi": round(rsi, 1), "macd_cross_up": macd_cross_up,
-                            "vol_rel": round(vol_rel, 2), "atr": round(atr, 2),
-                            "ema20": round(ema20.iloc[-1], 2), "ema50": round(ema50.iloc[-1], 2),
-                            "sobre_ema20": price > ema20.iloc[-1],
-                            "sobre_ema50": price > ema50.iloc[-1],
-                            "tendencia_alcista": ema20.iloc[-1] > ema50.iloc[-1],
-                            "ema20_subiendo": ema20.iloc[-1] > ema20.iloc[-3],
-                            "vwap": round(vwap, 2), "sobre_vwap": price > vwap,
-                            "max20": round(max20, 2), "dist_breakout": dist_breakout,
-                            "cerca_breakout": cerca_breakout, "fuerza_relativa": fuerza_relativa,
-                        }
-            except Exception as e:
-                log.warning(f"Binance fetch_quote {ticker}: {e}")
-                # Continuar con yfinance como fallback
-
-    # Para acciones usar FMP si está disponible (sin rate limit de IP)
-    if FMP_API_KEY and "-USD" not in ticker and not ticker.startswith("^") and "=F" not in ticker:
-        resultado = fetch_fmp_quote(ticker)
-        if resultado:
-            return resultado
-
-    # yfinance como fallback para índices, ETFs y cuando FMP falla
+    # Intenta con el periodo solicitado, luego fallback
     for p in [period, "1mo", "3mo"]:
         try:
-            tk = yf.Ticker(ticker)
-            hist = tk.history(period=p)
-            # Si falla, intentar con download
-            if hist.empty or len(hist) < 5:
-                hist = yf.download(ticker, period=p, progress=False, auto_adjust=True)
+            hist = yf.Ticker(ticker).history(period=p)
             if hist.empty or len(hist) < 5:
                 continue
-
-            # Fix yfinance 1.4.x — puede devolver MultiIndex columns
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-
             c, h, lo = hist["Close"], hist["High"], hist["Low"]
             vol = hist["Volume"]
             price = c.iloc[-1]
@@ -804,57 +538,31 @@ def get_binance_derivatives(symbol="BTCUSDT"):
 
     # 5. Liquidaciones ultimas 24h
     try:
-        r2 = requests.get(
-            f"https://fapi.binance.com/fapi/v1/allForceOrders",
-            params={"symbol": symbol, "limit": 100},
+        r = requests.get(
+            f"https://fapi.binance.com/futures/data/takerlongshortRatio"
+            f"?symbol={symbol}&period=1h&limit=24",
             timeout=6
         )
-        if r2.status_code == 200 and r2.text and r2.text.strip():
-            orders = r2.json()
-            if isinstance(orders, list):
-                liq_long = sum(float(o["origQty"]) * float(o["price"])
-                              for o in orders if o.get("side") == "SELL")
-                liq_short = sum(float(o["origQty"]) * float(o["price"])
-                               for o in orders if o.get("side") == "BUY")
-                resultado["liquidaciones"] = {
-                    "longs_m": round(liq_long / 1e6, 1),
-                    "shorts_m": round(liq_short / 1e6, 1),
-                }
-    except Exception as e:
-        log.debug(f"Liquidaciones: {e}")
-
-    return resultado
-
-
-def get_google_trends(keyword="Bitcoin", timeframe="today 3-m"):
-    """
-    Obtiene el interés de búsqueda de Google Trends.
-    Retorna valor 0-100 donde:
-    - 0-20 = nadie busca = zona de suelo (SEÑAL ALCISTA)
-    - 80-100 = todo el mundo busca = zona de techo (SEÑAL BAJISTA)
-    """
-    try:
-        from pytrends.request import TrendReq
-        pytrends = TrendReq(hl='es-ES', tz=60, timeout=(5, 15))
-        pytrends.build_payload([keyword], cat=0, timeframe=timeframe, geo='', gprop='')
-        df = pytrends.interest_over_time()
-        if df.empty:
-            return None
-        valor_actual = int(df[keyword].iloc[-1])
-        promedio = int(df[keyword].mean())
-        maximo = int(df[keyword].max())
-        # Normalizar: qué % del máximo histórico reciente es el valor actual
-        nivel_relativo = round((valor_actual / maximo * 100) if maximo > 0 else 50)
-        return {
-            "valor_actual": valor_actual,
-            "promedio": promedio,
-            "maximo": maximo,
-            "nivel_relativo": nivel_relativo,
-            "señal": "SUELO" if nivel_relativo < 25 else "TECHO" if nivel_relativo > 75 else "NEUTRAL"
+        # Liquidaciones forzadas via force orders
+        r2 = requests.get(
+            f"https://fapi.binance.com/fapi/v1/allForceOrders?symbol={symbol}&limit=100",
+            timeout=6
+        )
+        orders = r2.json()
+        if not isinstance(orders, list):
+            raise ValueError("respuesta no es lista")
+        liq_long = sum(float(o["origQty"]) * float(o["price"])
+                      for o in orders if o.get("side") == "SELL")
+        liq_short = sum(float(o["origQty"]) * float(o["price"])
+                       for o in orders if o.get("side") == "BUY")
+        resultado["liquidaciones"] = {
+            "longs_m": round(liq_long / 1e6, 1),
+            "shorts_m": round(liq_short / 1e6, 1),
         }
     except Exception as e:
-        log.warning(f"Google Trends: {e}")
-        return None
+        log.warning(f"Liquidaciones: {e}")
+
+    return resultado
 
 
 def get_fear_greed():
@@ -1037,20 +745,6 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
             elif vix < 15 and fase_base == 7:
                 fase_base = 7                        # VIX bajo confirma complacencia
 
-        # Ajuste Google Trends (crypto) — poco interés = suelo, mucho = techo
-        if nombre_mercado.upper() in ["BTC", "BITCOIN", "ETH", "ETHEREUM"]:
-            trends = get_google_trends("Bitcoin", timeframe="today 3-m")
-            if trends:
-                nivel = trends["nivel_relativo"]
-                if nivel < 20 and fase_base in [9, 10, 11, 12, 0]:
-                    # Nadie busca Bitcoin + caída fuerte = posible suelo
-                    # Mover hacia Incredulidad si ya hay rebote
-                    if recuperacion_desde_minimo and recuperacion_desde_minimo > 15:
-                        fase_base = min(fase_base, 1)  # Incredulidad
-                elif nivel > 80 and fase_base <= 6:
-                    # Todo el mundo busca Bitcoin = zona de techo
-                    fase_base = max(fase_base, 6)  # Euforia mínimo
-
         # Ajuste: si tendencia alcista y cerca de maximos, puede ser creencia/emocion
         if dist_desde_maximo > -8 and tendencia_alcista and d_anual is not None:
             if d_anual > 30:
@@ -1061,44 +755,26 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
         fase = fase_base
 
     else:
-        # Sin datos anuales: usar EMA200 + halving + Fear&Greed (sin RSI)
-        import datetime as dt_mod
-        halving4 = dt_mod.date(2024, 4, 19)
-        meses_halving = (dt_mod.date.today() - halving4).days // 30
-
+        # Sin datos anuales: usar indicadores tecnicos clasicos
         score = 0
-
-        # EMA200 — más importante que RSI para ciclo largo
-        if tendencia_alcista and sobre_ema50:
-            score += 3   # sobre EMA200 = bull
-        elif not sobre_ema50:
-            score -= 3   # bajo EMA200 = bear
-
-        # Meses desde halving
-        if meses_halving < 18:
-            score += 2   # fase bull histórica
-        elif meses_halving < 22:
-            score += 0   # zona de techo
-        elif meses_halving < 32:
-            score -= 2   # bear histórico
-        elif meses_halving < 42:
-            score -= 1   # suelo/recuperación
-
-        # Fear & Greed
+        if rsi > 70:   score += 3
+        elif rsi > 60: score += 2
+        elif rsi > 50: score += 1
+        elif rsi < 35: score -= 3
+        elif rsi < 45: score -= 1
+        if tendencia_alcista:  score += 2
+        elif not sobre_ema50:  score -= 2
         if fg:
             if fg > 70:   score += 2
             elif fg < 30: score -= 2
-
-        # VIX si disponible
         if vix:
-            if vix > 30: score -= 2
+            if vix > 30: score -= 3
             elif vix < 15: score += 1
-
         score = max(-8, min(8, score))
-        if score >= 6:    fase = 6
-        elif score >= 4:  fase = 5
-        elif score >= 2:  fase = 4
-        elif score >= 0:  fase = 3
+        if score >= 6:   fase = 6
+        elif score >= 4: fase = 5
+        elif score >= 2: fase = 4
+        elif score >= 0: fase = 3
         elif score >= -2: fase = 8
         elif score >= -4: fase = 9
         elif score >= -6: fase = 10
@@ -1131,9 +807,9 @@ def fetch_ema200_distance(ticker):
 
 def calcular_indice_valor(ticker):
     """
-    Indice 0-100: 100=barato (acumulacion), 0=caro (venta).
-    Para crypto BTC: indicadores de CICLO LARGO sin RSI diario.
-    Para acciones/indices: indicadores tecnicos clasicos.
+    Indice 0-100 estilo FREDI: 100=barato (zona acumulacion), 0=caro (zona venta).
+    Detecta automaticamente el tipo de activo (crypto/accion/indice) y usa
+    6 componentes especificos por tipo, cada uno puntuado 0-10.
     """
     es_crypto = ticker in COINGECKO_IDS or "-USD" in ticker
     es_indice = ticker.startswith("^")
@@ -1145,152 +821,97 @@ def calcular_indice_valor(ticker):
     ema200_data = fetch_ema200_distance(ticker)
     componentes = {}
 
-    # EMA 200 — el indicador mas importante del ciclo
+    # RSI 14d diario (comun a todos)
+    rsi = d["rsi"]
+    if rsi < 25:   pts_rsi = 10
+    elif rsi < 35: pts_rsi = 8
+    elif rsi < 45: pts_rsi = 6
+    elif rsi < 55: pts_rsi = 5
+    elif rsi < 65: pts_rsi = 3
+    elif rsi < 75: pts_rsi = 2
+    else:          pts_rsi = 1
+    componentes["RSI 14d"] = {"valor": rsi, "puntos": pts_rsi}
+
+    # EMA200 distancia (comun a todos) — lejos por debajo = barato
     if ema200_data:
         dist = ema200_data["dist_pct"]
-        if dist < -30:   pts_ema = 10; ema_txt = f"{dist:+.1f}% — muy por debajo (suelo)"
-        elif dist < -15: pts_ema = 9;  ema_txt = f"{dist:+.1f}% — por debajo (bear)"
-        elif dist < -5:  pts_ema = 7;  ema_txt = f"{dist:+.1f}% — tocando EMA200"
-        elif dist < 0:   pts_ema = 5;  ema_txt = f"{dist:+.1f}% — justo bajo EMA200"
-        elif dist < 10:  pts_ema = 3;  ema_txt = f"{dist:+.1f}% — sobre EMA200 (bull)"
-        elif dist < 25:  pts_ema = 2;  ema_txt = f"{dist:+.1f}% — alejado EMA200"
-        else:            pts_ema = 1;  ema_txt = f"{dist:+.1f}% — muy lejos (euforia)"
-        componentes["EMA 200"] = {"valor": ema_txt, "puntos": pts_ema}
+        if dist < -30:   pts_ema = 10
+        elif dist < -20: pts_ema = 9
+        elif dist < -10: pts_ema = 7
+        elif dist < 0:   pts_ema = 5
+        elif dist < 10:  pts_ema = 3
+        elif dist < 20:  pts_ema = 2
+        else:            pts_ema = 1
+        componentes["EMA200"] = {"valor": f"{dist:+.1f}%", "puntos": pts_ema}
     else:
         pts_ema = 5
-        componentes["EMA 200"] = {"valor": "N/D", "puntos": 5}
+        componentes["EMA200"] = {"valor": "N/D", "puntos": 5}
+
+    # Volumen — alto volumen en caida fuerte = posible capitulacion
+    vol_rel = d["vol_rel"]
+    d1 = d["d1"]
+    if vol_rel > 1.5 and d1 < -2:
+        pts_vol = 9
+    elif vol_rel > 1.2 and d1 < 0:
+        pts_vol = 7
+    elif vol_rel < 0.7:
+        pts_vol = 5
+    else:
+        pts_vol = 4
+    componentes["Volumen"] = {"valor": f"{vol_rel}x", "puntos": pts_vol}
 
     if es_crypto:
-        # RSI diario — útil para timing de entrada
-        rsi = d["rsi"]
-        if rsi < 25:   pts_rsi = 10; rsi_txt = f"{rsi} — sobreventa extrema"
-        elif rsi < 35: pts_rsi = 8;  rsi_txt = f"{rsi} — sobreventa"
-        elif rsi < 45: pts_rsi = 6;  rsi_txt = f"{rsi} — zona de compra"
-        elif rsi < 55: pts_rsi = 5;  rsi_txt = f"{rsi} — neutral"
-        elif rsi < 65: pts_rsi = 3;  rsi_txt = f"{rsi} — sobrecompra leve"
-        elif rsi < 75: pts_rsi = 2;  rsi_txt = f"{rsi} — sobrecompra"
-        else:          pts_rsi = 1;  rsi_txt = f"{rsi} — sobrecompra extrema"
-        componentes["RSI 14d"] = {"valor": rsi_txt, "puntos": pts_rsi}
-
-        # 1. FEAR & GREED
+        # Fear & Greed
         fg = get_fear_greed()
         if fg:
             fgv = fg["valor"]
-            if fgv < 15:   pts_fg = 10; fg_txt = f"{fgv} — MIEDO EXTREMO (suelo)"
-            elif fgv < 30: pts_fg = 8;  fg_txt = f"{fgv} — Miedo (buena zona)"
-            elif fgv < 45: pts_fg = 6;  fg_txt = f"{fgv} — Miedo moderado"
-            elif fgv < 55: pts_fg = 5;  fg_txt = f"{fgv} — Neutral"
-            elif fgv < 70: pts_fg = 3;  fg_txt = f"{fgv} — Codicia"
-            elif fgv < 85: pts_fg = 2;  fg_txt = f"{fgv} — Codicia extrema"
-            else:          pts_fg = 1;  fg_txt = f"{fgv} — EUFORIA (techo)"
-            componentes["Fear & Greed"] = {"valor": fg_txt, "puntos": pts_fg}
+            if fgv < 20:   pts_fg = 10
+            elif fgv < 30: pts_fg = 8
+            elif fgv < 45: pts_fg = 6
+            elif fgv < 55: pts_fg = 5
+            elif fgv < 70: pts_fg = 3
+            elif fgv < 80: pts_fg = 2
+            else:          pts_fg = 1
+            componentes["Fear&Greed"] = {"valor": fgv, "puntos": pts_fg}
         else:
             pts_fg = 5
-            componentes["Fear & Greed"] = {"valor": "N/D", "puntos": 5}
+            componentes["Fear&Greed"] = {"valor": "N/D", "puntos": 5}
 
-        # 2. FUNDING RATE
+        # Funding rate
         symbol_map = {"BTC-USD":"BTCUSDT","ETH-USD":"ETHUSDT","SOL-USD":"SOLUSDT","BNB-USD":"BNBUSDT"}
         binance_sym = symbol_map.get(ticker, "BTCUSDT")
         deriv = get_binance_derivatives(binance_sym)
         funding = deriv.get("funding", {}).get("valor") if deriv else None
         if funding is not None:
-            if funding < -0.02:   pts_fund = 10; fund_txt = f"{funding:+.4f}% — shorts pagando (suelo)"
-            elif funding < 0:     pts_fund = 7;  fund_txt = f"{funding:+.4f}% — negativo (bajista)"
-            elif funding < 0.01:  pts_fund = 5;  fund_txt = f"{funding:+.4f}% — neutro"
-            elif funding < 0.03:  pts_fund = 3;  fund_txt = f"{funding:+.4f}% — longs pagando"
-            else:                 pts_fund = 1;  fund_txt = f"{funding:+.4f}% — apalancamiento extremo"
-            componentes["Funding Rate"] = {"valor": fund_txt, "puntos": pts_fund}
+            if funding < -0.02:   pts_fund = 10
+            elif funding < 0:     pts_fund = 7
+            elif funding < 0.01:  pts_fund = 5
+            elif funding < 0.03:  pts_fund = 3
+            elif funding < 0.05:  pts_fund = 2
+            else:                 pts_fund = 1
+            componentes["Funding Rate"] = {"valor": f"{funding:+.4f}%", "puntos": pts_fund}
         else:
             pts_fund = 5
             componentes["Funding Rate"] = {"valor": "N/D", "puntos": 5}
 
-        # 3. DXY — usando EUR/USD como proxy (Frankfurter API, sin rate limit)
-        try:
-            r_fx = requests.get(
-                "https://api.frankfurter.app/latest?from=EUR&to=USD",
-                timeout=6
-            )
-            if r_fx.status_code == 200:
-                eurusd = r_fx.json().get("rates", {}).get("USD", 1.08)
-                # DXY se mueve inversamente al EUR/USD
-                # EUR/USD 1.05 = DXY ~106 | EUR/USD 1.10 = DXY ~100 | EUR/USD 1.15 = DXY ~94
-                dxy_estimado = round(210 - eurusd * 100, 2)
-                if dxy_estimado > 106:   pts_dxy = 9; dxy_txt = f"~{dxy_estimado} — dólar muy fuerte"
-                elif dxy_estimado > 103: pts_dxy = 7; dxy_txt = f"~{dxy_estimado} — dólar fuerte"
-                elif dxy_estimado > 100: pts_dxy = 5; dxy_txt = f"~{dxy_estimado} — dólar neutral"
-                elif dxy_estimado > 97:  pts_dxy = 3; dxy_txt = f"~{dxy_estimado} — dólar débil"
-                else:                   pts_dxy = 2; dxy_txt = f"~{dxy_estimado} — dólar muy débil"
-                componentes["DXY Dólar"] = {"valor": dxy_txt, "puntos": pts_dxy}
-            else:
-                pts_dxy = 5
-                componentes["DXY Dólar"] = {"valor": "N/D", "puntos": 5}
-        except:
-            pts_dxy = 5
-            componentes["DXY Dólar"] = {"valor": "N/D", "puntos": 5}
-
-        # 4. GOOGLE TRENDS
-        keyword = "Bitcoin" if "BTC" in ticker else "Ethereum" if "ETH" in ticker else "crypto"
-        trends = get_google_trends(keyword, timeframe="today 3-m")
-        if trends:
-            nivel = trends["nivel_relativo"]
-            if nivel < 15:    pts_trends = 10; t_txt = f"{nivel}% — nadie busca (SUELO)"
-            elif nivel < 25:  pts_trends = 8;  t_txt = f"{nivel}% — interes muy bajo"
-            elif nivel < 40:  pts_trends = 6;  t_txt = f"{nivel}% — interes bajo"
-            elif nivel < 60:  pts_trends = 5;  t_txt = f"{nivel}% — interes normal"
-            elif nivel < 75:  pts_trends = 3;  t_txt = f"{nivel}% — interes alto"
-            elif nivel < 90:  pts_trends = 2;  t_txt = f"{nivel}% — interes muy alto"
-            else:             pts_trends = 1;  t_txt = f"{nivel}% — EUFORIA (techo)"
-            componentes["Google Trends"] = {"valor": t_txt, "puntos": pts_trends}
+        # DXY — dolar fuerte suele coincidir con suelos de crypto
+        dxy_d = fetch_quote("DX-Y.NYB", "1mo")
+        if dxy_d:
+            dxy_val = dxy_d["price"]
+            if dxy_val > 105:   pts_dxy = 8
+            elif dxy_val > 102: pts_dxy = 6
+            elif dxy_val > 99:  pts_dxy = 5
+            elif dxy_val > 96:  pts_dxy = 3
+            else:               pts_dxy = 2
+            componentes["DXY"] = {"valor": dxy_val, "puntos": pts_dxy}
         else:
-            pts_trends = 5
-            componentes["Google Trends"] = {"valor": "N/D", "puntos": 5}
+            pts_dxy = 5
+            componentes["DXY"] = {"valor": "N/D", "puntos": 5}
 
-        # 5. CICLO HALVING — posicion en el ciclo de 4 anos
-        import datetime as dt_mod
-        halving4 = dt_mod.date(2024, 4, 19)
-        meses_halving = (dt_mod.date.today() - halving4).days // 30
-        if meses_halving < 6:    pts_halving = 7;  h_txt = f"Mes {meses_halving} — bull temprano"
-        elif meses_halving < 18: pts_halving = 4;  h_txt = f"Mes {meses_halving} — bull maduro"
-        elif meses_halving < 22: pts_halving = 2;  h_txt = f"Mes {meses_halving} — zona de techo"
-        elif meses_halving < 32: pts_halving = 6;  h_txt = f"Mes {meses_halving} — bear (caida normal)"
-        elif meses_halving < 40: pts_halving = 9;  h_txt = f"Mes {meses_halving} — suelo historico"
-        else:                    pts_halving = 8;  h_txt = f"Mes {meses_halving} — recuperacion"
-        componentes["Ciclo Halving"] = {"valor": h_txt, "puntos": pts_halving}
-
-        # 6. FLUJOS ETF — usando FMP para IBIT (sin rate limit)
-        try:
-            ibit = fetch_fmp_quote("IBIT")
-            if ibit:
-                btc_sem = d["d5"]
-                ibit_sem = ibit["d5"]
-                diferencia = ibit_sem - btc_sem
-                if diferencia > 2:    pts_etf = 9;  etf_txt = f"IBIT +{ibit_sem:.1f}% — fondos comprando"
-                elif diferencia > 0:  pts_etf = 7;  etf_txt = f"IBIT {ibit_sem:.1f}% — flujo positivo"
-                elif diferencia > -2: pts_etf = 5;  etf_txt = f"IBIT {ibit_sem:.1f}% — flujo neutral"
-                else:                 pts_etf = 3;  etf_txt = f"IBIT {ibit_sem:.1f}% — flujo negativo"
-                componentes["Flujos ETF"] = {"valor": etf_txt, "puntos": pts_etf}
-            else:
-                pts_etf = 5
-                componentes["Flujos ETF"] = {"valor": "N/D", "puntos": 5}
-        except:
-            pts_etf = 5
-            componentes["Flujos ETF"] = {"valor": "N/D", "puntos": 5}
-
-        total_pts = pts_ema + pts_rsi + pts_fg + pts_fund + pts_dxy + pts_trends + pts_halving + pts_etf
-        max_pts = 80  # 8 componentes × 10 max
+        total_pts = pts_rsi + pts_ema + pts_vol + pts_fg + pts_fund + pts_dxy
 
     else:
-        # ACCION o INDICE
-        rsi = d["rsi"]
-        if rsi < 25:   pts_rsi = 10
-        elif rsi < 35: pts_rsi = 8
-        elif rsi < 45: pts_rsi = 6
-        elif rsi < 55: pts_rsi = 5
-        elif rsi < 65: pts_rsi = 3
-        elif rsi < 75: pts_rsi = 2
-        else:          pts_rsi = 1
-        componentes["RSI 14d"] = {"valor": rsi, "puntos": pts_rsi}
-
+        # ACCION o INDICE: VIX, RSI semanal, distancia maximo 52 semanas
         vix_d = fetch_quote("^VIX", "1mo")
         if vix_d:
             vix_val = vix_d["price"]
@@ -1327,24 +948,32 @@ def calcular_indice_valor(ticker):
         else:               pts_52 = 1
         componentes["Dist. Max 52s"] = {"valor": f"{dist_52:+.1f}%", "puntos": pts_52}
 
-        vol_rel = d["vol_rel"]
-        d1 = d["d1"]
-        if vol_rel > 1.5 and d1 < -2: pts_vol = 9
-        elif vol_rel > 1.2 and d1 < 0: pts_vol = 7
-        elif vol_rel < 0.7: pts_vol = 5
-        else: pts_vol = 4
-        componentes["Volumen"] = {"valor": f"{vol_rel}x", "puntos": pts_vol}
+        total_pts = pts_rsi + pts_ema + pts_vol + pts_vix + pts_rsiw + pts_52
 
-        total_pts = pts_ema + pts_rsi + pts_vix + pts_rsiw + pts_52 + pts_vol
-        max_pts = 60
+    score_final = round(total_pts / 60 * 100)
 
-    score_final = max(0, min(100, round(total_pts / max_pts * 100)))
+    if score_final >= 80:
+        zona = "BARATO — ACUMULACION FUERTE"
+    elif score_final >= 65:
+        zona = "BARATO — BUENA ZONA DE COMPRA"
+    elif score_final >= 45:
+        zona = "NEUTRAL"
+    elif score_final >= 30:
+        zona = "CARO — PRECAUCION"
+    else:
+        zona = "MUY CARO — ZONA DE VENTA"
 
-    if score_final >= 80:    zona = "BARATO — ACUMULACION FUERTE"
-    elif score_final >= 65:  zona = "BARATO — BUENA ZONA DE COMPRA"
-    elif score_final >= 45:  zona = "NEUTRAL"
-    elif score_final >= 30:  zona = "CARO — PRECAUCION"
-    else:                    zona = "MUY CARO — ZONA DE VENTA"
+    return {
+        "ticker": ticker,
+        "nombre": nombre(ticker),
+        "price": d["price"],
+        "cambio_hoy": d.get("d1", 0),
+        "score": score_final,
+        "zona": zona,
+        "componentes": componentes,
+        "tipo": "crypto" if es_crypto else ("indice" if es_indice else "accion"),
+    }
+
 
 def generate_valor_gauge(resultado):
     """Genera gauge visual mejorado — velocimetro + barras de componentes legibles."""
@@ -1858,196 +1487,12 @@ def generate_halving_chart():
 
 def generate_cycle_chart(mercados):
     """
-    Genera gráfico estilo Wall St. Cheat Sheet en español.
-    Curva multicolor con emociones y punto marcando dónde está cada mercado.
+    Genera imagen del ciclo de mercado mejorada:
+    - Zonas COMPRA/VENTA claramente marcadas
+    - Flechas de direccion en cada mercado
+    - % del ciclo completado
+    - Potencial restante
     """
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    import matplotlib.patheffects as pe
-    import numpy as np
-
-    fig, ax = plt.subplots(figsize=(18, 10))
-    fig.patch.set_facecolor('#0d1117')
-    ax.set_facecolor('#0d1117')
-
-    # Generar curva estilo Wall St Cheat Sheet
-    # Subida lenta → pico → caída brusca → suelo → recuperación
-    t = np.linspace(0, 10, 2000)
-
-    def precio_ciclo(t):
-        # Subida gradual con volatilidad
-        subida = 0.8 * np.log1p(t * 1.2) + 0.15 * np.sin(t * 3) + 0.08 * np.sin(t * 7)
-        # Pico en t≈5.5
-        pico = np.exp(-0.5 * ((t - 5.5) / 0.8) ** 2) * 1.2
-        # Caída brusca post-pico
-        caida = -0.6 * (1 / (1 + np.exp(-4 * (t - 6.2)))) * (t > 5.5)
-        # Suelo y recuperación lenta
-        recuperacion = 0.3 * np.log1p(np.maximum(t - 7.5, 0) * 1.5) * (t > 7.5)
-        return subida + pico + caida + recuperacion + 0.1
-
-    y = precio_ciclo(t)
-    y = (y - y.min()) / (y.max() - y.min()) * 0.75 + 0.1
-
-    # Colorear la curva por fase
-    colores_tramos = [
-        (0.0,  0.12, '#8B2E2E'),  # Incredulidad/Depresión
-        (0.12, 0.22, '#B34D00'),  # Esperanza
-        (0.22, 0.32, '#CC7A00'),  # Optimismo
-        (0.32, 0.42, '#CCB800'),  # Creencia
-        (0.42, 0.52, '#66CC00'),  # Thrill
-        (0.52, 0.60, '#00CC00'),  # Euforia (PICO)
-        (0.60, 0.67, '#00CCAA'),  # Complacencia
-        (0.67, 0.73, '#0099CC'),  # Ansiedad
-        (0.73, 0.79, '#0044CC'),  # Negación
-        (0.79, 0.85, '#4400CC'),  # Pánico
-        (0.85, 0.90, '#8800CC'),  # Capitulación
-        (0.90, 0.95, '#CC0099'),  # Ira/Depresión
-        (0.95, 1.00, '#4499FF'),  # Incredulidad (nuevo ciclo)
-    ]
-
-    for ini, fin, color in colores_tramos:
-        mask = (t >= ini * 10) & (t <= fin * 10)
-        if mask.sum() > 1:
-            ax.plot(t[mask], y[mask], color=color, linewidth=4.5, solid_capstyle='round')
-
-    # Emociones con posiciones en la curva
-    emociones = [
-        (0.8,  None,  "INCREDULIDAD\n\"Este rally no durará\"",          'left',  0.08,   '#8B2E2E'),
-        (1.8,  None,  "ESPERANZA\n\"Quizá una recuperación\"",           'left',  0.15,   '#B34D00'),
-        (2.8,  None,  "OPTIMISMO\n\"Este rally es real\"",               'left',  0.28,   '#CC7A00'),
-        (3.8,  None,  "CREENCIA\n\"Hora de invertir más\"",              'left',  0.42,   '#CCB800'),
-        (4.8,  None,  "EMOCIÓN\n\"Compraré con margen\"",                'left',  0.60,   '#66CC00'),
-        (5.45, None,  "EUFORIA\n\"¡Soy un genio!\n¡Todos ganaremos!\"",  'center',0.05,   '#00CC00'),
-        (6.2,  None,  "COMPLACENCIA\n\"Solo una corrección\"",           'right', 0.12,   '#00CCAA'),
-        (6.8,  None,  "ANSIEDAD\n\"¿Por qué tarda tanto?\"",            'right', 0.20,   '#0099CC'),
-        (7.3,  None,  "NEGACIÓN\n\"Mis empresas son buenas,\nvolverá\"", 'right', 0.32,   '#0044CC'),
-        (7.9,  None,  "PÁNICO\n\"¡Todos venden!\n¡Tengo que salir!\"",  'right', 0.45,   '#4400CC'),
-        (8.5,  None,  "CAPITULACIÓN\n\"Me salgo al 100%\"",              'center',0.60,   '#8800CC'),
-        (9.0,  None,  "IRA\n\"¿Quién dejó que\npasara esto?\"",          'center',0.72,   '#CC0099'),
-        (9.6,  None,  "DEPRESIÓN\n\"Perdí mis ahorros.\nSoy un idiota\"", 'right', 0.82,  '#AA0066'),
-    ]
-
-    # Calcular posición Y de cada emoción en la curva
-    for i, (tx, _, texto, lado, offset_extra, color) in enumerate(emociones):
-        idx = np.argmin(np.abs(t - tx))
-        cy = y[idx]
-
-        if lado == 'center':
-            offset_y = 0.12 if cy > 0.5 else -0.14
-            ha = 'center'
-            ax_offset = 0
-        elif lado == 'left':
-            offset_y = 0.08
-            ha = 'left'
-            ax_offset = -0.3
-        else:
-            offset_y = 0.08
-            ha = 'right'
-            ax_offset = 0.3
-
-        # Punto en la curva
-        ax.plot(tx, cy, 'o', color=color, markersize=7, zorder=5)
-
-        # Línea líder
-        ax.annotate('',
-                   xy=(tx, cy),
-                   xytext=(tx + ax_offset * 0.3, cy + offset_y),
-                   arrowprops=dict(arrowstyle='-', color=color, lw=1, alpha=0.6))
-
-        # Texto emoción
-        ax.text(tx + ax_offset * 0.3, cy + offset_y + 0.02,
-               texto, ha=ha, va='bottom',
-               fontsize=8.5, color=color, fontweight='bold',
-               bbox=dict(boxstyle='round,pad=0.2', facecolor='#0d1117',
-                        edgecolor=color, alpha=0.85, linewidth=1.2))
-
-    # Marcar mercados actuales
-    colores_mercado = {
-        'BTC':    '#FFD700',
-        'SP500':  '#00FF88',
-        'DAX':    '#FF69B4',
-    }
-
-    for m in mercados:
-        nombre_m = m['nombre'].upper()
-        fase_n = m['fase_num']
-
-        # Mapear fase_num a posición en la curva
-        fase_pos = {
-            0: 0.8,   # Depresión
-            1: 1.5,   # Incredulidad
-            2: 2.0,   # Esperanza
-            3: 2.8,   # Optimismo
-            4: 3.8,   # Creencia
-            5: 4.8,   # Emoción
-            6: 5.45,  # Euforia
-            7: 6.2,   # Complacencia
-            8: 6.8,   # Ansiedad
-            9: 7.3,   # Negación
-            10: 7.9,  # Pánico
-            11: 8.5,  # Capitulación
-            12: 9.2,  # Ira/Depresión
-        }
-
-        tx = fase_pos.get(fase_n, 7.3)
-        idx = np.argmin(np.abs(t - tx))
-        cy = y[idx]
-
-        color_m = colores_mercado.get(nombre_m, '#FFFFFF')
-
-        # Punto grande pulsante
-        ax.plot(tx, cy, 'o', color=color_m, markersize=22,
-               markeredgecolor='white', markeredgewidth=2.5, zorder=15)
-        ax.plot(tx, cy, 'o', color=color_m, markersize=30,
-               alpha=0.25, zorder=14)
-
-        # Etiqueta del mercado
-        ax.annotate(f"{nombre_m}\n{m['fase']}",
-                   xy=(tx, cy),
-                   xytext=(tx, cy + 0.22),
-                   fontsize=10, color=color_m,
-                   ha='center', va='bottom', fontweight='bold', zorder=16,
-                   bbox=dict(boxstyle='round,pad=0.4', facecolor='#0d1117',
-                            edgecolor=color_m, linewidth=2.5, alpha=0.95),
-                   arrowprops=dict(arrowstyle='->', color=color_m, lw=2))
-
-    # Ejes y títulos
-    ax.set_xlim(-0.3, 10.3)
-    ax.set_ylim(-0.05, 1.15)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_xlabel('TIEMPO →', color='#888888', fontsize=13, labelpad=10)
-    ax.set_ylabel('PRECIO →', color='#888888', fontsize=13, labelpad=10)
-    ax.tick_params(colors='#888888')
-    for spine in ax.spines.values():
-        spine.set_color('#333333')
-
-    ax.set_title('PSICOLOGÍA DEL CICLO DE MERCADO — DONDE ESTAMOS AHORA',
-                fontsize=16, color='white', fontweight='bold', pad=20)
-
-    # Flecha eje X
-    ax.annotate('', xy=(10.3, -0.02), xytext=(-0.3, -0.02),
-               arrowprops=dict(arrowstyle='->', color='#555555', lw=1.5))
-    ax.annotate('', xy=(-0.25, 1.12), xytext=(-0.25, -0.02),
-               arrowprops=dict(arrowstyle='->', color='#555555', lw=1.5))
-
-    # Leyenda
-    leyenda = [mpatches.Patch(facecolor=colores_mercado.get(m['nombre'].upper(), '#FFFFFF'),
-               label=f"{m['nombre']} — {m['fase']}") for m in mercados]
-    ax.legend(handles=leyenda, loc='lower right',
-             facecolor='#1a1a2e', edgecolor='#444444',
-             labelcolor='white', fontsize=10, framealpha=0.95)
-
-    try:
-        plt.tight_layout(pad=1.5)
-    except:
-        pass
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130,
-               facecolor='#0d1117', bbox_inches='tight')
-    plt.close()
-    buf.seek(0)
-    return buf
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     import matplotlib.patheffects as pe
@@ -2274,130 +1719,6 @@ def fetch_intraday(ticker):
         }
     except Exception as e:
         log.warning(f"fetch_intraday {ticker}: {e}")
-        return None
-
-
-def batch_download(tickers, period="3mo"):
-    """
-    Descarga datos de múltiples tickers en una sola llamada a yfinance.
-    Mucho más eficiente que llamar uno por uno — evita rate limit.
-    Retorna dict {ticker: DataFrame}
-    """
-    if not tickers:
-        return {}
-    try:
-        # Limpiar tickers inválidos
-        tickers_clean = [t for t in tickers if t and isinstance(t, str)]
-        if not tickers_clean:
-            return {}
-
-        data = yf.download(
-            tickers_clean,
-            period=period,
-            group_by="ticker",
-            auto_adjust=True,
-            progress=False,
-            threads=True,
-            timeout=20,
-        )
-
-        resultado = {}
-        if len(tickers_clean) == 1:
-            # Un solo ticker — yfinance no usa MultiIndex
-            t = tickers_clean[0]
-            if not data.empty and len(data) >= 5:
-                resultado[t] = data
-        else:
-            for t in tickers_clean:
-                try:
-                    if t in data.columns.get_level_values(0):
-                        df = data[t].dropna(how="all")
-                        if not df.empty and len(df) >= 5:
-                            resultado[t] = df
-                except:
-                    pass
-        return resultado
-    except Exception as e:
-        log.warning(f"batch_download: {e}")
-        return {}
-
-
-def quote_from_df(ticker, df):
-    """
-    Calcula todos los indicadores desde un DataFrame descargado via batch.
-    Equivalente a fetch_quote pero sin llamar a yfinance.
-    """
-    try:
-        if df.empty or len(df) < 5:
-            return None
-
-        # Fix MultiIndex si existe
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        c   = df["Close"].dropna()
-        h   = df["High"].dropna()
-        lo  = df["Low"].dropna()
-        vol = df["Volume"].dropna()
-
-        if len(c) < 5:
-            return None
-
-        price = float(c.iloc[-1])
-        d1  = float((price - c.iloc[-2]) / c.iloc[-2] * 100) if len(c) > 1 else 0
-        d5  = float((price - c.iloc[-6]) / c.iloc[-6] * 100) if len(c) > 5 else 0
-        d20 = float((price - c.iloc[-21]) / c.iloc[-21] * 100) if len(c) > 20 else 0
-
-        hi52 = float(h.max()); lo52 = float(lo.min())
-        pivot = float((h.iloc[-1] + lo.iloc[-1] + price) / 3)
-        r1 = round(2*pivot - lo.iloc[-1], 2); s1 = round(2*pivot - h.iloc[-1], 2)
-        hi20 = float(h.tail(20).max()); lo20 = float(lo.tail(20).min())
-        rng = hi20 - lo20
-        r2 = round(hi20 + rng * 0.382, 2); s2 = round(lo20 - rng * 0.382, 2)
-
-        rsi = float(calc_rsi(c).iloc[-1]) if len(c) >= 14 else 50
-        macd_l, macd_s = calc_macd(c)
-        macd_cross_up = (len(macd_l) >= 2 and
-                        macd_l.iloc[-1] > macd_s.iloc[-1] and
-                        macd_l.iloc[-2] <= macd_s.iloc[-2])
-
-        avg_vol = vol.tail(20).mean()
-        vol_rel = float(vol.iloc[-1] / avg_vol) if avg_vol > 0 else 1.0
-
-        ema20 = c.ewm(span=20, adjust=False).mean()
-        ema50 = c.ewm(span=50, adjust=False).mean()
-        typical = (h + lo + c) / 3
-        vwap = float((typical * vol).tail(20).sum() / vol.tail(20).sum()) if vol.tail(20).sum() > 0 else price
-
-        high_low = h - lo
-        high_close = (h - c.shift()).abs()
-        low_close = (lo - c.shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        atr = float(tr.ewm(span=14, adjust=False).mean().iloc[-1])
-
-        max20 = hi20
-        dist_breakout = round((max20 - price) / max20 * 100, 2) if max20 > 0 else 99
-        cerca_breakout = dist_breakout <= 2.0
-        fuerza_relativa = d20 > 5
-
-        return {
-            "ticker": ticker, "nombre": nombre(ticker), "price": round(price, 2),
-            "d1": round(d1, 2), "d5": round(d5, 2), "d20": round(d20, 2),
-            "hi52": round(hi52, 2), "lo52": round(lo52, 2),
-            "pivot": round(pivot, 2), "r1": r1, "r2": r2, "s1": s1, "s2": s2,
-            "rsi": round(rsi, 1), "macd_cross_up": macd_cross_up,
-            "vol_rel": round(vol_rel, 2), "atr": round(atr, 2),
-            "ema20": round(float(ema20.iloc[-1]), 2), "ema50": round(float(ema50.iloc[-1]), 2),
-            "sobre_ema20": price > float(ema20.iloc[-1]),
-            "sobre_ema50": price > float(ema50.iloc[-1]),
-            "tendencia_alcista": float(ema20.iloc[-1]) > float(ema50.iloc[-1]),
-            "ema20_subiendo": float(ema20.iloc[-1]) > float(ema20.iloc[-3]),
-            "vwap": round(vwap, 2), "sobre_vwap": price > vwap,
-            "max20": round(max20, 2), "dist_breakout": dist_breakout,
-            "cerca_breakout": cerca_breakout, "fuerza_relativa": fuerza_relativa,
-        }
-    except Exception as e:
-        log.warning(f"quote_from_df {ticker}: {e}")
         return None
 
 
@@ -3310,128 +2631,165 @@ def fetch_weekly_rsi(ticker):
 
 def get_top_signals(stocks, n=4, modo="swing"):
     """
-    Señales swing o intraday usando batch_download para evitar rate limit.
+    modo='swing': señales swing 1-4 semanas, score minimo 12
+    modo='intraday': señales intradía, score minimo 10, criterios distintos
     """
     mercado_ok = mercado_en_tendencia_alcista()
     candidatos = []
+    for t in stocks:
+        d = fetch_quote(t, "3mo")
+        if not d:
+            continue
 
-    # Filtrar crypto de acciones
-    stocks_clean = [s for s in stocks if s and "-USD" not in s]
+        # Filtros obligatorios
+        if d["rsi"] > 68:
+            continue
+        if d["vol_rel"] < 0.7:
+            continue
+        if not mercado_ok and d["rsi"] > 45:
+            continue
 
-    # Descargar todos los tickers de una vez
-    batch = batch_download(stocks_clean, period="3mo")
-    if not batch:
-        log.warning("get_top_signals: batch_download falló, usando fetch_quote individual")
-        batch = {}
-        for t in stocks_clean[:20]:  # máximo 20 en fallback
-            d = fetch_quote(t, "3mo")
-            if d:
-                batch[t] = None  # señal para usar d directamente
-            time.sleep(0.3)
-
-    for t in stocks_clean:
-        try:
-            if t not in batch:
+        # Filtro tendencia semanal — no entrar contra tendencia bajista fuerte
+        trend_w = fetch_weekly_trend(t)
+        if trend_w:
+            if trend_w["dist_max_w"] < -25 and not trend_w["tendencia_alcista_w"] and not trend_w["ema20w_subiendo"]:
+                continue
+            if trend_w["dist_max_w"] < -40 and trend_w["rsi_w"] > 40:
                 continue
 
-            d = quote_from_df(t, batch[t]) if batch[t] is not None else fetch_quote(t, "3mo")
-            if not d:
-                continue
+        score = 0
+        motivos = []
 
-            # Filtros obligatorios
-            if d["rsi"] > 68: continue
-            if d["vol_rel"] < 0.7: continue
-            if not mercado_ok and d["rsi"] > 45: continue
+        # 1. RSI diario (max 5pts)
+        if d["rsi"] < 25:
+            score += 5
+            motivos.append(f"RSI {d['rsi']} sobreventa extrema")
+        elif d["rsi"] < 35:
+            score += 4
+            motivos.append(f"RSI {d['rsi']} sobreventa")
+        elif d["rsi"] < 45:
+            score += 3
+            motivos.append(f"RSI {d['rsi']} zona ideal entrada")
+        elif d["rsi"] < 55:
+            score += 2
+            motivos.append(f"RSI {d['rsi']} saludable")
+        elif d["rsi"] < 68:
+            score += 1
+            motivos.append(f"RSI {d['rsi']} neutral")
 
-            # Filtro tendencia semanal
-            trend_w = fetch_weekly_trend(t)
-            if trend_w:
-                if trend_w["dist_max_w"] < -25 and not trend_w["tendencia_alcista_w"] and not trend_w["ema20w_subiendo"]:
-                    continue
-                if trend_w["dist_max_w"] < -40 and trend_w["rsi_w"] > 40:
-                    continue
+        # 2. RSI semanal confirmacion (max 3pts)
+        rsi_w = fetch_weekly_rsi(t)
+        if rsi_w is not None:
+            if rsi_w < 40:
+                score += 3
+                motivos.append(f"RSI semanal {rsi_w} confirma ambos TF")
+            elif rsi_w < 50:
+                score += 2
+                motivos.append(f"RSI semanal {rsi_w} confirma")
+            elif rsi_w < 60:
+                score += 1
 
-            score = 0
-            motivos = []
+        # 3. MACD cruce alcista (4pts)
+        if d["macd_cross_up"]:
+            score += 4
+            motivos.append("MACD cruce alcista confirmado")
 
-            # RSI
-            if d["rsi"] < 25:   score += 5; motivos.append(f"RSI {d['rsi']} sobreventa extrema")
-            elif d["rsi"] < 35: score += 4; motivos.append(f"RSI {d['rsi']} sobreventa")
-            elif d["rsi"] < 45: score += 3; motivos.append(f"RSI {d['rsi']} zona ideal entrada")
-            elif d["rsi"] < 55: score += 2; motivos.append(f"RSI {d['rsi']} saludable")
-            elif d["rsi"] < 68: score += 1
+        # 4. VWAP (3pts) — precio sobre VWAP = fuerza real
+        if d.get("sobre_vwap"):
+            score += 3
+            motivos.append(f"Precio sobre VWAP ({d.get('vwap',0)}) — fuerza institucional")
+        else:
+            # Bajo VWAP pero muy cerca = posible rebote
+            if d.get("vwap", 0) > 0:
+                dist_vwap = (d["price"] - d["vwap"]) / d["vwap"] * 100
+                if dist_vwap > -2:
+                    score += 1
+                    motivos.append(f"Cerca de VWAP ({d.get('vwap',0)}) rebote potencial")
 
-            # RSI semanal
-            rsi_w = fetch_weekly_rsi(t)
-            if rsi_w is not None:
-                if rsi_w < 40:   score += 3; motivos.append(f"RSI semanal {rsi_w} confirma ambos TF")
-                elif rsi_w < 50: score += 2; motivos.append(f"RSI semanal {rsi_w} confirma")
-                elif rsi_w < 60: score += 1
+        # 5. Volumen (max 4pts)
+        if d["vol_rel"] >= 2.5:
+            score += 4
+            motivos.append(f"Volumen {d['vol_rel']}x excepcional")
+        elif d["vol_rel"] >= 1.8:
+            score += 3
+            motivos.append(f"Volumen {d['vol_rel']}x muy elevado")
+        elif d["vol_rel"] >= 1.3:
+            score += 2
+            motivos.append(f"Volumen {d['vol_rel']}x elevado")
+        elif d["vol_rel"] >= 1.0:
+            score += 1
+            motivos.append(f"Volumen {d['vol_rel']}x normal")
 
-            # MACD
-            if d["macd_cross_up"]: score += 4; motivos.append("MACD cruce alcista confirmado")
+        # 6. Tendencia EMA (max 4pts)
+        if d["tendencia_alcista"] and d["ema20_subiendo"]:
+            score += 4
+            motivos.append("EMA20 > EMA50 y subiendo")
+        elif d["tendencia_alcista"]:
+            score += 2
+            motivos.append("EMA20 > EMA50")
+        elif d["sobre_ema20"]:
+            score += 1
+            motivos.append("Precio sobre EMA20")
 
-            # VWAP
-            if d.get("sobre_vwap"):
-                score += 3; motivos.append(f"Precio sobre VWAP ({d.get('vwap',0)}) — fuerza institucional")
-            else:
-                if d.get("vwap", 0) > 0:
-                    dist_vwap = (d["price"] - d["vwap"]) / d["vwap"] * 100
-                    if dist_vwap > -2: score += 1
+        # 7. Breakout (max 3pts)
+        if d["cerca_breakout"]:
+            score += 3
+            motivos.append(f"Breakout inminente {d['max20']} ({d['dist_breakout']}%)")
+        elif d["dist_breakout"] <= 3.0:
+            score += 1
 
-            # Volumen
-            if d["vol_rel"] >= 2.5:   score += 4; motivos.append(f"Volumen {d['vol_rel']}x excepcional")
-            elif d["vol_rel"] >= 1.8: score += 3; motivos.append(f"Volumen {d['vol_rel']}x muy elevado")
-            elif d["vol_rel"] >= 1.3: score += 2; motivos.append(f"Volumen {d['vol_rel']}x elevado")
-            elif d["vol_rel"] >= 1.0: score += 1
+        # 8. Fuerza relativa (2pts)
+        if d["fuerza_relativa"]:
+            score += 2
+            motivos.append(f"Fuerza relativa +{d['d20']}% mensual")
 
-            # Tendencia EMA
-            if d["tendencia_alcista"] and d["ema20_subiendo"]:
-                score += 4; motivos.append("EMA20 > EMA50 y subiendo")
-            elif d["tendencia_alcista"]: score += 2
-            elif d["sobre_ema20"]: score += 1
+        # 9. Momentum (max 2pts)
+        if d["d1"] >= 2.0:
+            score += 1
+        if d["d5"] >= 4.0:
+            score += 1
 
-            # Breakout
-            if d["cerca_breakout"]:
-                score += 3; motivos.append(f"Breakout inminente {d['max20']} ({d['dist_breakout']}%)")
+        # 10. Soporte cercano (2pts)
+        for nivel in [d["s1"], d["s2"]]:
+            if nivel > 0 and abs(d["price"] - nivel) / nivel * 100 <= 1.5:
+                score += 2
+                motivos.append(f"En zona soporte {nivel}")
+                break
 
-            # Fuerza relativa
-            if d["fuerza_relativa"]:
-                score += 2; motivos.append(f"Fuerza relativa +{d['d20']}% mensual")
+        # Umbral minimo segun modo
+        umbral = 12 if modo == "swing" else 10
+        if score < umbral:
+            continue
 
-            # Soporte cercano
-            for nivel in [d["s1"], d["s2"]]:
-                if nivel > 0 and abs(d["price"] - nivel) / nivel * 100 <= 1.5:
-                    score += 2; motivos.append(f"En zona soporte {nivel}"); break
+        entry = d["price"]
+        atr = d.get("atr", entry * 0.02)
+        stop_atr = round(entry - atr * 1.5, 2)
+        stop_sr  = round(d["s1"] * 0.985, 2)
+        stop = max(stop_atr, stop_sr) if stop_sr > 0 else stop_atr
+        if stop <= 0 or entry - stop > entry * 0.08:
+            stop = round(entry * 0.97, 2)
 
-            umbral = 12 if modo == "swing" else 10
-            if score < umbral: continue
+        risk = entry - stop
+        if risk <= 0:
+            continue
 
-            entry = d["price"]
-            atr = d.get("atr", entry * 0.02)
-            stop_atr = round(entry - atr * 1.5, 2)
-            stop_sr  = round(d["s1"] * 0.985, 2)
-            stop = max(stop_atr, stop_sr) if stop_sr > 0 else stop_atr
-            if stop <= 0 or entry - stop > entry * 0.08:
-                stop = round(entry * 0.97, 2)
-            risk = entry - stop
-            if risk <= 0: continue
+        # Modo swing: TP mas alejados
+        # Modo intraday: TP mas cercanos
+        mult_tp1 = 1.5 if modo == "swing" else 1.0
+        mult_tp2 = 3.0 if modo == "swing" else 2.0
+        tp1 = round(entry + risk * mult_tp1, 2)
+        tp2 = round(entry + risk * mult_tp2, 2)
+        rr  = round((tp1 - entry) / risk, 2)
 
-            mult_tp1 = 1.5 if modo == "swing" else 1.0
-            mult_tp2 = 3.0 if modo == "swing" else 2.0
-            tp1 = round(entry + risk * mult_tp1, 2)
-            tp2 = round(entry + risk * mult_tp2, 2)
-            rr  = round((tp1 - entry) / risk, 2)
+        if not mercado_ok:
+            motivos.insert(0, "AVISO: mercado bajista, operar con cautela")
 
-            candidatos.append({
-                **d, "score": score, "motivos": motivos,
-                "direction": "COMPRAR", "modo": modo,
-                "entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "rr": rr,
-                "atr": round(atr, 2), "rsi_semanal": rsi_w,
-            })
-
-        except Exception as e:
-            log.warning(f"get_top_signals {t}: {e}")
+        candidatos.append({
+            **d, "score": score, "motivos": motivos,
+            "direction": "COMPRAR", "modo": modo,
+            "entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "rr": rr,
+            "atr": round(atr, 2), "rsi_semanal": rsi_w,
+        })
 
     candidatos.sort(key=lambda x: x["score"], reverse=True)
     return candidatos[:n]
@@ -3439,23 +2797,21 @@ def get_top_signals(stocks, n=4, modo="swing"):
 
 def scan_anomalias(stocks):
     anomalias = []
-    stocks_clean = [s for s in stocks if s and "-USD" not in s]
-    batch = batch_download(stocks_clean, period="1mo")
-
-    for t in stocks_clean:
+    for t in stocks:
         try:
-            if t not in batch:
+            hist = yf.Ticker(t).history(period="1mo")
+            if hist.empty or len(hist) < 10:
                 continue
-            df = batch[t]
-            if df is None or df.empty or len(df) < 10:
-                continue
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            vol = df["Volume"]
-            c = df["Close"]
+            vol = hist["Volume"]
+            c = hist["Close"]
             avg_vol = vol.tail(20).mean()
             vol_rel = vol.iloc[-1] / avg_vol if avg_vol > 0 else 1.0
-            d1 = float((c.iloc[-1] - c.iloc[-2]) / c.iloc[-2] * 100) if len(c) > 1 and c.iloc[-2] > 0 else 0.0
+            # Fix NaN: si no hay precio anterior valido, d1=0
+            if len(c) > 1 and c.iloc[-2] > 0:
+                d1 = (c.iloc[-1] - c.iloc[-2]) / c.iloc[-2] * 100
+            else:
+                d1 = 0.0
+            # Descartar si precio es NaN o 0
             if c.iloc[-1] != c.iloc[-1] or c.iloc[-1] == 0:
                 continue
             if vol_rel >= 2.5:
@@ -3463,7 +2819,7 @@ def scan_anomalias(stocks):
                     "ticker": t, "nombre": nombre(t),
                     "vol_rel": round(vol_rel, 1),
                     "d1": round(d1, 2) if d1 == d1 else 0.0,
-                    "price": round(float(c.iloc[-1]), 2),
+                    "price": round(c.iloc[-1], 2),
                 })
         except:
             pass
@@ -3585,71 +2941,10 @@ def run_backtest(stocks):
     return results
 
 
-def is_premium(chat_id):
-    """Comprueba si un usuario tiene acceso premium activo."""
-    if chat_id == ALLOWED_USER_ID:
-        return True  # El dueño siempre tiene acceso
-    sub = SUSCRIPTORES.get(chat_id)
-    if not sub:
-        return False
-    if not sub.get("activo"):
-        return False
-    expiry = sub.get("expiry")
-    if expiry and datetime.now() > expiry:
-        SUSCRIPTORES[chat_id]["activo"] = False
-        return False
-    return True
-
-
 def allowed(message):
-    return is_premium(message.from_user.id)
-
-
-def crear_pago_nowpayments(chat_id, descripcion="Premium 1 mes"):
-    """Crea un pago en NOWPayments y devuelve el enlace."""
-    try:
-        url = "https://api.nowpayments.io/v1/invoice"
-        headers = {
-            "x-api-key": NOWPAYMENTS_KEY,
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "price_amount": PRECIO_MENSUAL,
-            "price_currency": "usd",
-            "pay_currency": "usdttrc20",
-            "order_id": f"premium_{chat_id}_{int(datetime.now().timestamp())}",
-            "order_description": descripcion,
-            "ipn_callback_url": "",  # sin webhook por ahora
-            "success_url": "https://t.me/",
-            "cancel_url": "https://t.me/",
-        }
-        r = requests.post(url, json=payload, headers=headers, timeout=10)
-        data = r.json()
-        if "invoice_url" in data:
-            return data["invoice_url"], data.get("id")
-        return None, None
-    except Exception as e:
-        log.error(f"NOWPayments crear pago: {e}")
-        return None, None
-
-
-def activar_suscripcion(chat_id, dias=30):
-    """Activa o renueva la suscripción de un usuario."""
-    import datetime as dt
-    ahora = datetime.now()
-    sub = SUSCRIPTORES.get(chat_id, {})
-    # Si ya tiene suscripción activa, extender desde la fecha de expiración
-    if sub.get("activo") and sub.get("expiry") and sub["expiry"] > ahora:
-        nueva_expiry = sub["expiry"] + __import__('datetime').timedelta(days=dias)
-    else:
-        nueva_expiry = ahora + __import__('datetime').timedelta(days=dias)
-    SUSCRIPTORES[chat_id] = {
-        "activo": True,
-        "expiry": nueva_expiry,
-        "trial_used": sub.get("trial_used", False),
-        "activado": ahora,
-    }
-    return nueva_expiry
+    if ALLOWED_USER_ID == 0:
+        return True
+    return message.from_user.id == ALLOWED_USER_ID
 
 
 def ask_ai(prompt, max_chars=3000):
@@ -3862,28 +3157,29 @@ def main_kb():
 
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
-    chat_id = msg.from_user.id
-    nombre_usuario = msg.from_user.first_name or "inversor"
-
-    if is_premium(chat_id):
-        # Usuario con acceso — mostrar menú completo
-        bot.send_message(chat_id,
-            f"Bienvenido de nuevo {nombre_usuario}! 👋\n"
-            f"Usa /ayuda para ver todos los comandos.",
-            reply_markup=main_kb())
-        return
-
-    # Usuario sin acceso — mostrar bienvenida con trial
-    safe_send(chat_id,
-        f"Hola {nombre_usuario}! 👋\n\n"
-        f"Soy un bot de análisis financiero profesional.\n\n"
-        f"📊 Señales con RSI+MACD+VWAP\n"
-        f"🔍 Análisis fundamental 0-100\n"
-        f"📈 Ciclo Bitcoin (halvings)\n"
-        f"💰 Smart money — Buffett, ARK, Burry...\n"
-        f"⚡ Monitor mercado en tiempo real\n\n"
-        f"🎁 Prueba 7 días GRATIS: /trial\n"
-        f"💳 Suscripción: 19 USDT/mes → /premium")
+    if not allowed(msg): return
+    bot.send_message(msg.chat.id,
+        "Financial Bot - Version Completa\n\n"
+        "CRYPTO:\n"
+        "/btc - Analisis profundo Bitcoin (Fear&Greed, dominancias, S/R)\n"
+        "/crypto - BTC ETH SOL BNB\n\n"
+        "MERCADO:\n"
+        "/senales_eu /senales_us - Senales con grafico\n"
+        "/etfs - ETFs indices, sectoriales, tematicos\n"
+        "/sectores - Semaforo 11 sectores SP500\n"
+        "/bull_detector - Bull runs nacientes\n"
+        "/anomalias - Volumen anomalo posible rumor\n"
+        "/noticias_impacto - M&A, earnings, FDA\n\n"
+        "HERRAMIENTAS:\n"
+        "/alerta TICKER PRECIO\n"
+        "/alertas /borra_alerta 1\n"
+        "/riesgo CAPITAL % TICKER ENTRADA STOP\n"
+        "/analisis TICKER\n"
+        "/macro /backtest /calendario\n"
+        "/metales /ipos /oportunidades\n"
+        "Pregunta libre - IA con precio actual",
+        reply_markup=main_kb()
+    )
 
 
 @bot.message_handler(commands=["btc"])
@@ -4396,6 +3692,7 @@ def cmd_sr(msg):
     else:
         safe_send(msg.chat.id, "Sin acciones en zona critica.", message_id=m.message_id)
 
+
 @bot.message_handler(commands=["metales"])
 def cmd_metales(msg):
     if not allowed(msg): return
@@ -4438,7 +3735,7 @@ def cmd_analisis(msg):
     if len(parts) < 2:
         safe_send(msg.chat.id, "Uso: /analisis TICKER\nEj: /analisis NVDA o /analisis SPY o /analisis SAN.MC")
         return
-    ticker = normalizar_ticker_crypto(parts[1])
+    ticker = parts[1].upper()
     m = bot.send_message(msg.chat.id, f"Analizando {nombre(ticker)}...")
     d = fetch_quote(ticker, "6mo")
     if not d:
@@ -4872,18 +4169,9 @@ def cmd_valor_btc_directo(msg):
     """Llamado desde el boton del menu — calcula valor de BTC directamente."""
     if not allowed(msg): return
     m = bot.send_message(msg.chat.id, "Calculando indice barato/caro de Bitcoin...")
-
-    # Intentar 2 veces con pequeña pausa
-    resultado = None
-    for intento in range(2):
-        resultado = calcular_indice_valor("BTC-USD")
-        if resultado:
-            break
-        if intento == 0:
-            time.sleep(3)
-
+    resultado = calcular_indice_valor("BTC-USD")
     if not resultado:
-        safe_send(msg.chat.id, "Error obteniendo datos de BTC. Intenta en unos segundos.", message_id=m.message_id)
+        safe_send(msg.chat.id, "Error obteniendo datos de BTC.", message_id=m.message_id)
         return
     lines = [f"{resultado['nombre']} ({resultado['ticker']}) — {resultado['price']}",
              f"{resultado['score']}/100 — {resultado['zona']}", "",
@@ -5477,7 +4765,7 @@ def cmd_fundamental(msg):
             "/fundamental AAPL\n"
             "/fundamental IONQ")
         return
-    ticker = normalizar_ticker_crypto(parts[1])
+    ticker = parts[1].upper()
     m = bot.send_message(msg.chat.id, f"Analizando fundamentales de {ticker}... (10-15s)")
 
     resultado = calcular_fundamental(ticker)
@@ -5561,20 +4849,6 @@ def cmd_fundamental(msg):
         safe_send(msg.chat.id, caption + "\n\n" + texto_detalle + f"\n\nANALISIS IA\n{texto_ia}", message_id=m.message_id)
 
 
-def normalizar_ticker_crypto(ticker):
-    """Convierte BTC → BTC-USD, ETH → ETH-USD, etc. automáticamente."""
-    CRYPTO_MAP = {
-        "BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD",
-        "BNB": "BNB-USD", "XRP": "XRP-USD", "ADA": "ADA-USD",
-        "AVAX": "AVAX-USD", "LINK": "LINK-USD", "DOT": "DOT-USD",
-        "MATIC": "MATIC-USD", "UNI": "UNI-USD", "AAVE": "AAVE-USD",
-        "LTC": "LTC-USD", "BCH": "BCH-USD", "ATOM": "ATOM-USD",
-        "NEAR": "NEAR-USD", "ARB": "ARB-USD", "OP": "OP-USD",
-        "DOGE": "DOGE-USD", "SHIB": "SHIB-USD", "TRX": "TRX-USD",
-    }
-    return CRYPTO_MAP.get(ticker.upper(), ticker.upper())
-
-
 @bot.message_handler(commands=["valor"])
 def cmd_valor(msg):
     if not allowed(msg): return
@@ -5588,7 +4862,7 @@ def cmd_valor(msg):
             "/valor NVDA\n"
             "/valor ^GSPC")
         return
-    ticker = normalizar_ticker_crypto(parts[1])
+    ticker = parts[1].upper()
     m = bot.send_message(msg.chat.id, f"Calculando indice barato/caro de {nombre(ticker)}...")
 
     resultado = calcular_indice_valor(ticker)
@@ -5634,345 +4908,57 @@ def cmd_valores(msg):
     safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
 
 
-@bot.message_handler(commands=["trial"])
-def cmd_trial(msg):
-    chat_id = msg.from_user.id
-    sub = SUSCRIPTORES.get(chat_id, {})
-
-    if sub.get("trial_used"):
-        safe_send(chat_id,
-            "Ya usaste el trial gratuito.\n\n"
-            "Para continuar con acceso completo:\n"
-            "/premium — 19 USDT/mes")
-        return
-
-    if is_premium(chat_id):
-        safe_send(chat_id, "Ya tienes acceso activo. Usa /mistatus para ver cuándo expira.")
-        return
-
-    # Activar trial 7 días
-    expiry = activar_suscripcion(chat_id, dias=TRIAL_DIAS)
-    SUSCRIPTORES[chat_id]["trial_used"] = True
-
-    # Notificar al admin
-    nombre_u = msg.from_user.first_name or "Desconocido"
-    username = f"@{msg.from_user.username}" if msg.from_user.username else "sin username"
-    safe_send(ALLOWED_USER_ID,
-        f"🆕 NUEVO TRIAL ACTIVADO\n"
-        f"Nombre: {nombre_u}\n"
-        f"Username: {username}\n"
-        f"Chat ID: {chat_id}\n"
-        f"Expira: {expiry.strftime('%d/%m/%Y')}")
-
-    safe_send(chat_id,
-        f"✅ TRIAL ACTIVADO — 7 días gratis\n\n"
-        f"Expira: {expiry.strftime('%d/%m/%Y a las %H:%M')}\n\n"
-        f"Tienes acceso completo a todos los comandos.\n"
-        f"Escribe /ayuda para ver todo lo disponible.\n\n"
-        f"Al terminar el trial puedes continuar con:\n"
-        f"/premium — 19 USDT/mes")
-
-
-@bot.message_handler(commands=["premium"])
-def cmd_premium(msg):
-    chat_id = msg.from_user.id
-
-    if is_premium(chat_id):
-        sub = SUSCRIPTORES.get(chat_id, {})
-        expiry = sub.get("expiry")
-        expiry_txt = expiry.strftime('%d/%m/%Y') if expiry else "indefinido"
-        safe_send(chat_id,
-            f"Ya tienes acceso premium activo ✅\n"
-            f"Expira: {expiry_txt}\n\n"
-            f"Para renovar antes de que expire usa /premium renovar")
-        return
-
-    enlace, payment_id = crear_pago_nowpayments(chat_id)
-
-    if enlace:
-        safe_send(chat_id,
-            f"SUSCRIPCIÓN PREMIUM\n\n"
-            f"✅ Acceso completo a todos los comandos\n"
-            f"✅ Señales automáticas diarias\n"
-            f"✅ Análisis fundamental + Smart Money\n"
-            f"✅ Monitor de mercado 24/7\n\n"
-            f"Precio: 19 USDT/mes (red TRC20)\n\n"
-            f"👇 Enlace de pago:\n{enlace}\n\n"
-            f"Después de pagar escribe /verificar para activar tu acceso.")
-    else:
-        # Fallback — pago manual
-        safe_send(chat_id,
-            f"SUSCRIPCIÓN PREMIUM — 19 USDT/mes\n\n"
-            f"Envía 19 USDT (red TRC20) a:\n"
-            f"`{WALLET_USDT}`\n\n"
-            f"Después envía el hash de la transacción aquí y activo tu acceso.")
-
-
-@bot.message_handler(commands=["verificar"])
-def cmd_verificar(msg):
-    chat_id = msg.from_user.id
-    parts = msg.text.split()
-
-    if len(parts) < 2:
-        safe_send(chat_id,
-            "Uso: /verificar HASH_TRANSACCION\n\n"
-            "Ejemplo:\n/verificar abc123def456...")
-        return
-
-    tx_hash = parts[1]
-
-    # Verificar pago en blockchain TRC20
-    try:
-        r = requests.get(
-            f"https://apilist.tronscan.org/api/transaction-info?hash={tx_hash}",
-            timeout=10
-        )
-        data = r.json()
-        confirmado = data.get("confirmed", False)
-        cantidad = 0
-
-        # Buscar USDT en los tokens transferidos
-        token_transfers = data.get("tokenTransferInfo", {})
-        if token_transfers:
-            cantidad = float(token_transfers.get("amount_str", "0")) / 1e6
-
-        if not confirmado:
-            safe_send(chat_id, "Transacción no confirmada aún. Espera unos minutos y vuelve a intentarlo.")
-            return
-
-        if cantidad >= PRECIO_MENSUAL * 0.95:  # 5% de tolerancia
-            expiry = activar_suscripcion(chat_id, dias=30)
-            safe_send(chat_id,
-                f"✅ PAGO VERIFICADO — {cantidad:.2f} USDT\n\n"
-                f"Acceso premium activado hasta {expiry.strftime('%d/%m/%Y')}\n\n"
-                f"Escribe /ayuda para ver todos los comandos disponibles.")
-            # Notificar al dueño
-            safe_send(ALLOWED_USER_ID,
-                f"💰 NUEVO SUSCRIPTOR\n"
-                f"Chat ID: {chat_id}\n"
-                f"Nombre: {msg.from_user.first_name}\n"
-                f"Pago: {cantidad:.2f} USDT\n"
-                f"TX: {tx_hash[:20]}...")
-        else:
-            safe_send(chat_id,
-                f"Pago detectado pero cantidad insuficiente ({cantidad:.2f} USDT).\n"
-                f"Se necesitan {PRECIO_MENSUAL} USDT.")
-
-    except Exception as e:
-        log.error(f"Verificar pago: {e}")
-        safe_send(chat_id,
-            "No pude verificar automáticamente.\n"
-            f"Envía el hash al administrador para verificación manual.")
-
-
-@bot.message_handler(commands=["mistatus"])
-def cmd_mistatus(msg):
-    chat_id = msg.from_user.id
-
-    if chat_id == ALLOWED_USER_ID:
-        total = len([s for s in SUSCRIPTORES.values() if s.get("activo")])
-        safe_send(chat_id, f"Eres el administrador.\nSuscriptores activos: {total}")
-        return
-
-    sub = SUSCRIPTORES.get(chat_id)
-    if not sub or not sub.get("activo"):
-        safe_send(chat_id,
-            "No tienes suscripción activa.\n\n"
-            "/trial — 7 días gratis\n"
-            "/premium — 19 USDT/mes")
-        return
-
-    expiry = sub.get("expiry")
-    dias_restantes = (expiry - datetime.now()).days if expiry else 0
-    tipo = "TRIAL" if sub.get("trial_used") and dias_restantes > 0 else "PREMIUM"
-
-    safe_send(chat_id,
-        f"ESTADO DE TU SUSCRIPCIÓN\n\n"
-        f"Tipo: {tipo}\n"
-        f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'N/D'}\n"
-        f"Días restantes: {dias_restantes}\n\n"
-        f"{'Renueva con /premium' if dias_restantes < 5 else '✅ Acceso activo'}")
-
-
-@bot.message_handler(commands=["activar"])
-def cmd_activar(msg):
-    """Solo el administrador puede activar manualmente."""
-    if msg.from_user.id != ALLOWED_USER_ID:
-        return
-    parts = msg.text.split()
-    if len(parts) < 2:
-        safe_send(msg.chat.id, "Uso: /activar CHAT_ID [dias]\nEjemplo: /activar 123456789 30")
-        return
-    try:
-        target_id = int(parts[1])
-        dias = int(parts[2]) if len(parts) > 2 else 30
-        expiry = activar_suscripcion(target_id, dias=dias)
-        safe_send(msg.chat.id, f"✅ Activado usuario {target_id} hasta {expiry.strftime('%d/%m/%Y')}")
-        safe_send(target_id, f"✅ Tu acceso premium ha sido activado hasta {expiry.strftime('%d/%m/%Y')}\n\nEscribe /ayuda para ver todos los comandos.")
-    except Exception as e:
-        safe_send(msg.chat.id, f"Error: {e}")
-
-
-@bot.message_handler(commands=["suscriptores"])
-def cmd_suscriptores(msg):
-    """Solo el administrador."""
-    if msg.from_user.id != ALLOWED_USER_ID:
-        return
-    activos = [(cid, s) for cid, s in SUSCRIPTORES.items() if s.get("activo")]
-    if not activos:
-        safe_send(msg.chat.id, "Sin suscriptores activos.")
-        return
-    lines = [f"SUSCRIPTORES ACTIVOS: {len(activos)}\n"]
-    for cid, s in activos:
-        expiry = s.get("expiry")
-        dias = (expiry - datetime.now()).days if expiry else 0
-        lines.append(f"ID: {cid} — {dias} días restantes")
-    safe_send(msg.chat.id, "\n".join(lines))
-
-
 @bot.message_handler(commands=["ayuda"])
 def cmd_ayuda(msg):
     if not allowed(msg): return
-
-    # Mandamos en varios mensajes para que no se corte
     safe_send(msg.chat.id,
-        "GUIA COMPLETA — ANALISIS PRO\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "CRYPTO\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "/btc — Análisis profundo Bitcoin\n"
-        "Incluye: precio Binance real, Fear&Greed, dominancias BTC/ETH/USDT, funding rate, open interest, long/short ratio, liquidaciones, soportes y resistencias, análisis IA\n\n"
-        "/crypto — Resumen rápido BTC, ETH, SOL, BNB\n"
-        "Precio actual, RSI, variación diaria y semanal de las 4 cryptos principales\n\n"
-        "/halvingbtc — Ciclo de 4 años Bitcoin\n"
-        "Gráfico histórico desde 2012 con las fases Bull/Bear/Recovery marcadas, ATH real, zona suelo posible y proyección del próximo ciclo 2028-2029\n\n"
-        "⚠️ TICKERS CRYPTO: usa siempre el formato TICKER-USD\n"
-        "Ejemplos: BTC-USD, ETH-USD, SOL-USD, XRP-USD, AVAX-USD, LINK-USD\n"
-        "/analisis XRP-USD → análisis técnico de XRP\n"
-        "/valor XRP-USD → índice barato/caro de XRP")
-
-    time.sleep(0.5)
-    safe_send(msg.chat.id,
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "SEÑALES DE TRADING\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "/senales_eu — Mejores setups Europa\n"
-        "Escanea IBEX 35 completo + CAC + DAX + FTSE. Filtra por RSI diario + RSI semanal + VWAP + volumen + tendencia EMA. Score mínimo 12/28. Incluye gráfico con velas, VWAP, Bollinger y niveles\n\n"
-        "/senales_us — Mejores setups EEUU\n"
-        "Escanea 60+ acciones: grandes caps (NVDA, AAPL...) + mid caps especulativas (PLTR, COIN, RKLB...). Solo acciones, sin crypto\n\n"
+        "GUIA COMPLETA DE COMANDOS\n\n"
+        "CRYPTO:\n"
+        "/btc — Analisis profundo BTC (derivados Binance)\n"
+        "/crypto — BTC ETH SOL BNB precios y RSI\n"
+        "/halvingbtc — Ciclo 4 años Bitcoin + proyección 2029\n\n"
+        "SEÑALES:\n"
+        "/senales_eu — Europa (RSI+MACD+VWAP+2TF)\n"
+        "/senales_us — Acciones EEUU\n"
         "/intraday — Señales intradía 15min\n"
-        "Para operaciones del mismo día. Usa datos de 15 minutos. Criterios: VWAP + MACD + volumen elevado. TP más cercanos que swing\n\n"
-        "/etfs — ETFs con señales\n"
-        "Índices (SPY, QQQ, IWM), sectoriales (XLK, XLF, XLE...) y temáticos (BOTZ, ARKK, SOXX, ICLN...)")
-
-    time.sleep(0.5)
-    safe_send(msg.chat.id,
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "ANÁLISIS INDIVIDUAL\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/etfs — ETFs con señales\n\n"
+        "ANÁLISIS:\n"
         "/analisis TICKER — Análisis técnico completo\n"
-        "Precio real, RSI diario, RSI semanal, MACD, VWAP, EMA20, EMA50, ATR, soportes, resistencias, niveles psicológicos y análisis IA\n"
-        "Ejemplos: /analisis NVDA | /analisis SAN.MC | /analisis XRP-USD\n\n"
         "/fundamental TICKER — Análisis fundamental 0-100\n"
-        "5 categorías: Valoración (P/E, PEG, EV/EBITDA) + Salud financiera (deuda, caja, liquidez) + Rentabilidad (FCF, márgenes, ROE) + Crecimiento (ingresos, beneficios) + Potencial LP (moat, insiders, dividendo). Ajustado por tipo de empresa (utility, growth, consumer, materials, biotech). Incluye estimación precio justo, 1 año y 3 años\n"
-        "Ejemplos: /fundamental NVDA | /fundamental NKE | /fundamental SAN.MC\n\n"
         "/valor TICKER — Índice barato/caro 0-100\n"
-        "Estilo FREDI. 100=muy barato, 0=muy caro. Componentes distintos según tipo de activo:\n"
-        "Crypto: Fear&Greed + RSI + EMA200 + Funding Rate + DXY + Volumen\n"
-        "Acciones: RSI + EMA200 + VIX + RSI semanal + Dist. máximo 52s + Volumen\n"
-        "Ejemplos: /valor BTC-USD | /valor NVDA | /valor ^GSPC")
-
-    time.sleep(0.5)
-    safe_send(msg.chat.id,
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "CICLO Y MERCADO\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "/ciclo — Ciclo psicológico de mercado\n"
-        "Muestra en qué fase del ciclo están BTC, SP500 y DAX. Con flechas de dirección, % completado, potencial restante y acción recomendada (COMPRAR/VENDER/REDUCIR). Zonas verde (compra) y roja (venta) marcadas\n\n"
-        "/mercadoahora — Snapshot visual del mercado\n"
-        "Gráfico de barras verde/rojo con variación del día: SP500, Nasdaq, DAX, IBEX, CAC, Bitcoin, Ethereum, Oro, Petróleo, DXY. Se actualiza automáticamente cada 30 minutos si hay movimientos importantes\n\n"
-        "/macro — Datos macroeconómicos\n"
-        "VIX (miedo), DXY (dólar), US10Y (bono EEUU), Oro y Petróleo WTI con variación diaria y semanal + análisis IA\n\n"
-        "/sectores — Semáforo 11 sectores SP500\n"
-        "Estado BULL/NEUTRO/BEAR de tecnología, finanzas, salud, energía, consumo, industrial, utilities, materiales, inmobiliario, comunicaciones\n\n"
+        "/valores — BTC/ETH/SP500/DAX/IBEX resumen\n\n"
+        "CICLO Y MERCADO:\n"
+        "/ciclo — Ciclo psicológico BTC/SP500/DAX\n"
+        "/halvingbtc — Ciclo 4 años con halvings\n"
         "/mercados — Índices EU y EEUU\n"
-        "SP500, Dow Jones, Nasdaq, Euro Stoxx, DAX, FTSE, IBEX, CAC")
-
-    time.sleep(0.5)
-    safe_send(msg.chat.id,
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "SMART MONEY\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "/smartmoney — Consenso grandes fondos\n"
-        "Detecta qué acciones están comprando simultáneamente 2 o más grandes fondos. Señal muy potente cuando Buffett + Tepper + Dalio coinciden en la misma acción\n\n"
-        "/carteras — Posiciones de grandes inversores\n"
-        "/carteras BUFFETT → Warren Buffett (Berkshire)\n"
-        "/carteras ARK → Cathie Wood (ARK Invest)\n"
-        "/carteras BURRY → Michael Burry (Scion)\n"
-        "/carteras ACKMAN → Bill Ackman (Pershing)\n"
-        "/carteras DALIO → Ray Dalio (Bridgewater)\n"
-        "/carteras TEPPER → David Tepper (Appaloosa)\n\n"
+        "/sectores — Semáforo 11 sectores SP500\n"
+        "/macro — VIX, DXY, bonos, oro, petróleo\n\n"
+        "SMART MONEY:\n"
         "/insiders — Compras masivas de directivos\n"
-        "Cuando el CEO o CFO compran acciones de su propia empresa es señal muy alcista. Escanea compras >500.000 USD en los últimos 30 días\n"
-        "/insiders NVDA → insiders de Nvidia concretamente")
-
-    time.sleep(0.5)
-    safe_send(msg.chat.id,
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "DETECTORES\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/insiders NVDA — Insiders de una empresa\n"
+        "/carteras — Grandes fondos (Buffett, ARK...)\n"
+        "/carteras BUFFETT — Posiciones de Berkshire\n"
+        "/carteras ARK — Cathie Wood\n"
+        "/carteras BURRY — Michael Burry\n\n"
+        "DETECTORES:\n"
         "/infravaloradas — Acciones caídas con potencial\n"
-        "Busca acciones que han caído >20% desde máximos pero muestran señales de rebote: RSI en zona de compra, volumen creciendo silenciosamente (acumulación institucional), rebote desde mínimos. Escanea 100+ activos\n\n"
         "/bull_detector — Bull runs nacientes\n"
-        "Detecta sectores y acciones que están iniciando tendencias alcistas antes de que sean evidentes\n\n"
-        "/anomalias — Volumen anómalo\n"
-        "Detecta activos con volumen 2.5x superior a la media. Suele preceder noticias de M&A, resultados o movimientos institucionales\n\n"
+        "/anomalias — Volumen anómalo posible rumor\n"
         "/explosiones — Momentum explosivo\n"
-        "Acciones con volumen 1.8x + subida >3% + cerca de máximo anual. Las que están a punto de romper\n\n"
-        "/noticias_impacto — M&A, earnings, FDA\n"
-        "Filtra noticias de alto impacto: fusiones y adquisiciones, resultados sorpresa, aprobaciones FDA, contratos importantes")
-
-    time.sleep(0.5)
-    safe_send(msg.chat.id,
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "HERRAMIENTAS\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "/seguimiento — Ver P&L de tus trades abiertos\n"
-        "/seguimiento add NVDA 890 865 920 950 → añadir trade (ticker, entrada, stop, TP1, TP2)\n"
-        "/seguimiento close 1 → cerrar el trade número 1\n\n"
-        "/alerta NVDA 950 — Alerta de precio\n"
-        "Te avisa cuando NVDA llegue a 950. Funciona 24/7 también en crypto\n"
-        "/alertas → ver alertas activas\n"
-        "/borra_alerta 1 → eliminar alerta número 1\n\n"
+        "/noticias_impacto — M&A, earnings, FDA\n\n"
+        "HERRAMIENTAS:\n"
+        "/seguimiento — Ver P&L trades abiertos\n"
+        "/seguimiento add NVDA 890 865 920 950\n"
+        "/seguimiento close 1\n"
+        "/alerta NVDA 950 — Avisa cuando llegue\n"
+        "/alertas — Ver alertas activas\n"
+        "/borra_alerta 1\n"
         "/riesgo 10000 2 NVDA 890 865\n"
-        "Calcula cuántas acciones comprar con 10.000€ arriesgando el 2%, con entrada en 890 y stop en 865\n\n"
-        "/backtest — Histórico de aciertos del sistema\n"
-        "Analiza los últimos 3 meses: cuántas señales dieron TP y cuántas tocaron stop\n\n"
-        "/resumen_semana — Balance semanal\n"
-        "Ganadores y perdedores de la semana + perspectiva para la siguiente\n\n"
-        "/valores — Vista rápida 0-100 de BTC/ETH/SP500/DAX/IBEX\n\n"
-        "/metales /ipos /calendario /oportunidades\n\n"
-        "Pregunta libre → la IA responde con datos reales actuales\n"
-        "Ejemplo: 'cómo está el sector nuclear?' o 'análisis de Tesla'")
-
-    time.sleep(0.5)
-    safe_send(msg.chat.id,
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "TU SUSCRIPCIÓN\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "/mistatus → ver cuándo expira tu acceso\n"
-        "/premium → renovar suscripción (19 USDT/mes)\n"
-        "/verificar HASH → activar acceso tras pagar\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "TICKERS DE REFERENCIA\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "IBEX: SAN.MC BBVA.MC ITX.MC REP.MC TEF.MC\n"
-        "CAC: BNP.PA AIR.PA OR.PA MC.PA\n"
-        "DAX: BMW.DE SAP SIE.DE BAYN.DE\n"
-        "EEUU: AAPL MSFT NVDA AMZN GOOGL META TSLA\n"
-        "Crypto: BTC-USD ETH-USD SOL-USD XRP-USD BNB-USD\n"
-        "ETFs: SPY QQQ GLD ARKK BOTZ SOXX\n"
-        "Macro: ^VIX ^GSPC ^GDAXI GC=F CL=F")
+        "/backtest — Histórico aciertos sistema\n"
+        "/resumen_semana — Balance semanal\n\n"
+        "OTROS:\n"
+        "/metales /ipos /calendario /sr\n"
+        "Pregunta libre — IA responde con precio real")
 
 
 @bot.message_handler(func=lambda m: True)
@@ -6588,12 +5574,7 @@ if __name__ == "__main__":
         scheduler.add_job(job_explosion_scanner, "interval", hours=3)
         scheduler.add_job(job_metales_scanner,   "interval", hours=4)
         scheduler.add_job(job_sr_scanner,        "interval", hours=2)
-        # Refrescar caché macro cada hora
-        scheduler.add_job(precalentar_cache,     "interval", hours=1)
         scheduler.start()
         log.info("Jobs automaticos activados")
-    # Precalentar caché al arrancar
-    precalentar_cache()
     log.info("Financial Bot arrancado - Version Completa v6")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
-
