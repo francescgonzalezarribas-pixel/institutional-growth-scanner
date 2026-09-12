@@ -861,9 +861,9 @@ def fetch_ema200_distance(ticker):
 
 def calcular_indice_valor(ticker):
     """
-    Indice 0-100 estilo FREDI: 100=barato (zona acumulacion), 0=caro (zona venta).
-    Detecta automaticamente el tipo de activo (crypto/accion/indice) y usa
-    6 componentes especificos por tipo, cada uno puntuado 0-10.
+    Indice 0-100: 100=barato (acumulacion), 0=caro (venta).
+    Para crypto BTC: indicadores de CICLO LARGO sin RSI diario.
+    Para acciones/indices: indicadores tecnicos clasicos.
     """
     es_crypto = ticker in COINGECKO_IDS or "-USD" in ticker
     es_indice = ticker.startswith("^")
@@ -875,114 +875,131 @@ def calcular_indice_valor(ticker):
     ema200_data = fetch_ema200_distance(ticker)
     componentes = {}
 
-    # RSI 14d diario (comun a todos)
-    rsi = d["rsi"]
-    if rsi < 25:   pts_rsi = 10
-    elif rsi < 35: pts_rsi = 8
-    elif rsi < 45: pts_rsi = 6
-    elif rsi < 55: pts_rsi = 5
-    elif rsi < 65: pts_rsi = 3
-    elif rsi < 75: pts_rsi = 2
-    else:          pts_rsi = 1
-    componentes["RSI 14d"] = {"valor": rsi, "puntos": pts_rsi}
-
-    # EMA200 distancia (comun a todos) — lejos por debajo = barato
+    # EMA 200 — el indicador mas importante del ciclo
     if ema200_data:
         dist = ema200_data["dist_pct"]
-        if dist < -30:   pts_ema = 10
-        elif dist < -20: pts_ema = 9
-        elif dist < -10: pts_ema = 7
-        elif dist < 0:   pts_ema = 5
-        elif dist < 10:  pts_ema = 3
-        elif dist < 20:  pts_ema = 2
-        else:            pts_ema = 1
-        componentes["EMA200"] = {"valor": f"{dist:+.1f}%", "puntos": pts_ema}
+        if dist < -30:   pts_ema = 10; ema_txt = f"{dist:+.1f}% — muy por debajo (suelo)"
+        elif dist < -15: pts_ema = 9;  ema_txt = f"{dist:+.1f}% — por debajo (bear)"
+        elif dist < -5:  pts_ema = 7;  ema_txt = f"{dist:+.1f}% — tocando EMA200"
+        elif dist < 0:   pts_ema = 5;  ema_txt = f"{dist:+.1f}% — justo bajo EMA200"
+        elif dist < 10:  pts_ema = 3;  ema_txt = f"{dist:+.1f}% — sobre EMA200 (bull)"
+        elif dist < 25:  pts_ema = 2;  ema_txt = f"{dist:+.1f}% — alejado EMA200"
+        else:            pts_ema = 1;  ema_txt = f"{dist:+.1f}% — muy lejos (euforia)"
+        componentes["EMA 200"] = {"valor": ema_txt, "puntos": pts_ema}
     else:
         pts_ema = 5
-        componentes["EMA200"] = {"valor": "N/D", "puntos": 5}
-
-    # Volumen — alto volumen en caida fuerte = posible capitulacion
-    vol_rel = d["vol_rel"]
-    d1 = d["d1"]
-    if vol_rel > 1.5 and d1 < -2:
-        pts_vol = 9
-    elif vol_rel > 1.2 and d1 < 0:
-        pts_vol = 7
-    elif vol_rel < 0.7:
-        pts_vol = 5
-    else:
-        pts_vol = 4
-    componentes["Volumen"] = {"valor": f"{vol_rel}x", "puntos": pts_vol}
+        componentes["EMA 200"] = {"valor": "N/D", "puntos": 5}
 
     if es_crypto:
-        # Fear & Greed
+        # 1. FEAR & GREED
         fg = get_fear_greed()
         if fg:
             fgv = fg["valor"]
-            if fgv < 20:   pts_fg = 10
-            elif fgv < 30: pts_fg = 8
-            elif fgv < 45: pts_fg = 6
-            elif fgv < 55: pts_fg = 5
-            elif fgv < 70: pts_fg = 3
-            elif fgv < 80: pts_fg = 2
-            else:          pts_fg = 1
-            componentes["Fear&Greed"] = {"valor": fgv, "puntos": pts_fg}
+            if fgv < 15:   pts_fg = 10; fg_txt = f"{fgv} — MIEDO EXTREMO (suelo)"
+            elif fgv < 30: pts_fg = 8;  fg_txt = f"{fgv} — Miedo (buena zona)"
+            elif fgv < 45: pts_fg = 6;  fg_txt = f"{fgv} — Miedo moderado"
+            elif fgv < 55: pts_fg = 5;  fg_txt = f"{fgv} — Neutral"
+            elif fgv < 70: pts_fg = 3;  fg_txt = f"{fgv} — Codicia"
+            elif fgv < 85: pts_fg = 2;  fg_txt = f"{fgv} — Codicia extrema"
+            else:          pts_fg = 1;  fg_txt = f"{fgv} — EUFORIA (techo)"
+            componentes["Fear & Greed"] = {"valor": fg_txt, "puntos": pts_fg}
         else:
             pts_fg = 5
-            componentes["Fear&Greed"] = {"valor": "N/D", "puntos": 5}
+            componentes["Fear & Greed"] = {"valor": "N/D", "puntos": 5}
 
-        # Funding rate
+        # 2. FUNDING RATE
         symbol_map = {"BTC-USD":"BTCUSDT","ETH-USD":"ETHUSDT","SOL-USD":"SOLUSDT","BNB-USD":"BNBUSDT"}
         binance_sym = symbol_map.get(ticker, "BTCUSDT")
         deriv = get_binance_derivatives(binance_sym)
         funding = deriv.get("funding", {}).get("valor") if deriv else None
         if funding is not None:
-            if funding < -0.02:   pts_fund = 10
-            elif funding < 0:     pts_fund = 7
-            elif funding < 0.01:  pts_fund = 5
-            elif funding < 0.03:  pts_fund = 3
-            elif funding < 0.05:  pts_fund = 2
-            else:                 pts_fund = 1
-            componentes["Funding Rate"] = {"valor": f"{funding:+.4f}%", "puntos": pts_fund}
+            if funding < -0.02:   pts_fund = 10; fund_txt = f"{funding:+.4f}% — shorts pagando (suelo)"
+            elif funding < 0:     pts_fund = 7;  fund_txt = f"{funding:+.4f}% — negativo (bajista)"
+            elif funding < 0.01:  pts_fund = 5;  fund_txt = f"{funding:+.4f}% — neutro"
+            elif funding < 0.03:  pts_fund = 3;  fund_txt = f"{funding:+.4f}% — longs pagando"
+            else:                 pts_fund = 1;  fund_txt = f"{funding:+.4f}% — apalancamiento extremo"
+            componentes["Funding Rate"] = {"valor": fund_txt, "puntos": pts_fund}
         else:
             pts_fund = 5
             componentes["Funding Rate"] = {"valor": "N/D", "puntos": 5}
 
-        # DXY — dolar fuerte suele coincidir con suelos de crypto
+        # 3. DXY
         dxy_d = fetch_quote("DX-Y.NYB", "1mo")
         if dxy_d:
             dxy_val = dxy_d["price"]
-            if dxy_val > 105:   pts_dxy = 8
-            elif dxy_val > 102: pts_dxy = 6
-            elif dxy_val > 99:  pts_dxy = 5
-            elif dxy_val > 96:  pts_dxy = 3
-            else:               pts_dxy = 2
-            componentes["DXY"] = {"valor": dxy_val, "puntos": pts_dxy}
+            if dxy_val > 106:   pts_dxy = 9; dxy_txt = f"{dxy_val} — dolar muy fuerte (suelo crypto)"
+            elif dxy_val > 103: pts_dxy = 7; dxy_txt = f"{dxy_val} — dolar fuerte"
+            elif dxy_val > 100: pts_dxy = 5; dxy_txt = f"{dxy_val} — dolar neutral"
+            elif dxy_val > 97:  pts_dxy = 3; dxy_txt = f"{dxy_val} — dolar debil"
+            else:               pts_dxy = 2; dxy_txt = f"{dxy_val} — dolar muy debil"
+            componentes["DXY Dolar"] = {"valor": dxy_txt, "puntos": pts_dxy}
         else:
             pts_dxy = 5
-            componentes["DXY"] = {"valor": "N/D", "puntos": 5}
+            componentes["DXY Dolar"] = {"valor": "N/D", "puntos": 5}
 
-        # Google Trends — poco interés = zona de suelo, mucho = techo
+        # 4. GOOGLE TRENDS
         keyword = "Bitcoin" if "BTC" in ticker else "Ethereum" if "ETH" in ticker else "crypto"
         trends = get_google_trends(keyword, timeframe="today 3-m")
         if trends:
             nivel = trends["nivel_relativo"]
-            if nivel < 15:    pts_trends = 10; señal_txt = f"{nivel}% — nadie busca SUELO"
-            elif nivel < 25:  pts_trends = 8;  señal_txt = f"{nivel}% — interés muy bajo"
-            elif nivel < 40:  pts_trends = 6;  señal_txt = f"{nivel}% — interés bajo"
-            elif nivel < 60:  pts_trends = 5;  señal_txt = f"{nivel}% — interés normal"
-            elif nivel < 75:  pts_trends = 3;  señal_txt = f"{nivel}% — interés alto"
-            elif nivel < 90:  pts_trends = 2;  señal_txt = f"{nivel}% — interés muy alto"
-            else:             pts_trends = 1;  señal_txt = f"{nivel}% — EUFORIA TECHO"
-            componentes["Google Trends"] = {"valor": señal_txt, "puntos": pts_trends}
+            if nivel < 15:    pts_trends = 10; t_txt = f"{nivel}% — nadie busca (SUELO)"
+            elif nivel < 25:  pts_trends = 8;  t_txt = f"{nivel}% — interes muy bajo"
+            elif nivel < 40:  pts_trends = 6;  t_txt = f"{nivel}% — interes bajo"
+            elif nivel < 60:  pts_trends = 5;  t_txt = f"{nivel}% — interes normal"
+            elif nivel < 75:  pts_trends = 3;  t_txt = f"{nivel}% — interes alto"
+            elif nivel < 90:  pts_trends = 2;  t_txt = f"{nivel}% — interes muy alto"
+            else:             pts_trends = 1;  t_txt = f"{nivel}% — EUFORIA (techo)"
+            componentes["Google Trends"] = {"valor": t_txt, "puntos": pts_trends}
         else:
             pts_trends = 5
             componentes["Google Trends"] = {"valor": "N/D", "puntos": 5}
 
-        total_pts = pts_rsi + pts_ema + pts_vol + pts_fg + pts_fund + pts_dxy + pts_trends
+        # 5. CICLO HALVING — posicion en el ciclo de 4 anos
+        import datetime as dt_mod
+        halving4 = dt_mod.date(2024, 4, 19)
+        meses_halving = (dt_mod.date.today() - halving4).days // 30
+        if meses_halving < 6:    pts_halving = 7;  h_txt = f"Mes {meses_halving} — bull temprano"
+        elif meses_halving < 18: pts_halving = 4;  h_txt = f"Mes {meses_halving} — bull maduro"
+        elif meses_halving < 22: pts_halving = 2;  h_txt = f"Mes {meses_halving} — zona de techo"
+        elif meses_halving < 32: pts_halving = 6;  h_txt = f"Mes {meses_halving} — bear (caida normal)"
+        elif meses_halving < 40: pts_halving = 9;  h_txt = f"Mes {meses_halving} — suelo historico"
+        else:                    pts_halving = 8;  h_txt = f"Mes {meses_halving} — recuperacion"
+        componentes["Ciclo Halving"] = {"valor": h_txt, "puntos": pts_halving}
+
+        # 6. FLUJOS ETF — institucionales comprando o vendiendo
+        try:
+            ibit = fetch_quote("IBIT", "1mo")
+            if ibit:
+                btc_sem = d["d5"]
+                ibit_sem = ibit["d5"]
+                diferencia = ibit_sem - btc_sem
+                if diferencia > 2:    pts_etf = 9;  etf_txt = f"IBIT +{ibit_sem:.1f}% — fondos comprando"
+                elif diferencia > 0:  pts_etf = 7;  etf_txt = f"IBIT {ibit_sem:.1f}% — flujo positivo"
+                elif diferencia > -2: pts_etf = 5;  etf_txt = f"IBIT {ibit_sem:.1f}% — flujo neutral"
+                else:                 pts_etf = 3;  etf_txt = f"IBIT {ibit_sem:.1f}% — flujo negativo"
+                componentes["Flujos ETF"] = {"valor": etf_txt, "puntos": pts_etf}
+            else:
+                pts_etf = 5
+                componentes["Flujos ETF"] = {"valor": "N/D", "puntos": 5}
+        except:
+            pts_etf = 5
+            componentes["Flujos ETF"] = {"valor": "N/D", "puntos": 5}
+
+        total_pts = pts_ema + pts_fg + pts_fund + pts_dxy + pts_trends + pts_halving + pts_etf
+        max_pts = 70
 
     else:
-        # ACCION o INDICE: VIX, RSI semanal, distancia maximo 52 semanas
+        # ACCION o INDICE
+        rsi = d["rsi"]
+        if rsi < 25:   pts_rsi = 10
+        elif rsi < 35: pts_rsi = 8
+        elif rsi < 45: pts_rsi = 6
+        elif rsi < 55: pts_rsi = 5
+        elif rsi < 65: pts_rsi = 3
+        elif rsi < 75: pts_rsi = 2
+        else:          pts_rsi = 1
+        componentes["RSI 14d"] = {"valor": rsi, "puntos": pts_rsi}
+
         vix_d = fetch_quote("^VIX", "1mo")
         if vix_d:
             vix_val = vix_d["price"]
@@ -1019,34 +1036,24 @@ def calcular_indice_valor(ticker):
         else:               pts_52 = 1
         componentes["Dist. Max 52s"] = {"valor": f"{dist_52:+.1f}%", "puntos": pts_52}
 
-        total_pts = pts_rsi + pts_ema + pts_vol + pts_vix + pts_rsiw + pts_52
+        vol_rel = d["vol_rel"]
+        d1 = d["d1"]
+        if vol_rel > 1.5 and d1 < -2: pts_vol = 9
+        elif vol_rel > 1.2 and d1 < 0: pts_vol = 7
+        elif vol_rel < 0.7: pts_vol = 5
+        else: pts_vol = 4
+        componentes["Volumen"] = {"valor": f"{vol_rel}x", "puntos": pts_vol}
 
-    # Normalizar: crypto tiene 7 componentes (70pts max), acciones 6 (60pts max)
-    max_pts = 70 if es_crypto else 60
-    score_final = round(total_pts / max_pts * 100)
+        total_pts = pts_ema + pts_rsi + pts_vix + pts_rsiw + pts_52 + pts_vol
+        max_pts = 60
 
-    if score_final >= 80:
-        zona = "BARATO — ACUMULACION FUERTE"
-    elif score_final >= 65:
-        zona = "BARATO — BUENA ZONA DE COMPRA"
-    elif score_final >= 45:
-        zona = "NEUTRAL"
-    elif score_final >= 30:
-        zona = "CARO — PRECAUCION"
-    else:
-        zona = "MUY CARO — ZONA DE VENTA"
+    score_final = max(0, min(100, round(total_pts / max_pts * 100)))
 
-    return {
-        "ticker": ticker,
-        "nombre": nombre(ticker),
-        "price": d["price"],
-        "cambio_hoy": d.get("d1", 0),
-        "score": score_final,
-        "zona": zona,
-        "componentes": componentes,
-        "tipo": "crypto" if es_crypto else ("indice" if es_indice else "accion"),
-    }
-
+    if score_final >= 80:    zona = "BARATO — ACUMULACION FUERTE"
+    elif score_final >= 65:  zona = "BARATO — BUENA ZONA DE COMPRA"
+    elif score_final >= 45:  zona = "NEUTRAL"
+    elif score_final >= 30:  zona = "CARO — PRECAUCION"
+    else:                    zona = "MUY CARO — ZONA DE VENTA"
 
 def generate_valor_gauge(resultado):
     """Genera gauge visual mejorado — velocimetro + barras de componentes legibles."""
