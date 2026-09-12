@@ -1513,10 +1513,21 @@ def generate_halving_chart():
     import pandas as pd
 
     try:
-        btc = yf.Ticker("BTC-USD")
-        hist = btc.history(start="2012-01-01", interval="1mo")
-        if hist.empty:
-            hist = btc.history(period="max", interval="1mo")
+        # Usar Binance para histórico mensual de BTC
+        r_btc = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": "BTCUSDT", "interval": "1M", "limit": 200},
+            timeout=10
+        )
+        if r_btc.status_code == 200:
+            klines = r_btc.json()
+            import datetime as dt_mod
+            dates = [pd.Timestamp(k[0], unit='ms') for k in klines]
+            closes = [float(k[4]) for k in klines]
+            hist = pd.DataFrame({"Close": closes, "High": [float(k[2]) for k in klines],
+                                  "Low": [float(k[3]) for k in klines]}, index=dates)
+        else:
+            hist = pd.DataFrame()
     except:
         hist = pd.DataFrame()
 
@@ -6618,23 +6629,17 @@ if __name__ == "__main__":
         scheduler.add_job(job_crypto_weekend,    "cron", hour=10, minute=0)
         # Alertas precio siempre
         scheduler.add_job(job_check_alerts,      "interval", minutes=5)
-        # Monitor mercado cada 30min
-        scheduler.add_job(job_monitor_mercado,   "interval", minutes=30)
-        # Alerta funding rate cada hora
-        scheduler.add_job(job_alerta_funding,    "interval", hours=1)
-        # Alerta Fear&Greed cada 6h
-        scheduler.add_job(job_alerta_fear_greed, "interval", hours=6)
-        # Alerta VIX cada 2h laborables
-        scheduler.add_job(job_alerta_vix,        "interval", hours=2)
-        # Scanners
-        scheduler.add_job(job_anomalias_scanner, "interval", hours=2)
-        scheduler.add_job(job_noticias_impacto,  "interval", hours=3)
-        scheduler.add_job(job_bull_detector,     "interval", hours=4)
-        scheduler.add_job(job_explosion_scanner, "interval", hours=3)
-        scheduler.add_job(job_metales_scanner,   "interval", hours=4)
-        scheduler.add_job(job_sr_scanner,        "interval", hours=2)
-        # Refrescar caché macro cada hora
-        scheduler.add_job(precalentar_cache,     "interval", hours=1)
+        scheduler.add_job(job_monitor_mercado,   "interval", hours=1)
+        scheduler.add_job(job_alerta_funding,    "interval", hours=2)
+        scheduler.add_job(job_alerta_fear_greed, "interval", hours=8)
+        scheduler.add_job(job_alerta_vix,        "interval", hours=4)
+        scheduler.add_job(job_anomalias_scanner, "interval", hours=6)
+        scheduler.add_job(job_noticias_impacto,  "interval", hours=6)
+        scheduler.add_job(job_bull_detector,     "interval", hours=8)
+        scheduler.add_job(job_explosion_scanner, "interval", hours=8)
+        scheduler.add_job(job_metales_scanner,   "interval", hours=12)
+        scheduler.add_job(job_sr_scanner,        "interval", hours=6)
+        scheduler.add_job(precalentar_cache,     "interval", hours=2)
         scheduler.start()
         log.info("Jobs automaticos activados")
     # Precalentar caché al arrancar
