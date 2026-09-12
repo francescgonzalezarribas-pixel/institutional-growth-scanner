@@ -451,6 +451,11 @@ def fetch_quote(ticker, period="3mo"):
                 hist = yf.download(ticker, period=p, progress=False, auto_adjust=True)
             if hist.empty or len(hist) < 5:
                 continue
+
+            # Fix yfinance 1.4.x — puede devolver MultiIndex columns
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = hist.columns.get_level_values(0)
+
             c, h, lo = hist["Close"], hist["High"], hist["Low"]
             vol = hist["Volume"]
             price = c.iloc[-1]
