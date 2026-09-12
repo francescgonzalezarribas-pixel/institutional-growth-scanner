@@ -1204,19 +1204,29 @@ def calcular_indice_valor(ticker):
             pts_fund = 5
             componentes["Funding Rate"] = {"valor": "N/D", "puntos": 5}
 
-        # 3. DXY
-        dxy_d = fetch_quote("DX-Y.NYB", "1mo")
-        if dxy_d:
-            dxy_val = dxy_d["price"]
-            if dxy_val > 106:   pts_dxy = 9; dxy_txt = f"{dxy_val} — dolar muy fuerte (suelo crypto)"
-            elif dxy_val > 103: pts_dxy = 7; dxy_txt = f"{dxy_val} — dolar fuerte"
-            elif dxy_val > 100: pts_dxy = 5; dxy_txt = f"{dxy_val} — dolar neutral"
-            elif dxy_val > 97:  pts_dxy = 3; dxy_txt = f"{dxy_val} — dolar debil"
-            else:               pts_dxy = 2; dxy_txt = f"{dxy_val} — dolar muy debil"
-            componentes["DXY Dolar"] = {"valor": dxy_txt, "puntos": pts_dxy}
-        else:
+        # 3. DXY — usando EUR/USD como proxy (Frankfurter API, sin rate limit)
+        try:
+            r_fx = requests.get(
+                "https://api.frankfurter.app/latest?from=EUR&to=USD",
+                timeout=6
+            )
+            if r_fx.status_code == 200:
+                eurusd = r_fx.json().get("rates", {}).get("USD", 1.08)
+                # DXY se mueve inversamente al EUR/USD
+                # EUR/USD 1.05 = DXY ~106 | EUR/USD 1.10 = DXY ~100 | EUR/USD 1.15 = DXY ~94
+                dxy_estimado = round(210 - eurusd * 100, 2)
+                if dxy_estimado > 106:   pts_dxy = 9; dxy_txt = f"~{dxy_estimado} — dólar muy fuerte"
+                elif dxy_estimado > 103: pts_dxy = 7; dxy_txt = f"~{dxy_estimado} — dólar fuerte"
+                elif dxy_estimado > 100: pts_dxy = 5; dxy_txt = f"~{dxy_estimado} — dólar neutral"
+                elif dxy_estimado > 97:  pts_dxy = 3; dxy_txt = f"~{dxy_estimado} — dólar débil"
+                else:                   pts_dxy = 2; dxy_txt = f"~{dxy_estimado} — dólar muy débil"
+                componentes["DXY Dólar"] = {"valor": dxy_txt, "puntos": pts_dxy}
+            else:
+                pts_dxy = 5
+                componentes["DXY Dólar"] = {"valor": "N/D", "puntos": 5}
+        except:
             pts_dxy = 5
-            componentes["DXY Dolar"] = {"valor": "N/D", "puntos": 5}
+            componentes["DXY Dólar"] = {"valor": "N/D", "puntos": 5}
 
         # 4. GOOGLE TRENDS
         keyword = "Bitcoin" if "BTC" in ticker else "Ethereum" if "ETH" in ticker else "crypto"
@@ -1247,9 +1257,9 @@ def calcular_indice_valor(ticker):
         else:                    pts_halving = 8;  h_txt = f"Mes {meses_halving} — recuperacion"
         componentes["Ciclo Halving"] = {"valor": h_txt, "puntos": pts_halving}
 
-        # 6. FLUJOS ETF — institucionales comprando o vendiendo
+        # 6. FLUJOS ETF — usando FMP para IBIT (sin rate limit)
         try:
-            ibit = fetch_quote("IBIT", "1mo")
+            ibit = fetch_fmp_quote("IBIT")
             if ibit:
                 btc_sem = d["d5"]
                 ibit_sem = ibit["d5"]
@@ -4386,7 +4396,6 @@ def cmd_sr(msg):
     else:
         safe_send(msg.chat.id, "Sin acciones en zona critica.", message_id=m.message_id)
 
-
 @bot.message_handler(commands=["metales"])
 def cmd_metales(msg):
     if not allowed(msg): return
@@ -6587,3 +6596,4 @@ if __name__ == "__main__":
     precalentar_cache()
     log.info("Financial Bot arrancado - Version Completa v6")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
+
