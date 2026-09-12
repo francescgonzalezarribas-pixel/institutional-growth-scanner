@@ -12,6 +12,20 @@ Financial Telegram Bot - Version Completa v6
 
 import os, io, logging, time, feedparser
 import yfinance as yf
+
+# Fix Yahoo Finance rate limit — User-Agent personalizado
+import requests as _req_session
+_yf_session = _req_session.Session()
+_yf_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+})
+try:
+    from requests import Session as _Session
+    yf.base.requests = _yf_session
+except:
+    pass
 import requests, pytz
 import numpy as np
 import pandas as pd
@@ -32,6 +46,7 @@ ALLOWED_USER_ID  = int(os.environ.get("ALLOWED_USER_ID", 0))
 NOWPAYMENTS_KEY  = os.environ.get("NOWPAYMENTS_API_KEY", "")
 NOWPAYMENTS_IPN  = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
 WALLET_USDT      = os.environ.get("WALLET_USDT", "")
+FMP_API_KEY      = os.environ.get("FMP_API_KEY", "")
 MADRID = pytz.timezone("Europe/Madrid")
 
 # Sistema de suscripciones
@@ -360,6 +375,115 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     return macd, sig
 
 
+def fetch_fmp_quote(ticker, days=100):
+    """
+    Obtiene datos de precio via Financial Modeling Prep API.
+    Sin rate limit de IP — reemplaza yfinance para acciones.
+    """
+    if not FMP_API_KEY:
+        return None
+    try:
+        import datetime as dt_mod
+        fecha_ini = (dt_mod.date.today() - dt_mod.timedelta(days=days+30)).strftime("%Y-%m-%d")
+
+        # Precio actual
+        r_quote = requests.get(
+            f"https://financialmodelingprep.com/stable/quote",
+            params={"symbol": ticker, "apikey": FMP_API_KEY},
+            timeout=8
+        )
+        if r_quote.status_code != 200:
+            return None
+        quote_data = r_quote.json()
+        if not quote_data or not isinstance(quote_data, list):
+            return None
+        q = quote_data[0]
+
+        # Histórico OHLCV
+        r_hist = requests.get(
+            f"https://financialmodelingprep.com/stable/historical-price-eod/light",
+            params={"symbol": ticker, "from": fecha_ini, "apikey": FMP_API_KEY},
+            timeout=10
+        )
+        if r_hist.status_code != 200:
+            return None
+        hist_data = r_hist.json()
+        if not hist_data or not isinstance(hist_data, list) or len(hist_data) < 5:
+            return None
+
+        # Ordenar por fecha ascendente
+        hist_data.sort(key=lambda x: x.get("date", ""))
+
+        closes = [float(x["close"]) for x in hist_data]
+        highs  = [float(x["high"])  for x in hist_data]
+        lows   = [float(x["low"])   for x in hist_data]
+        vols   = [float(x.get("volume", 0)) for x in hist_data]
+
+        c   = pd.Series(closes)
+        h   = pd.Series(highs)
+        lo  = pd.Series(lows)
+        vol = pd.Series(vols)
+
+        price = float(q.get("price", c.iloc[-1]))
+        d1    = float(q.get("changesPercentage", 0))
+        d5    = float((price - c.iloc[-6])  / c.iloc[-6]  * 100) if len(c) > 5  else 0
+        d20   = float((price - c.iloc[-21]) / c.iloc[-21] * 100) if len(c) > 20 else 0
+
+        hi52  = float(q.get("yearHigh",  h.max()))
+        lo52  = float(q.get("yearLow",   lo.min()))
+        pivot = (h.iloc[-1] + lo.iloc[-1] + price) / 3
+        r1 = round(2*pivot - lo.iloc[-1], 2)
+        s1 = round(2*pivot - h.iloc[-1],  2)
+        hi20 = h.tail(20).max(); lo20 = lo.tail(20).min()
+        rng  = hi20 - lo20
+        r2   = round(hi20 + rng * 0.382, 2)
+        s2   = round(lo20 - rng * 0.382, 2)
+
+        rsi = float(calc_rsi(c).iloc[-1]) if len(c) >= 14 else 50
+        macd_l, macd_s = calc_macd(c)
+        macd_cross_up = (len(macd_l) >= 2 and
+                        macd_l.iloc[-1] > macd_s.iloc[-1] and
+                        macd_l.iloc[-2] <= macd_s.iloc[-2])
+
+        avg_vol = vol.tail(20).mean()
+        vol_rel = float(vol.iloc[-1] / avg_vol) if avg_vol > 0 else 1.0
+
+        ema20 = c.ewm(span=20, adjust=False).mean()
+        ema50 = c.ewm(span=50, adjust=False).mean()
+        typical = (h + lo + c) / 3
+        vwap_val = float((typical * vol).tail(20).sum() / vol.tail(20).sum()) if vol.tail(20).sum() > 0 else price
+
+        hl  = h - lo
+        hc  = (h - c.shift()).abs()
+        lc  = (lo - c.shift()).abs()
+        tr  = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+        atr = float(tr.ewm(span=14, adjust=False).mean().iloc[-1])
+
+        max20 = float(hi20)
+        dist_breakout = round((max20 - price) / max20 * 100, 2) if max20 > 0 else 99
+
+        return {
+            "ticker": ticker, "nombre": q.get("name", nombre(ticker)), "price": round(price, 2),
+            "d1": round(d1, 2), "d5": round(d5, 2), "d20": round(d20, 2),
+            "hi52": round(hi52, 2), "lo52": round(lo52, 2),
+            "pivot": round(pivot, 2), "r1": r1, "r2": r2, "s1": s1, "s2": s2,
+            "rsi": round(rsi, 1), "macd_cross_up": macd_cross_up,
+            "vol_rel": round(vol_rel, 2), "atr": round(atr, 2),
+            "ema20": round(float(ema20.iloc[-1]), 2), "ema50": round(float(ema50.iloc[-1]), 2),
+            "sobre_ema20": price > float(ema20.iloc[-1]),
+            "sobre_ema50": price > float(ema50.iloc[-1]),
+            "tendencia_alcista": float(ema20.iloc[-1]) > float(ema50.iloc[-1]),
+            "ema20_subiendo": float(ema20.iloc[-1]) > float(ema20.iloc[-3]),
+            "vwap": round(vwap_val, 2), "sobre_vwap": price > vwap_val,
+            "max20": round(max20, 2), "dist_breakout": dist_breakout,
+            "cerca_breakout": dist_breakout <= 2.0,
+            "fuerza_relativa": d20 > 5,
+        }
+    except Exception as e:
+        log.warning(f"fetch_fmp_quote {ticker}: {e}")
+        return None
+
+
 # Cache para evitar rate limit de Yahoo Finance
 _QUOTE_CACHE = {}
 _QUOTE_CACHE_TTL = 300  # 5 minutos
@@ -479,7 +603,13 @@ def _fetch_quote_real(ticker, period="3mo"):
                 log.warning(f"Binance fetch_quote {ticker}: {e}")
                 # Continuar con yfinance como fallback
 
-    # yfinance como fuente para acciones y fallback crypto
+    # Para acciones usar FMP si está disponible (sin rate limit de IP)
+    if FMP_API_KEY and "-USD" not in ticker and not ticker.startswith("^") and "=F" not in ticker:
+        resultado = fetch_fmp_quote(ticker)
+        if resultado:
+            return resultado
+
+    # yfinance como fallback para índices, ETFs y cuando FMP falla
     for p in [period, "1mo", "3mo"]:
         try:
             tk = yf.Ticker(ticker)
