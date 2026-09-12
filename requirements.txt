@@ -1,6 +1,6 @@
 pyTelegramBotAPI==4.21.0
 groq>=0.9.0
-yfinance>=0.2.36
+yfinance==0.2.52
 feedparser>=6.0.10
 requests>=2.31.0
 pandas>=2.0.0
