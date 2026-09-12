@@ -364,6 +364,25 @@ def calc_macd(series, fast=12, slow=26, signal=9):
 _QUOTE_CACHE = {}
 _QUOTE_CACHE_TTL = 300  # 5 minutos
 
+# Tickers macro que se usan en múltiples funciones — precalentar caché
+MACRO_CACHE_TICKERS = ["DX-Y.NYB", "^VIX", "^TNX", "GC=F", "CL=F", "IBIT", "^GSPC", "^GDAXI", "^IBEX"]
+
+
+def precalentar_cache():
+    """Descarga tickers macro en batch al arrancar para evitar rate limit."""
+    try:
+        log.info("Precalentando caché de tickers macro...")
+        batch = batch_download(MACRO_CACHE_TICKERS, period="1mo")
+        now = datetime.now().timestamp()
+        for t, df in batch.items():
+            d = quote_from_df(t, df)
+            if d:
+                _QUOTE_CACHE[f"{t}_1mo"] = (d, now)
+                _QUOTE_CACHE[f"{t}_3mo"] = (d, now)
+        log.info(f"Caché precalentado: {len(batch)} tickers")
+    except Exception as e:
+        log.warning(f"precalentar_cache: {e}")
+
 
 def fetch_quote(ticker, period="3mo"):
     # Caché 5 minutos para evitar rate limit
@@ -6430,7 +6449,11 @@ if __name__ == "__main__":
         scheduler.add_job(job_explosion_scanner, "interval", hours=3)
         scheduler.add_job(job_metales_scanner,   "interval", hours=4)
         scheduler.add_job(job_sr_scanner,        "interval", hours=2)
+        # Refrescar caché macro cada hora
+        scheduler.add_job(precalentar_cache,     "interval", hours=1)
         scheduler.start()
         log.info("Jobs automaticos activados")
+    # Precalentar caché al arrancar
+    precalentar_cache()
     log.info("Financial Bot arrancado - Version Completa v6")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
