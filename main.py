@@ -574,6 +574,37 @@ def get_binance_derivatives(symbol="BTCUSDT"):
     return resultado
 
 
+def get_google_trends(keyword="Bitcoin", timeframe="today 3-m"):
+    """
+    Obtiene el interés de búsqueda de Google Trends.
+    Retorna valor 0-100 donde:
+    - 0-20 = nadie busca = zona de suelo (SEÑAL ALCISTA)
+    - 80-100 = todo el mundo busca = zona de techo (SEÑAL BAJISTA)
+    """
+    try:
+        from pytrends.request import TrendReq
+        pytrends = TrendReq(hl='es-ES', tz=60, timeout=(5, 15))
+        pytrends.build_payload([keyword], cat=0, timeframe=timeframe, geo='', gprop='')
+        df = pytrends.interest_over_time()
+        if df.empty:
+            return None
+        valor_actual = int(df[keyword].iloc[-1])
+        promedio = int(df[keyword].mean())
+        maximo = int(df[keyword].max())
+        # Normalizar: qué % del máximo histórico reciente es el valor actual
+        nivel_relativo = round((valor_actual / maximo * 100) if maximo > 0 else 50)
+        return {
+            "valor_actual": valor_actual,
+            "promedio": promedio,
+            "maximo": maximo,
+            "nivel_relativo": nivel_relativo,
+            "señal": "SUELO" if nivel_relativo < 25 else "TECHO" if nivel_relativo > 75 else "NEUTRAL"
+        }
+    except Exception as e:
+        log.warning(f"Google Trends: {e}")
+        return None
+
+
 def get_fear_greed():
     """Obtiene el Fear & Greed Index de crypto."""
     try:
@@ -754,6 +785,20 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
             elif vix < 15 and fase_base == 7:
                 fase_base = 7                        # VIX bajo confirma complacencia
 
+        # Ajuste Google Trends (crypto) — poco interés = suelo, mucho = techo
+        if nombre_mercado.upper() in ["BTC", "BITCOIN", "ETH", "ETHEREUM"]:
+            trends = get_google_trends("Bitcoin", timeframe="today 3-m")
+            if trends:
+                nivel = trends["nivel_relativo"]
+                if nivel < 20 and fase_base in [9, 10, 11, 12, 0]:
+                    # Nadie busca Bitcoin + caída fuerte = posible suelo
+                    # Mover hacia Incredulidad si ya hay rebote
+                    if recuperacion_desde_minimo and recuperacion_desde_minimo > 15:
+                        fase_base = min(fase_base, 1)  # Incredulidad
+                elif nivel > 80 and fase_base <= 6:
+                    # Todo el mundo busca Bitcoin = zona de techo
+                    fase_base = max(fase_base, 6)  # Euforia mínimo
+
         # Ajuste: si tendencia alcista y cerca de maximos, puede ser creencia/emocion
         if dist_desde_maximo > -8 and tendencia_alcista and d_anual is not None:
             if d_anual > 30:
@@ -917,7 +962,24 @@ def calcular_indice_valor(ticker):
             pts_dxy = 5
             componentes["DXY"] = {"valor": "N/D", "puntos": 5}
 
-        total_pts = pts_rsi + pts_ema + pts_vol + pts_fg + pts_fund + pts_dxy
+        # Google Trends — poco interés = zona de suelo, mucho = techo
+        keyword = "Bitcoin" if "BTC" in ticker else "Ethereum" if "ETH" in ticker else "crypto"
+        trends = get_google_trends(keyword, timeframe="today 3-m")
+        if trends:
+            nivel = trends["nivel_relativo"]
+            if nivel < 15:    pts_trends = 10; señal_txt = f"{nivel}% — nadie busca SUELO"
+            elif nivel < 25:  pts_trends = 8;  señal_txt = f"{nivel}% — interés muy bajo"
+            elif nivel < 40:  pts_trends = 6;  señal_txt = f"{nivel}% — interés bajo"
+            elif nivel < 60:  pts_trends = 5;  señal_txt = f"{nivel}% — interés normal"
+            elif nivel < 75:  pts_trends = 3;  señal_txt = f"{nivel}% — interés alto"
+            elif nivel < 90:  pts_trends = 2;  señal_txt = f"{nivel}% — interés muy alto"
+            else:             pts_trends = 1;  señal_txt = f"{nivel}% — EUFORIA TECHO"
+            componentes["Google Trends"] = {"valor": señal_txt, "puntos": pts_trends}
+        else:
+            pts_trends = 5
+            componentes["Google Trends"] = {"valor": "N/D", "puntos": 5}
+
+        total_pts = pts_rsi + pts_ema + pts_vol + pts_fg + pts_fund + pts_dxy + pts_trends
 
     else:
         # ACCION o INDICE: VIX, RSI semanal, distancia maximo 52 semanas
@@ -959,7 +1021,9 @@ def calcular_indice_valor(ticker):
 
         total_pts = pts_rsi + pts_ema + pts_vol + pts_vix + pts_rsiw + pts_52
 
-    score_final = round(total_pts / 60 * 100)
+    # Normalizar: crypto tiene 7 componentes (70pts max), acciones 6 (60pts max)
+    max_pts = 70 if es_crypto else 60
+    score_final = round(total_pts / max_pts * 100)
 
     if score_final >= 80:
         zona = "BARATO — ACUMULACION FUERTE"
@@ -2037,7 +2101,6 @@ def fetch_fundamentales(ticker):
             div_yield = div_yield_raw
 
         # Insider ownership
-
         insider_pct = info.get("heldPercentInsiders")
 
         # Historico financiero (ultimos 4 años)
