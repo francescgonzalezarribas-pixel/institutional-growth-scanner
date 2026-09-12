@@ -9,3 +9,4 @@ pytz>=2024.1
 apscheduler>=3.10.0
 matplotlib>=3.7.0
 mplfinance>=0.12.9b0
+pytrends>=4.9.0
