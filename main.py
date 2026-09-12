@@ -1275,17 +1275,26 @@ def fetch_ema200_distance(ticker):
 def calcular_indice_valor(ticker):
     """
     Indice 0-100: 100=barato (acumulacion), 0=caro (venta).
-    Para crypto BTC: indicadores de CICLO LARGO sin RSI diario.
-    Para acciones/indices: indicadores tecnicos clasicos.
     """
     es_crypto = ticker in COINGECKO_IDS or "-USD" in ticker
     es_indice = ticker.startswith("^")
 
-    d = fetch_quote(ticker, "3mo")
-    if not d:
+    try:
+        d = fetch_quote(ticker, "3mo")
+        if not d:
+            log.warning(f"calcular_indice_valor {ticker}: fetch_quote devolvio None")
+            return None
+        log.info(f"calcular_indice_valor {ticker}: precio={d['price']} OK")
+    except Exception as e:
+        log.error(f"calcular_indice_valor {ticker}: fetch_quote error: {e}")
         return None
 
-    ema200_data = fetch_ema200_distance(ticker)
+    try:
+        ema200_data = fetch_ema200_distance(ticker)
+    except Exception as e:
+        log.warning(f"calcular_indice_valor {ticker}: ema200 error: {e}")
+        ema200_data = None
+
     componentes = {}
 
     # EMA 200 — el indicador mas importante del ciclo
