@@ -1771,7 +1771,10 @@ def generate_cycle_chart(mercados):
              facecolor='#1a1a2e', edgecolor='#444444',
              labelcolor='white', fontsize=10, framealpha=0.95)
 
-    plt.tight_layout()
+    try:
+        plt.tight_layout(pad=1.5)
+    except:
+        pass
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=130,
                facecolor='#0d1117', bbox_inches='tight')
@@ -2072,7 +2075,6 @@ def get_intraday_signals(stocks, n=4):
         })
     candidatos.sort(key=lambda x: x["score"], reverse=True)
     return candidatos[:n]
-
 
 def fetch_fundamentales(ticker):
     """Obtiene datos fundamentales via yfinance."""
@@ -4153,6 +4155,7 @@ def cmd_seguimiento(msg):
                 "/seguimiento close 1")
             return
         lines = [f"TRADES ABIERTOS {datetime.now().strftime('%d/%m %H:%M')}"]
+
         total_pnl = 0
         for i, t in enumerate(activos, 1):
             d = fetch_quote(t["ticker"], "1mo")
@@ -4514,9 +4517,18 @@ def cmd_valor_btc_directo(msg):
     """Llamado desde el boton del menu — calcula valor de BTC directamente."""
     if not allowed(msg): return
     m = bot.send_message(msg.chat.id, "Calculando indice barato/caro de Bitcoin...")
-    resultado = calcular_indice_valor("BTC-USD")
+
+    # Intentar 2 veces con pequeña pausa
+    resultado = None
+    for intento in range(2):
+        resultado = calcular_indice_valor("BTC-USD")
+        if resultado:
+            break
+        if intento == 0:
+            time.sleep(3)
+
     if not resultado:
-        safe_send(msg.chat.id, "Error obteniendo datos de BTC.", message_id=m.message_id)
+        safe_send(msg.chat.id, "Error obteniendo datos de BTC. Intenta en unos segundos.", message_id=m.message_id)
         return
     lines = [f"{resultado['nombre']} ({resultado['ticker']}) — {resultado['price']}",
              f"{resultado['score']}/100 — {resultado['zona']}", "",
