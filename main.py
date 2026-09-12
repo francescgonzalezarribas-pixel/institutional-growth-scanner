@@ -547,29 +547,24 @@ def get_binance_derivatives(symbol="BTCUSDT"):
 
     # 5. Liquidaciones ultimas 24h
     try:
-        r = requests.get(
-            f"https://fapi.binance.com/futures/data/takerlongshortRatio"
-            f"?symbol={symbol}&period=1h&limit=24",
-            timeout=6
-        )
-        # Liquidaciones forzadas via force orders
         r2 = requests.get(
-            f"https://fapi.binance.com/fapi/v1/allForceOrders?symbol={symbol}&limit=100",
+            f"https://fapi.binance.com/fapi/v1/allForceOrders",
+            params={"symbol": symbol, "limit": 100},
             timeout=6
         )
-        orders = r2.json()
-        if not isinstance(orders, list):
-            raise ValueError("respuesta no es lista")
-        liq_long = sum(float(o["origQty"]) * float(o["price"])
-                      for o in orders if o.get("side") == "SELL")
-        liq_short = sum(float(o["origQty"]) * float(o["price"])
-                       for o in orders if o.get("side") == "BUY")
-        resultado["liquidaciones"] = {
-            "longs_m": round(liq_long / 1e6, 1),
-            "shorts_m": round(liq_short / 1e6, 1),
-        }
+        if r2.status_code == 200 and r2.text and r2.text.strip():
+            orders = r2.json()
+            if isinstance(orders, list):
+                liq_long = sum(float(o["origQty"]) * float(o["price"])
+                              for o in orders if o.get("side") == "SELL")
+                liq_short = sum(float(o["origQty"]) * float(o["price"])
+                               for o in orders if o.get("side") == "BUY")
+                resultado["liquidaciones"] = {
+                    "longs_m": round(liq_long / 1e6, 1),
+                    "shorts_m": round(liq_short / 1e6, 1),
+                }
     except Exception as e:
-        log.warning(f"Liquidaciones: {e}")
+        log.debug(f"Liquidaciones: {e}")
 
     return resultado
 
@@ -809,26 +804,44 @@ def detectar_ciclo(nombre_mercado, rsi, rsi_semanal, fg=None, vix=None,
         fase = fase_base
 
     else:
-        # Sin datos anuales: usar indicadores tecnicos clasicos
+        # Sin datos anuales: usar EMA200 + halving + Fear&Greed (sin RSI)
+        import datetime as dt_mod
+        halving4 = dt_mod.date(2024, 4, 19)
+        meses_halving = (dt_mod.date.today() - halving4).days // 30
+
         score = 0
-        if rsi > 70:   score += 3
-        elif rsi > 60: score += 2
-        elif rsi > 50: score += 1
-        elif rsi < 35: score -= 3
-        elif rsi < 45: score -= 1
-        if tendencia_alcista:  score += 2
-        elif not sobre_ema50:  score -= 2
+
+        # EMA200 — más importante que RSI para ciclo largo
+        if tendencia_alcista and sobre_ema50:
+            score += 3   # sobre EMA200 = bull
+        elif not sobre_ema50:
+            score -= 3   # bajo EMA200 = bear
+
+        # Meses desde halving
+        if meses_halving < 18:
+            score += 2   # fase bull histórica
+        elif meses_halving < 22:
+            score += 0   # zona de techo
+        elif meses_halving < 32:
+            score -= 2   # bear histórico
+        elif meses_halving < 42:
+            score -= 1   # suelo/recuperación
+
+        # Fear & Greed
         if fg:
             if fg > 70:   score += 2
             elif fg < 30: score -= 2
+
+        # VIX si disponible
         if vix:
-            if vix > 30: score -= 3
+            if vix > 30: score -= 2
             elif vix < 15: score += 1
+
         score = max(-8, min(8, score))
-        if score >= 6:   fase = 6
-        elif score >= 4: fase = 5
-        elif score >= 2: fase = 4
-        elif score >= 0: fase = 3
+        if score >= 6:    fase = 6
+        elif score >= 4:  fase = 5
+        elif score >= 2:  fase = 4
+        elif score >= 0:  fase = 3
         elif score >= -2: fase = 8
         elif score >= -4: fase = 9
         elif score >= -6: fase = 10
@@ -891,6 +904,17 @@ def calcular_indice_valor(ticker):
         componentes["EMA 200"] = {"valor": "N/D", "puntos": 5}
 
     if es_crypto:
+        # RSI diario — útil para timing de entrada
+        rsi = d["rsi"]
+        if rsi < 25:   pts_rsi = 10; rsi_txt = f"{rsi} — sobreventa extrema"
+        elif rsi < 35: pts_rsi = 8;  rsi_txt = f"{rsi} — sobreventa"
+        elif rsi < 45: pts_rsi = 6;  rsi_txt = f"{rsi} — zona de compra"
+        elif rsi < 55: pts_rsi = 5;  rsi_txt = f"{rsi} — neutral"
+        elif rsi < 65: pts_rsi = 3;  rsi_txt = f"{rsi} — sobrecompra leve"
+        elif rsi < 75: pts_rsi = 2;  rsi_txt = f"{rsi} — sobrecompra"
+        else:          pts_rsi = 1;  rsi_txt = f"{rsi} — sobrecompra extrema"
+        componentes["RSI 14d"] = {"valor": rsi_txt, "puntos": pts_rsi}
+
         # 1. FEAR & GREED
         fg = get_fear_greed()
         if fg:
@@ -985,8 +1009,8 @@ def calcular_indice_valor(ticker):
             pts_etf = 5
             componentes["Flujos ETF"] = {"valor": "N/D", "puntos": 5}
 
-        total_pts = pts_ema + pts_fg + pts_fund + pts_dxy + pts_trends + pts_halving + pts_etf
-        max_pts = 70
+        total_pts = pts_ema + pts_rsi + pts_fg + pts_fund + pts_dxy + pts_trends + pts_halving + pts_etf
+        max_pts = 80  # 8 componentes × 10 max
 
     else:
         # ACCION o INDICE
