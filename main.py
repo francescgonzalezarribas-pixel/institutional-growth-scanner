@@ -1496,12 +1496,193 @@ def generate_halving_chart():
 
 def generate_cycle_chart(mercados):
     """
-    Genera imagen del ciclo de mercado mejorada:
-    - Zonas COMPRA/VENTA claramente marcadas
-    - Flechas de direccion en cada mercado
-    - % del ciclo completado
-    - Potencial restante
+    Genera gráfico estilo Wall St. Cheat Sheet en español.
+    Curva multicolor con emociones y punto marcando dónde está cada mercado.
     """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import matplotlib.patheffects as pe
+    import numpy as np
+
+    fig, ax = plt.subplots(figsize=(18, 10))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    # Generar curva estilo Wall St Cheat Sheet
+    # Subida lenta → pico → caída brusca → suelo → recuperación
+    t = np.linspace(0, 10, 2000)
+
+    def precio_ciclo(t):
+        # Subida gradual con volatilidad
+        subida = 0.8 * np.log1p(t * 1.2) + 0.15 * np.sin(t * 3) + 0.08 * np.sin(t * 7)
+        # Pico en t≈5.5
+        pico = np.exp(-0.5 * ((t - 5.5) / 0.8) ** 2) * 1.2
+        # Caída brusca post-pico
+        caida = -0.6 * (1 / (1 + np.exp(-4 * (t - 6.2)))) * (t > 5.5)
+        # Suelo y recuperación lenta
+        recuperacion = 0.3 * np.log1p(np.maximum(t - 7.5, 0) * 1.5) * (t > 7.5)
+        return subida + pico + caida + recuperacion + 0.1
+
+    y = precio_ciclo(t)
+    y = (y - y.min()) / (y.max() - y.min()) * 0.75 + 0.1
+
+    # Colorear la curva por fase
+    colores_tramos = [
+        (0.0,  0.12, '#8B2E2E'),  # Incredulidad/Depresión
+        (0.12, 0.22, '#B34D00'),  # Esperanza
+        (0.22, 0.32, '#CC7A00'),  # Optimismo
+        (0.32, 0.42, '#CCB800'),  # Creencia
+        (0.42, 0.52, '#66CC00'),  # Thrill
+        (0.52, 0.60, '#00CC00'),  # Euforia (PICO)
+        (0.60, 0.67, '#00CCAA'),  # Complacencia
+        (0.67, 0.73, '#0099CC'),  # Ansiedad
+        (0.73, 0.79, '#0044CC'),  # Negación
+        (0.79, 0.85, '#4400CC'),  # Pánico
+        (0.85, 0.90, '#8800CC'),  # Capitulación
+        (0.90, 0.95, '#CC0099'),  # Ira/Depresión
+        (0.95, 1.00, '#4499FF'),  # Incredulidad (nuevo ciclo)
+    ]
+
+    for ini, fin, color in colores_tramos:
+        mask = (t >= ini * 10) & (t <= fin * 10)
+        if mask.sum() > 1:
+            ax.plot(t[mask], y[mask], color=color, linewidth=4.5, solid_capstyle='round')
+
+    # Emociones con posiciones en la curva
+    emociones = [
+        (0.8,  None,  "INCREDULIDAD\n\"Este rally no durará\"",          'left',  0.08,   '#8B2E2E'),
+        (1.8,  None,  "ESPERANZA\n\"Quizá una recuperación\"",           'left',  0.15,   '#B34D00'),
+        (2.8,  None,  "OPTIMISMO\n\"Este rally es real\"",               'left',  0.28,   '#CC7A00'),
+        (3.8,  None,  "CREENCIA\n\"Hora de invertir más\"",              'left',  0.42,   '#CCB800'),
+        (4.8,  None,  "EMOCIÓN\n\"Compraré con margen\"",                'left',  0.60,   '#66CC00'),
+        (5.45, None,  "EUFORIA\n\"¡Soy un genio!\n¡Todos ganaremos!\"",  'center',0.05,   '#00CC00'),
+        (6.2,  None,  "COMPLACENCIA\n\"Solo una corrección\"",           'right', 0.12,   '#00CCAA'),
+        (6.8,  None,  "ANSIEDAD\n\"¿Por qué tarda tanto?\"",            'right', 0.20,   '#0099CC'),
+        (7.3,  None,  "NEGACIÓN\n\"Mis empresas son buenas,\nvolverá\"", 'right', 0.32,   '#0044CC'),
+        (7.9,  None,  "PÁNICO\n\"¡Todos venden!\n¡Tengo que salir!\"",  'right', 0.45,   '#4400CC'),
+        (8.5,  None,  "CAPITULACIÓN\n\"Me salgo al 100%\"",              'center',0.60,   '#8800CC'),
+        (9.0,  None,  "IRA\n\"¿Quién dejó que\npasara esto?\"",          'center',0.72,   '#CC0099'),
+        (9.6,  None,  "DEPRESIÓN\n\"Perdí mis ahorros.\nSoy un idiota\"", 'right', 0.82,  '#AA0066'),
+    ]
+
+    # Calcular posición Y de cada emoción en la curva
+    for i, (tx, _, texto, lado, offset_extra, color) in enumerate(emociones):
+        idx = np.argmin(np.abs(t - tx))
+        cy = y[idx]
+
+        if lado == 'center':
+            offset_y = 0.12 if cy > 0.5 else -0.14
+            ha = 'center'
+            ax_offset = 0
+        elif lado == 'left':
+            offset_y = 0.08
+            ha = 'left'
+            ax_offset = -0.3
+        else:
+            offset_y = 0.08
+            ha = 'right'
+            ax_offset = 0.3
+
+        # Punto en la curva
+        ax.plot(tx, cy, 'o', color=color, markersize=7, zorder=5)
+
+        # Línea líder
+        ax.annotate('',
+                   xy=(tx, cy),
+                   xytext=(tx + ax_offset * 0.3, cy + offset_y),
+                   arrowprops=dict(arrowstyle='-', color=color, lw=1, alpha=0.6))
+
+        # Texto emoción
+        ax.text(tx + ax_offset * 0.3, cy + offset_y + 0.02,
+               texto, ha=ha, va='bottom',
+               fontsize=8.5, color=color, fontweight='bold',
+               bbox=dict(boxstyle='round,pad=0.2', facecolor='#0d1117',
+                        edgecolor=color, alpha=0.85, linewidth=1.2))
+
+    # Marcar mercados actuales
+    colores_mercado = {
+        'BTC':    '#FFD700',
+        'SP500':  '#00FF88',
+        'DAX':    '#FF69B4',
+    }
+
+    for m in mercados:
+        nombre_m = m['nombre'].upper()
+        fase_n = m['fase_num']
+
+        # Mapear fase_num a posición en la curva
+        fase_pos = {
+            0: 0.8,   # Depresión
+            1: 1.5,   # Incredulidad
+            2: 2.0,   # Esperanza
+            3: 2.8,   # Optimismo
+            4: 3.8,   # Creencia
+            5: 4.8,   # Emoción
+            6: 5.45,  # Euforia
+            7: 6.2,   # Complacencia
+            8: 6.8,   # Ansiedad
+            9: 7.3,   # Negación
+            10: 7.9,  # Pánico
+            11: 8.5,  # Capitulación
+            12: 9.2,  # Ira/Depresión
+        }
+
+        tx = fase_pos.get(fase_n, 7.3)
+        idx = np.argmin(np.abs(t - tx))
+        cy = y[idx]
+
+        color_m = colores_mercado.get(nombre_m, '#FFFFFF')
+
+        # Punto grande pulsante
+        ax.plot(tx, cy, 'o', color=color_m, markersize=22,
+               markeredgecolor='white', markeredgewidth=2.5, zorder=15)
+        ax.plot(tx, cy, 'o', color=color_m, markersize=30,
+               alpha=0.25, zorder=14)
+
+        # Etiqueta del mercado
+        ax.annotate(f"{nombre_m}\n{m['fase']}",
+                   xy=(tx, cy),
+                   xytext=(tx, cy + 0.22),
+                   fontsize=10, color=color_m,
+                   ha='center', va='bottom', fontweight='bold', zorder=16,
+                   bbox=dict(boxstyle='round,pad=0.4', facecolor='#0d1117',
+                            edgecolor=color_m, linewidth=2.5, alpha=0.95),
+                   arrowprops=dict(arrowstyle='->', color=color_m, lw=2))
+
+    # Ejes y títulos
+    ax.set_xlim(-0.3, 10.3)
+    ax.set_ylim(-0.05, 1.15)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel('TIEMPO →', color='#888888', fontsize=13, labelpad=10)
+    ax.set_ylabel('PRECIO →', color='#888888', fontsize=13, labelpad=10)
+    ax.tick_params(colors='#888888')
+    for spine in ax.spines.values():
+        spine.set_color('#333333')
+
+    ax.set_title('PSICOLOGÍA DEL CICLO DE MERCADO — DONDE ESTAMOS AHORA',
+                fontsize=16, color='white', fontweight='bold', pad=20)
+
+    # Flecha eje X
+    ax.annotate('', xy=(10.3, -0.02), xytext=(-0.3, -0.02),
+               arrowprops=dict(arrowstyle='->', color='#555555', lw=1.5))
+    ax.annotate('', xy=(-0.25, 1.12), xytext=(-0.25, -0.02),
+               arrowprops=dict(arrowstyle='->', color='#555555', lw=1.5))
+
+    # Leyenda
+    leyenda = [mpatches.Patch(facecolor=colores_mercado.get(m['nombre'].upper(), '#FFFFFF'),
+               label=f"{m['nombre']} — {m['fase']}") for m in mercados]
+    ax.legend(handles=leyenda, loc='lower right',
+             facecolor='#1a1a2e', edgecolor='#444444',
+             labelcolor='white', fontsize=10, framealpha=0.95)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130,
+               facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     import matplotlib.patheffects as pe
@@ -1856,6 +2037,7 @@ def fetch_fundamentales(ticker):
             div_yield = div_yield_raw
 
         # Insider ownership
+
         insider_pct = info.get("heldPercentInsiders")
 
         # Historico financiero (ultimos 4 años)
