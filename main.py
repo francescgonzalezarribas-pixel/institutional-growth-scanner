@@ -1506,7 +1506,13 @@ def calcular_indice_valor(ticker):
     elif score_final >= 30:  zona = "CARO — PRECAUCION"
     else:                    zona = "MUY CARO — ZONA DE VENTA"
 
-def generate_valor_gauge(resultado):
+    return {
+        "ticker": ticker, "nombre": d["nombre"], "price": d["price"],
+        "cambio_hoy": d.get("d1", 0),
+        "score": score_final, "zona": zona,
+        "componentes": componentes,
+        "tipo": "crypto" if es_crypto else ("indice" if es_indice else "accion"),
+    }
     """Genera gauge visual mejorado — velocimetro + barras de componentes legibles."""
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
