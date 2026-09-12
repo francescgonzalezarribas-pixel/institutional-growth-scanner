@@ -5046,6 +5046,102 @@ def cmd_infravaloradas(msg):
     safe_send(msg.chat.id, f"ANALISIS IA\n\n{texto}")
 
 
+def generate_valor_gauge(resultado):
+    """Genera gauge visual — velocimetro + barras de componentes."""
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import numpy as np
+
+    componentes = resultado.get("componentes", {})
+    n_comp = len(componentes)
+    tipo = resultado.get("tipo", "").upper()
+
+    fig = plt.figure(figsize=(12, 8 + n_comp * 0.55))
+    fig.patch.set_facecolor('#0d1117')
+
+    ax = fig.add_axes([0.05, 0.45, 0.90, 0.50], projection='polar')
+    ax.set_facecolor('#0d1117')
+
+    n_seg = 100
+    theta = np.linspace(np.pi, 0, n_seg + 1)
+    for i in range(n_seg):
+        if i < 30:    color = '#FF3333'
+        elif i < 45:  color = '#FF7700'
+        elif i < 65:  color = '#FFCC00'
+        elif i < 80:  color = '#99DD00'
+        else:         color = '#00CC44'
+        ax.barh(1, theta[i] - theta[i+1], left=theta[i+1], height=0.45, color=color, edgecolor='none')
+
+    score = resultado['score']
+    angle = np.pi - (score / 100 * np.pi)
+    ax.plot([angle, angle], [0, 1.10], color='white', linewidth=6, zorder=5)
+    ax.plot(angle, 0, 'o', color='white', markersize=22, zorder=6)
+    ax.plot(angle, 0, 'o', color='#0d1117', markersize=11, zorder=7)
+    ax.set_ylim(0, 1.35)
+    ax.set_theta_zero_location('E')
+    ax.set_theta_direction(1)
+    ax.set_thetamin(0)
+    ax.set_thetamax(180)
+    ax.set_xticks([np.pi, 3*np.pi/4, np.pi/2, np.pi/4, 0])
+    ax.set_xticklabels(['0\nCARO', '25', '50\nNEUTRAL', '75', '100\nBARATÓ'],
+                        color='white', fontsize=10, fontweight='bold')
+    ax.set_yticks([])
+    ax.spines['polar'].set_visible(False)
+    ax.grid(False)
+
+    zona_color = '#FF3333' if score < 30 else '#FF7700' if score < 45 else '#FFCC00' if score < 65 else '#99DD00' if score < 80 else '#00CC44'
+    fig.text(0.5, 0.475, f"{score}/100", ha='center', va='center',
+             fontsize=34, color='white', fontweight='bold')
+    fig.text(0.5, 0.430, resultado['zona'], ha='center', va='center',
+             fontsize=13, color=zona_color, fontweight='bold')
+
+    precio = resultado.get('price', '')
+    cambio = resultado.get('cambio_hoy', 0)
+    cambio_txt = f"  ({cambio:+.2f}% hoy)" if cambio else ""
+    fig.text(0.5, 0.975, f"{resultado['nombre']} ({resultado['ticker']})",
+             ha='center', va='top', fontsize=14, color='white', fontweight='bold')
+    fig.text(0.5, 0.950, f"{precio} USD{cambio_txt}",
+             ha='center', va='top', fontsize=11, color='#AAAAAA')
+    if tipo:
+        fig.text(0.5, 0.927, f"Tipo: {tipo}",
+                ha='center', va='top', fontsize=9, color='#666666')
+
+    fig.text(0.5, 0.408, '─' * 60, ha='center', color='#333333', fontsize=8)
+    fig.text(0.5, 0.400, 'COMPONENTES', ha='center',
+             fontsize=10, color='#666666', fontweight='bold')
+
+    ax2 = fig.add_axes([0.05, 0.03, 0.90, 0.36])
+    ax2.set_facecolor('#0d1117')
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(-0.5, n_comp - 0.5)
+    ax2.axis('off')
+
+    for idx, (nombre_c, datos) in enumerate(reversed(list(componentes.items()))):
+        pts = datos['puntos']
+        val = datos['valor']
+        y = idx
+        ax2.barh(y, 10, height=0.65, left=0, color='#1a1a2e', zorder=1)
+        bar_color = '#FF3333' if pts <= 3 else '#FF7700' if pts <= 5 else '#FFCC00' if pts <= 7 else '#00CC44'
+        ax2.barh(y, pts, height=0.65, left=0, color=bar_color, alpha=0.9, zorder=2)
+        ax2.text(-0.2, y, nombre_c, va='center', ha='right',
+                color='white', fontsize=11, fontweight='bold')
+        ax2.text(pts + 0.15, y, str(val)[:35], va='center', ha='left',
+                color='#CCCCCC', fontsize=9)
+        ax2.text(10.2, y, f"{pts}/10", va='center', ha='left',
+                color=bar_color, fontsize=11, fontweight='bold')
+    ax2.set_xlim(-3.5, 11.5)
+
+    buf = io.BytesIO()
+    try:
+        plt.tight_layout(pad=1.5)
+    except:
+        pass
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+
 def cmd_valor_btc_directo(msg):
     """Llamado desde el boton del menu — calcula valor de BTC directamente."""
     if not allowed(msg): return
