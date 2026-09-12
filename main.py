@@ -1,4 +1,4 @@
-	"""
+"""
 Financial Telegram Bot - Version Completa v6
 - Señales con confirmacion 2 timeframes + filtro mercado general
 - Stop loss dinamico basado en ATR
