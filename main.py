@@ -444,7 +444,11 @@ def fetch_quote(ticker, period="3mo"):
     # yfinance como fuente para acciones y fallback crypto
     for p in [period, "1mo", "3mo"]:
         try:
-            hist = yf.Ticker(ticker).history(period=p)
+            tk = yf.Ticker(ticker)
+            hist = tk.history(period=p)
+            # Si falla, intentar con download
+            if hist.empty or len(hist) < 5:
+                hist = yf.download(ticker, period=p, progress=False, auto_adjust=True)
             if hist.empty or len(hist) < 5:
                 continue
             c, h, lo = hist["Close"], hist["High"], hist["Low"]
