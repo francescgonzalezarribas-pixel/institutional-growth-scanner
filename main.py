@@ -2118,6 +2118,130 @@ def fetch_intraday(ticker):
         return None
 
 
+def batch_download(tickers, period="3mo"):
+    """
+    Descarga datos de múltiples tickers en una sola llamada a yfinance.
+    Mucho más eficiente que llamar uno por uno — evita rate limit.
+    Retorna dict {ticker: DataFrame}
+    """
+    if not tickers:
+        return {}
+    try:
+        # Limpiar tickers inválidos
+        tickers_clean = [t for t in tickers if t and isinstance(t, str)]
+        if not tickers_clean:
+            return {}
+
+        data = yf.download(
+            tickers_clean,
+            period=period,
+            group_by="ticker",
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+            timeout=20,
+        )
+
+        resultado = {}
+        if len(tickers_clean) == 1:
+            # Un solo ticker — yfinance no usa MultiIndex
+            t = tickers_clean[0]
+            if not data.empty and len(data) >= 5:
+                resultado[t] = data
+        else:
+            for t in tickers_clean:
+                try:
+                    if t in data.columns.get_level_values(0):
+                        df = data[t].dropna(how="all")
+                        if not df.empty and len(df) >= 5:
+                            resultado[t] = df
+                except:
+                    pass
+        return resultado
+    except Exception as e:
+        log.warning(f"batch_download: {e}")
+        return {}
+
+
+def quote_from_df(ticker, df):
+    """
+    Calcula todos los indicadores desde un DataFrame descargado via batch.
+    Equivalente a fetch_quote pero sin llamar a yfinance.
+    """
+    try:
+        if df.empty or len(df) < 5:
+            return None
+
+        # Fix MultiIndex si existe
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        c   = df["Close"].dropna()
+        h   = df["High"].dropna()
+        lo  = df["Low"].dropna()
+        vol = df["Volume"].dropna()
+
+        if len(c) < 5:
+            return None
+
+        price = float(c.iloc[-1])
+        d1  = float((price - c.iloc[-2]) / c.iloc[-2] * 100) if len(c) > 1 else 0
+        d5  = float((price - c.iloc[-6]) / c.iloc[-6] * 100) if len(c) > 5 else 0
+        d20 = float((price - c.iloc[-21]) / c.iloc[-21] * 100) if len(c) > 20 else 0
+
+        hi52 = float(h.max()); lo52 = float(lo.min())
+        pivot = float((h.iloc[-1] + lo.iloc[-1] + price) / 3)
+        r1 = round(2*pivot - lo.iloc[-1], 2); s1 = round(2*pivot - h.iloc[-1], 2)
+        hi20 = float(h.tail(20).max()); lo20 = float(lo.tail(20).min())
+        rng = hi20 - lo20
+        r2 = round(hi20 + rng * 0.382, 2); s2 = round(lo20 - rng * 0.382, 2)
+
+        rsi = float(calc_rsi(c).iloc[-1]) if len(c) >= 14 else 50
+        macd_l, macd_s = calc_macd(c)
+        macd_cross_up = (len(macd_l) >= 2 and
+                        macd_l.iloc[-1] > macd_s.iloc[-1] and
+                        macd_l.iloc[-2] <= macd_s.iloc[-2])
+
+        avg_vol = vol.tail(20).mean()
+        vol_rel = float(vol.iloc[-1] / avg_vol) if avg_vol > 0 else 1.0
+
+        ema20 = c.ewm(span=20, adjust=False).mean()
+        ema50 = c.ewm(span=50, adjust=False).mean()
+        typical = (h + lo + c) / 3
+        vwap = float((typical * vol).tail(20).sum() / vol.tail(20).sum()) if vol.tail(20).sum() > 0 else price
+
+        high_low = h - lo
+        high_close = (h - c.shift()).abs()
+        low_close = (lo - c.shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        atr = float(tr.ewm(span=14, adjust=False).mean().iloc[-1])
+
+        max20 = hi20
+        dist_breakout = round((max20 - price) / max20 * 100, 2) if max20 > 0 else 99
+        cerca_breakout = dist_breakout <= 2.0
+        fuerza_relativa = d20 > 5
+
+        return {
+            "ticker": ticker, "nombre": nombre(ticker), "price": round(price, 2),
+            "d1": round(d1, 2), "d5": round(d5, 2), "d20": round(d20, 2),
+            "hi52": round(hi52, 2), "lo52": round(lo52, 2),
+            "pivot": round(pivot, 2), "r1": r1, "r2": r2, "s1": s1, "s2": s2,
+            "rsi": round(rsi, 1), "macd_cross_up": macd_cross_up,
+            "vol_rel": round(vol_rel, 2), "atr": round(atr, 2),
+            "ema20": round(float(ema20.iloc[-1]), 2), "ema50": round(float(ema50.iloc[-1]), 2),
+            "sobre_ema20": price > float(ema20.iloc[-1]),
+            "sobre_ema50": price > float(ema50.iloc[-1]),
+            "tendencia_alcista": float(ema20.iloc[-1]) > float(ema50.iloc[-1]),
+            "ema20_subiendo": float(ema20.iloc[-1]) > float(ema20.iloc[-3]),
+            "vwap": round(vwap, 2), "sobre_vwap": price > vwap,
+            "max20": round(max20, 2), "dist_breakout": dist_breakout,
+            "cerca_breakout": cerca_breakout, "fuerza_relativa": fuerza_relativa,
+        }
+    except Exception as e:
+        log.warning(f"quote_from_df {ticker}: {e}")
+        return None
+
+
 def get_intraday_signals(stocks, n=4):
     """Señales intradía basadas en 15min."""
     candidatos = []
@@ -3027,165 +3151,128 @@ def fetch_weekly_rsi(ticker):
 
 def get_top_signals(stocks, n=4, modo="swing"):
     """
-    modo='swing': señales swing 1-4 semanas, score minimo 12
-    modo='intraday': señales intradía, score minimo 10, criterios distintos
+    Señales swing o intraday usando batch_download para evitar rate limit.
     """
     mercado_ok = mercado_en_tendencia_alcista()
     candidatos = []
-    for t in stocks:
-        d = fetch_quote(t, "3mo")
-        if not d:
-            continue
 
-        # Filtros obligatorios
-        if d["rsi"] > 68:
-            continue
-        if d["vol_rel"] < 0.7:
-            continue
-        if not mercado_ok and d["rsi"] > 45:
-            continue
+    # Filtrar crypto de acciones
+    stocks_clean = [s for s in stocks if s and "-USD" not in s]
 
-        # Filtro tendencia semanal — no entrar contra tendencia bajista fuerte
-        trend_w = fetch_weekly_trend(t)
-        if trend_w:
-            if trend_w["dist_max_w"] < -25 and not trend_w["tendencia_alcista_w"] and not trend_w["ema20w_subiendo"]:
+    # Descargar todos los tickers de una vez
+    batch = batch_download(stocks_clean, period="3mo")
+    if not batch:
+        log.warning("get_top_signals: batch_download falló, usando fetch_quote individual")
+        batch = {}
+        for t in stocks_clean[:20]:  # máximo 20 en fallback
+            d = fetch_quote(t, "3mo")
+            if d:
+                batch[t] = None  # señal para usar d directamente
+            time.sleep(0.3)
+
+    for t in stocks_clean:
+        try:
+            if t not in batch:
                 continue
-            if trend_w["dist_max_w"] < -40 and trend_w["rsi_w"] > 40:
+
+            d = quote_from_df(t, batch[t]) if batch[t] is not None else fetch_quote(t, "3mo")
+            if not d:
                 continue
 
-        score = 0
-        motivos = []
+            # Filtros obligatorios
+            if d["rsi"] > 68: continue
+            if d["vol_rel"] < 0.7: continue
+            if not mercado_ok and d["rsi"] > 45: continue
 
-        # 1. RSI diario (max 5pts)
-        if d["rsi"] < 25:
-            score += 5
-            motivos.append(f"RSI {d['rsi']} sobreventa extrema")
-        elif d["rsi"] < 35:
-            score += 4
-            motivos.append(f"RSI {d['rsi']} sobreventa")
-        elif d["rsi"] < 45:
-            score += 3
-            motivos.append(f"RSI {d['rsi']} zona ideal entrada")
-        elif d["rsi"] < 55:
-            score += 2
-            motivos.append(f"RSI {d['rsi']} saludable")
-        elif d["rsi"] < 68:
-            score += 1
-            motivos.append(f"RSI {d['rsi']} neutral")
+            # Filtro tendencia semanal
+            trend_w = fetch_weekly_trend(t)
+            if trend_w:
+                if trend_w["dist_max_w"] < -25 and not trend_w["tendencia_alcista_w"] and not trend_w["ema20w_subiendo"]:
+                    continue
+                if trend_w["dist_max_w"] < -40 and trend_w["rsi_w"] > 40:
+                    continue
 
-        # 2. RSI semanal confirmacion (max 3pts)
-        rsi_w = fetch_weekly_rsi(t)
-        if rsi_w is not None:
-            if rsi_w < 40:
-                score += 3
-                motivos.append(f"RSI semanal {rsi_w} confirma ambos TF")
-            elif rsi_w < 50:
-                score += 2
-                motivos.append(f"RSI semanal {rsi_w} confirma")
-            elif rsi_w < 60:
-                score += 1
+            score = 0
+            motivos = []
 
-        # 3. MACD cruce alcista (4pts)
-        if d["macd_cross_up"]:
-            score += 4
-            motivos.append("MACD cruce alcista confirmado")
+            # RSI
+            if d["rsi"] < 25:   score += 5; motivos.append(f"RSI {d['rsi']} sobreventa extrema")
+            elif d["rsi"] < 35: score += 4; motivos.append(f"RSI {d['rsi']} sobreventa")
+            elif d["rsi"] < 45: score += 3; motivos.append(f"RSI {d['rsi']} zona ideal entrada")
+            elif d["rsi"] < 55: score += 2; motivos.append(f"RSI {d['rsi']} saludable")
+            elif d["rsi"] < 68: score += 1
 
-        # 4. VWAP (3pts) — precio sobre VWAP = fuerza real
-        if d.get("sobre_vwap"):
-            score += 3
-            motivos.append(f"Precio sobre VWAP ({d.get('vwap',0)}) — fuerza institucional")
-        else:
-            # Bajo VWAP pero muy cerca = posible rebote
-            if d.get("vwap", 0) > 0:
-                dist_vwap = (d["price"] - d["vwap"]) / d["vwap"] * 100
-                if dist_vwap > -2:
-                    score += 1
-                    motivos.append(f"Cerca de VWAP ({d.get('vwap',0)}) rebote potencial")
+            # RSI semanal
+            rsi_w = fetch_weekly_rsi(t)
+            if rsi_w is not None:
+                if rsi_w < 40:   score += 3; motivos.append(f"RSI semanal {rsi_w} confirma ambos TF")
+                elif rsi_w < 50: score += 2; motivos.append(f"RSI semanal {rsi_w} confirma")
+                elif rsi_w < 60: score += 1
 
-        # 5. Volumen (max 4pts)
-        if d["vol_rel"] >= 2.5:
-            score += 4
-            motivos.append(f"Volumen {d['vol_rel']}x excepcional")
-        elif d["vol_rel"] >= 1.8:
-            score += 3
-            motivos.append(f"Volumen {d['vol_rel']}x muy elevado")
-        elif d["vol_rel"] >= 1.3:
-            score += 2
-            motivos.append(f"Volumen {d['vol_rel']}x elevado")
-        elif d["vol_rel"] >= 1.0:
-            score += 1
-            motivos.append(f"Volumen {d['vol_rel']}x normal")
+            # MACD
+            if d["macd_cross_up"]: score += 4; motivos.append("MACD cruce alcista confirmado")
 
-        # 6. Tendencia EMA (max 4pts)
-        if d["tendencia_alcista"] and d["ema20_subiendo"]:
-            score += 4
-            motivos.append("EMA20 > EMA50 y subiendo")
-        elif d["tendencia_alcista"]:
-            score += 2
-            motivos.append("EMA20 > EMA50")
-        elif d["sobre_ema20"]:
-            score += 1
-            motivos.append("Precio sobre EMA20")
+            # VWAP
+            if d.get("sobre_vwap"):
+                score += 3; motivos.append(f"Precio sobre VWAP ({d.get('vwap',0)}) — fuerza institucional")
+            else:
+                if d.get("vwap", 0) > 0:
+                    dist_vwap = (d["price"] - d["vwap"]) / d["vwap"] * 100
+                    if dist_vwap > -2: score += 1
 
-        # 7. Breakout (max 3pts)
-        if d["cerca_breakout"]:
-            score += 3
-            motivos.append(f"Breakout inminente {d['max20']} ({d['dist_breakout']}%)")
-        elif d["dist_breakout"] <= 3.0:
-            score += 1
+            # Volumen
+            if d["vol_rel"] >= 2.5:   score += 4; motivos.append(f"Volumen {d['vol_rel']}x excepcional")
+            elif d["vol_rel"] >= 1.8: score += 3; motivos.append(f"Volumen {d['vol_rel']}x muy elevado")
+            elif d["vol_rel"] >= 1.3: score += 2; motivos.append(f"Volumen {d['vol_rel']}x elevado")
+            elif d["vol_rel"] >= 1.0: score += 1
 
-        # 8. Fuerza relativa (2pts)
-        if d["fuerza_relativa"]:
-            score += 2
-            motivos.append(f"Fuerza relativa +{d['d20']}% mensual")
+            # Tendencia EMA
+            if d["tendencia_alcista"] and d["ema20_subiendo"]:
+                score += 4; motivos.append("EMA20 > EMA50 y subiendo")
+            elif d["tendencia_alcista"]: score += 2
+            elif d["sobre_ema20"]: score += 1
 
-        # 9. Momentum (max 2pts)
-        if d["d1"] >= 2.0:
-            score += 1
-        if d["d5"] >= 4.0:
-            score += 1
+            # Breakout
+            if d["cerca_breakout"]:
+                score += 3; motivos.append(f"Breakout inminente {d['max20']} ({d['dist_breakout']}%)")
 
-        # 10. Soporte cercano (2pts)
-        for nivel in [d["s1"], d["s2"]]:
-            if nivel > 0 and abs(d["price"] - nivel) / nivel * 100 <= 1.5:
-                score += 2
-                motivos.append(f"En zona soporte {nivel}")
-                break
+            # Fuerza relativa
+            if d["fuerza_relativa"]:
+                score += 2; motivos.append(f"Fuerza relativa +{d['d20']}% mensual")
 
-        # Umbral minimo segun modo
-        umbral = 12 if modo == "swing" else 10
-        if score < umbral:
-            continue
+            # Soporte cercano
+            for nivel in [d["s1"], d["s2"]]:
+                if nivel > 0 and abs(d["price"] - nivel) / nivel * 100 <= 1.5:
+                    score += 2; motivos.append(f"En zona soporte {nivel}"); break
 
-        entry = d["price"]
-        atr = d.get("atr", entry * 0.02)
-        stop_atr = round(entry - atr * 1.5, 2)
-        stop_sr  = round(d["s1"] * 0.985, 2)
-        stop = max(stop_atr, stop_sr) if stop_sr > 0 else stop_atr
-        if stop <= 0 or entry - stop > entry * 0.08:
-            stop = round(entry * 0.97, 2)
+            umbral = 12 if modo == "swing" else 10
+            if score < umbral: continue
 
-        risk = entry - stop
-        if risk <= 0:
-            continue
+            entry = d["price"]
+            atr = d.get("atr", entry * 0.02)
+            stop_atr = round(entry - atr * 1.5, 2)
+            stop_sr  = round(d["s1"] * 0.985, 2)
+            stop = max(stop_atr, stop_sr) if stop_sr > 0 else stop_atr
+            if stop <= 0 or entry - stop > entry * 0.08:
+                stop = round(entry * 0.97, 2)
+            risk = entry - stop
+            if risk <= 0: continue
 
-        # Modo swing: TP mas alejados
-        # Modo intraday: TP mas cercanos
-        mult_tp1 = 1.5 if modo == "swing" else 1.0
-        mult_tp2 = 3.0 if modo == "swing" else 2.0
-        tp1 = round(entry + risk * mult_tp1, 2)
-        tp2 = round(entry + risk * mult_tp2, 2)
-        rr  = round((tp1 - entry) / risk, 2)
+            mult_tp1 = 1.5 if modo == "swing" else 1.0
+            mult_tp2 = 3.0 if modo == "swing" else 2.0
+            tp1 = round(entry + risk * mult_tp1, 2)
+            tp2 = round(entry + risk * mult_tp2, 2)
+            rr  = round((tp1 - entry) / risk, 2)
 
-        if not mercado_ok:
-            motivos.insert(0, "AVISO: mercado bajista, operar con cautela")
+            candidatos.append({
+                **d, "score": score, "motivos": motivos,
+                "direction": "COMPRAR", "modo": modo,
+                "entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "rr": rr,
+                "atr": round(atr, 2), "rsi_semanal": rsi_w,
+            })
 
-        candidatos.append({
-            **d, "score": score, "motivos": motivos,
-            "direction": "COMPRAR", "modo": modo,
-            "entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "rr": rr,
-            "atr": round(atr, 2), "rsi_semanal": rsi_w,
-        })
+        except Exception as e:
+            log.warning(f"get_top_signals {t}: {e}")
 
     candidatos.sort(key=lambda x: x["score"], reverse=True)
     return candidatos[:n]
@@ -3193,21 +3280,23 @@ def get_top_signals(stocks, n=4, modo="swing"):
 
 def scan_anomalias(stocks):
     anomalias = []
-    for t in stocks:
+    stocks_clean = [s for s in stocks if s and "-USD" not in s]
+    batch = batch_download(stocks_clean, period="1mo")
+
+    for t in stocks_clean:
         try:
-            hist = yf.Ticker(t).history(period="1mo")
-            if hist.empty or len(hist) < 10:
+            if t not in batch:
                 continue
-            vol = hist["Volume"]
-            c = hist["Close"]
+            df = batch[t]
+            if df is None or df.empty or len(df) < 10:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            vol = df["Volume"]
+            c = df["Close"]
             avg_vol = vol.tail(20).mean()
             vol_rel = vol.iloc[-1] / avg_vol if avg_vol > 0 else 1.0
-            # Fix NaN: si no hay precio anterior valido, d1=0
-            if len(c) > 1 and c.iloc[-2] > 0:
-                d1 = (c.iloc[-1] - c.iloc[-2]) / c.iloc[-2] * 100
-            else:
-                d1 = 0.0
-            # Descartar si precio es NaN o 0
+            d1 = float((c.iloc[-1] - c.iloc[-2]) / c.iloc[-2] * 100) if len(c) > 1 and c.iloc[-2] > 0 else 0.0
             if c.iloc[-1] != c.iloc[-1] or c.iloc[-1] == 0:
                 continue
             if vol_rel >= 2.5:
@@ -3215,7 +3304,7 @@ def scan_anomalias(stocks):
                     "ticker": t, "nombre": nombre(t),
                     "vol_rel": round(vol_rel, 1),
                     "d1": round(d1, 2) if d1 == d1 else 0.0,
-                    "price": round(c.iloc[-1], 2),
+                    "price": round(float(c.iloc[-1]), 2),
                 })
         except:
             pass
