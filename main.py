@@ -4080,7 +4080,7 @@ def cmd_analisis(msg):
     if len(parts) < 2:
         safe_send(msg.chat.id, "Uso: /analisis TICKER\nEj: /analisis NVDA o /analisis SPY o /analisis SAN.MC")
         return
-    ticker = parts[1].upper()
+    ticker = normalizar_ticker_crypto(parts[1])
     m = bot.send_message(msg.chat.id, f"Analizando {nombre(ticker)}...")
     d = fetch_quote(ticker, "6mo")
     if not d:
@@ -5110,7 +5110,7 @@ def cmd_fundamental(msg):
             "/fundamental AAPL\n"
             "/fundamental IONQ")
         return
-    ticker = parts[1].upper()
+    ticker = normalizar_ticker_crypto(parts[1])
     m = bot.send_message(msg.chat.id, f"Analizando fundamentales de {ticker}... (10-15s)")
 
     resultado = calcular_fundamental(ticker)
@@ -5194,6 +5194,20 @@ def cmd_fundamental(msg):
         safe_send(msg.chat.id, caption + "\n\n" + texto_detalle + f"\n\nANALISIS IA\n{texto_ia}", message_id=m.message_id)
 
 
+def normalizar_ticker_crypto(ticker):
+    """Convierte BTC → BTC-USD, ETH → ETH-USD, etc. automáticamente."""
+    CRYPTO_MAP = {
+        "BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD",
+        "BNB": "BNB-USD", "XRP": "XRP-USD", "ADA": "ADA-USD",
+        "AVAX": "AVAX-USD", "LINK": "LINK-USD", "DOT": "DOT-USD",
+        "MATIC": "MATIC-USD", "UNI": "UNI-USD", "AAVE": "AAVE-USD",
+        "LTC": "LTC-USD", "BCH": "BCH-USD", "ATOM": "ATOM-USD",
+        "NEAR": "NEAR-USD", "ARB": "ARB-USD", "OP": "OP-USD",
+        "DOGE": "DOGE-USD", "SHIB": "SHIB-USD", "TRX": "TRX-USD",
+    }
+    return CRYPTO_MAP.get(ticker.upper(), ticker.upper())
+
+
 @bot.message_handler(commands=["valor"])
 def cmd_valor(msg):
     if not allowed(msg): return
@@ -5207,7 +5221,7 @@ def cmd_valor(msg):
             "/valor NVDA\n"
             "/valor ^GSPC")
         return
-    ticker = parts[1].upper()
+    ticker = normalizar_ticker_crypto(parts[1])
     m = bot.send_message(msg.chat.id, f"Calculando indice barato/caro de {nombre(ticker)}...")
 
     resultado = calcular_indice_valor(ticker)
