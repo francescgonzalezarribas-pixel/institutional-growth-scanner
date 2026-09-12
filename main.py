@@ -360,8 +360,27 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     return macd, sig
 
 
+# Cache para evitar rate limit de Yahoo Finance
+_QUOTE_CACHE = {}
+_QUOTE_CACHE_TTL = 300  # 5 minutos
+
+
 def fetch_quote(ticker, period="3mo"):
-    # Para crypto usar Binance como fuente primaria
+    # Caché 5 minutos para evitar rate limit
+    cache_key = f"{ticker}_{period}"
+    now = datetime.now().timestamp()
+    if cache_key in _QUOTE_CACHE:
+        data, ts = _QUOTE_CACHE[cache_key]
+        if now - ts < _QUOTE_CACHE_TTL:
+            return data
+
+    resultado = _fetch_quote_real(ticker, period)
+    if resultado:
+        _QUOTE_CACHE[cache_key] = (resultado, now)
+    return resultado
+
+
+def _fetch_quote_real(ticker, period="3mo"):
     if "-USD" in ticker or ticker in ["BTC", "ETH", "SOL", "BNB"]:
         binance_map = {
             "BTC-USD": "BTCUSDT", "ETH-USD": "ETHUSDT",
