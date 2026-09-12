@@ -361,7 +361,87 @@ def calc_macd(series, fast=12, slow=26, signal=9):
 
 
 def fetch_quote(ticker, period="3mo"):
-    # Intenta con el periodo solicitado, luego fallback
+    # Para crypto usar Binance como fuente primaria
+    if "-USD" in ticker or ticker in ["BTC", "ETH", "SOL", "BNB"]:
+        binance_map = {
+            "BTC-USD": "BTCUSDT", "ETH-USD": "ETHUSDT",
+            "SOL-USD": "SOLUSDT", "BNB-USD": "BNBUSDT",
+            "XRP-USD": "XRPUSDT", "ADA-USD": "ADAUSDT",
+            "AVAX-USD": "AVAXUSDT", "LINK-USD": "LINKUSDT",
+            "DOT-USD": "DOTUSDT", "MATIC-USD": "MATICUSDT",
+            "DOGE-USD": "DOGEUSDT",
+        }
+        symbol = binance_map.get(ticker)
+        if symbol:
+            try:
+                # Klines diarios de Binance
+                r = requests.get(
+                    f"https://api.binance.com/api/v3/klines",
+                    params={"symbol": symbol, "interval": "1d", "limit": 100},
+                    timeout=8
+                )
+                if r.status_code == 200:
+                    klines = r.json()
+                    if len(klines) >= 5:
+                        closes = [float(k[4]) for k in klines]
+                        highs  = [float(k[2]) for k in klines]
+                        lows   = [float(k[3]) for k in klines]
+                        vols   = [float(k[5]) for k in klines]
+                        c  = pd.Series(closes)
+                        h  = pd.Series(highs)
+                        lo = pd.Series(lows)
+                        vol = pd.Series(vols)
+                        price = c.iloc[-1]
+                        d1  = (price - c.iloc[-2]) / c.iloc[-2] * 100 if len(c) > 1 else 0
+                        d5  = (price - c.iloc[-6]) / c.iloc[-6] * 100 if len(c) > 5 else 0
+                        d20 = (price - c.iloc[-21]) / c.iloc[-21] * 100 if len(c) > 20 else 0
+                        hi52 = h.max(); lo52 = lo.min()
+                        pivot = (h.iloc[-1] + lo.iloc[-1] + price) / 3
+                        r1 = 2*pivot - lo.iloc[-1]; s1 = 2*pivot - h.iloc[-1]
+                        hi20 = h.tail(20).max(); lo20 = lo.tail(20).min()
+                        rng = hi20 - lo20
+                        r2 = hi20 + rng * 0.382; s2 = lo20 - rng * 0.382
+                        rsi = calc_rsi(c).iloc[-1] if len(c) >= 14 else 50
+                        macd_l, macd_s = calc_macd(c)
+                        macd_cross_up = (len(macd_l) >= 2 and
+                                        macd_l.iloc[-1] > macd_s.iloc[-1] and
+                                        macd_l.iloc[-2] <= macd_s.iloc[-2])
+                        avg_vol = vol.tail(20).mean()
+                        vol_rel = vol.iloc[-1] / avg_vol if avg_vol > 0 else 1.0
+                        ema20 = c.ewm(span=20, adjust=False).mean()
+                        ema50 = c.ewm(span=50, adjust=False).mean()
+                        typical = (h + lo + c) / 3
+                        vwap = (typical * vol).tail(20).sum() / vol.tail(20).sum()
+                        high_low = h - lo
+                        high_close = (h - c.shift()).abs()
+                        low_close = (lo - c.shift()).abs()
+                        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+                        atr = tr.ewm(span=14, adjust=False).mean().iloc[-1]
+                        max20 = hi20; dist_breakout = round((max20 - price) / max20 * 100, 2)
+                        cerca_breakout = dist_breakout <= 2.0
+                        fuerza_relativa = d20 > 5
+                        return {
+                            "ticker": ticker, "nombre": nombre(ticker), "price": round(price, 2),
+                            "d1": round(d1, 2), "d5": round(d5, 2), "d20": round(d20, 2),
+                            "hi52": round(hi52, 2), "lo52": round(lo52, 2),
+                            "pivot": round(pivot, 2), "r1": round(r1, 2), "r2": round(r2, 2),
+                            "s1": round(s1, 2), "s2": round(s2, 2),
+                            "rsi": round(rsi, 1), "macd_cross_up": macd_cross_up,
+                            "vol_rel": round(vol_rel, 2), "atr": round(atr, 2),
+                            "ema20": round(ema20.iloc[-1], 2), "ema50": round(ema50.iloc[-1], 2),
+                            "sobre_ema20": price > ema20.iloc[-1],
+                            "sobre_ema50": price > ema50.iloc[-1],
+                            "tendencia_alcista": ema20.iloc[-1] > ema50.iloc[-1],
+                            "ema20_subiendo": ema20.iloc[-1] > ema20.iloc[-3],
+                            "vwap": round(vwap, 2), "sobre_vwap": price > vwap,
+                            "max20": round(max20, 2), "dist_breakout": dist_breakout,
+                            "cerca_breakout": cerca_breakout, "fuerza_relativa": fuerza_relativa,
+                        }
+            except Exception as e:
+                log.warning(f"Binance fetch_quote {ticker}: {e}")
+                # Continuar con yfinance como fallback
+
+    # yfinance como fuente para acciones y fallback crypto
     for p in [period, "1mo", "3mo"]:
         try:
             hist = yf.Ticker(ticker).history(period=p)
@@ -2075,6 +2155,7 @@ def get_intraday_signals(stocks, n=4):
         })
     candidatos.sort(key=lambda x: x["score"], reverse=True)
     return candidatos[:n]
+
 
 def fetch_fundamentales(ticker):
     """Obtiene datos fundamentales via yfinance."""
@@ -4155,7 +4236,6 @@ def cmd_seguimiento(msg):
                 "/seguimiento close 1")
             return
         lines = [f"TRADES ABIERTOS {datetime.now().strftime('%d/%m %H:%M')}"]
-
         total_pnl = 0
         for i, t in enumerate(activos, 1):
             d = fetch_quote(t["ticker"], "1mo")
