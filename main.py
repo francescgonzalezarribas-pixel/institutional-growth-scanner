@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AnalisisPro Bot — Versión limpia con /valor /fundamental /halvingbtc"""
+"""AnalisisPro Bot — Versión corregida con /valor /fundamental /halvingbtc"""
 import os, io, time, logging, requests
 import pandas as pd
 import numpy as np
@@ -31,8 +31,19 @@ def allowed(msg):
     if ALLOWED_USER_ID == 0: return True
     return msg.from_user.id == ALLOWED_USER_ID
 
-def safe_send(chat_id, text, **kwargs):
+def safe_send(chat_id, text, message_id=None, **kwargs):
+    """Envía un mensaje nuevo, o edita uno existente si se pasa message_id.
+    FIX: antes se llamaba a bot.send_message(..., message_id=...) lo cual
+    provocaba 'TeleBot.send_message() got an unexpected keyword argument
+    message_id'. Ahora, si hay message_id, se intenta editar ese mensaje;
+    si falla la edición (p.ej. mensaje ya borrado), se envía uno nuevo."""
     try:
+        if message_id:
+            try:
+                bot.edit_message_text(text[:4096], chat_id, message_id, **kwargs)
+                return
+            except Exception as e:
+                log.debug(f"safe_send: edit_message_text falló, envío nuevo mensaje: {e}")
         bot.send_message(chat_id, text[:4096], **kwargs)
     except Exception as e:
         log.warning(f"safe_send: {e}")
@@ -124,6 +135,24 @@ def fetch_binance(symbol, days=100):
         log.warning(f"fetch_binance {symbol}: {e}")
         return None
 
+def fetch_yfinance_fallback(ticker, days=100):
+    """FIX: fallback para cuando Stooq no devuelve datos (rate-limit, ticker
+    desconocido, bloqueo puntual, etc). Usa yfinance, que ya forma parte del
+    stack para /fundamental."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period=f"{days+30}d")
+        if hist is None or hist.empty or len(hist) < 5:
+            return None
+        c  = hist["Close"].reset_index(drop=True)
+        h  = hist["High"].reset_index(drop=True)
+        lo = hist["Low"].reset_index(drop=True)
+        vol = hist["Volume"].reset_index(drop=True) if "Volume" in hist.columns else pd.Series([1e6]*len(c))
+        return build_quote(ticker, c, h, lo, vol)
+    except Exception as e:
+        log.warning(f"fetch_yfinance_fallback {ticker}: {e}")
+        return None
+
 def fetch_stooq(ticker, days=100):
     import datetime as dt
     t = ticker.upper()
@@ -142,11 +171,12 @@ def fetch_stooq(ticker, days=100):
         url = f"https://stooq.com/q/d/l/?s={st}&d1={d1}&d2={d2}&i=d"
         r = requests.get(url,timeout=10,headers={"User-Agent":"Mozilla/5.0"})
         if r.status_code!=200 or "No data" in r.text or len(r.text)<50:
-            log.debug(f"fetch_stooq {ticker}({st}): sin datos")
-            return None
+            log.debug(f"fetch_stooq {ticker}({st}): sin datos, probando yfinance")
+            return fetch_yfinance_fallback(t, days)
         from io import StringIO
         df = pd.read_csv(StringIO(r.text))
-        if df.empty or len(df)<5: return None
+        if df.empty or len(df)<5:
+            return fetch_yfinance_fallback(t, days)
         df.columns = [c.strip() for c in df.columns]
         df = df.sort_values("Date")
         c  = df["Close"].astype(float)
@@ -155,8 +185,8 @@ def fetch_stooq(ticker, days=100):
         vol= df["Volume"].astype(float) if "Volume" in df.columns else pd.Series([1e6]*len(c))
         return build_quote(t,c,h,lo,vol)
     except Exception as e:
-        log.warning(f"fetch_stooq {ticker}: {e}")
-        return None
+        log.warning(f"fetch_stooq {ticker}: {e}, probando yfinance")
+        return fetch_yfinance_fallback(t, days)
 
 def get_quote(ticker):
     t = ticker.upper()
