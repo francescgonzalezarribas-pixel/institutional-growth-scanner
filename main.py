@@ -484,9 +484,11 @@ def fetch_fmp_quote(ticker, days=100):
             timeout=8
         )
         if r_quote.status_code != 200:
+            log.warning(f"fetch_fmp_quote {ticker}: quote status {r_quote.status_code} — {r_quote.text[:100]}")
             return None
         quote_data = r_quote.json()
         if not quote_data or not isinstance(quote_data, list):
+            log.warning(f"fetch_fmp_quote {ticker}: quote vacio — {quote_data}")
             return None
         q = quote_data[0]
 
@@ -5836,7 +5838,7 @@ def cmd_fundamental(msg):
 
 
 def normalizar_ticker_crypto(ticker):
-    """Convierte BTC → BTC-USD, ETH → ETH-USD, etc. automáticamente."""
+    """Convierte BTC → BTC-USD, ETH → ETH-USD, etc. Solo para cryptos conocidas."""
     CRYPTO_MAP = {
         "BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD",
         "BNB": "BNB-USD", "XRP": "XRP-USD", "ADA": "ADA-USD",
@@ -5846,7 +5848,9 @@ def normalizar_ticker_crypto(ticker):
         "NEAR": "NEAR-USD", "ARB": "ARB-USD", "OP": "OP-USD",
         "DOGE": "DOGE-USD", "SHIB": "SHIB-USD", "TRX": "TRX-USD",
     }
-    return CRYPTO_MAP.get(ticker.upper(), ticker.upper())
+    t = ticker.upper()
+    # Solo convertir si está en el mapa de cryptos — acciones como TSLA quedan igual
+    return CRYPTO_MAP.get(t, t)
 
 
 @bot.message_handler(commands=["valor"])
