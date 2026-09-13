@@ -63,7 +63,7 @@ SYSTEM = """Eres un analista financiero senior. Reglas:
 - Precios exactos en tus recomendaciones"""
 
 ai_client = Groq(api_key=GROQ_API_KEY)
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode=None)
 ALERTS = defaultdict(list)
 SEGUIMIENTO = defaultdict(list)  # trades abiertos: {ticker, entrada, tp1, tp2, stop, fecha, lado}
 
@@ -650,6 +650,7 @@ def fetch_quote(ticker, period="3mo"):
 
 
 def _fetch_quote_real(ticker, period="3mo"):
+    ticker = ticker.upper()  # Normalizar siempre a mayúsculas
     if "-USD" in ticker or ticker in ["BTC", "ETH", "SOL", "BNB"]:
         binance_map = {
             "BTC-USD": "BTCUSDT", "ETH-USD": "ETHUSDT",
