@@ -154,7 +154,7 @@ STOOQ_MAP = {
     "NFLX":"nflx.us","UBER":"uber.us","ABNB":"abnb.us",
 }
 
-def fetch_binance(symbol, days=100):
+def fetch_binance(symbol, days=220):
     ck = f"binance:{symbol}"
     cached = cache_get(ck)
     if cached is not None: return cached
@@ -182,19 +182,28 @@ def normalize_ticker(ticker):
     t = ticker.upper().strip()
     return CRYPTO_ALIAS.get(t, t)
 
-def fetch_twelvedata(ticker, days=100):
+# Twelve Data usa sus propios símbolos para índices/materias primas, distintos
+# de los de Yahoo/Stooq (sin el prefijo "^" ni sufijos ".NYB"/"=F").
+TWELVEDATA_SYMBOL_MAP = {
+    "^GSPC":"SPX","^IXIC":"IXIC","^GDAXI":"DAX","^IBEX":"IBEX",
+    "^FCHI":"CAC","^FTSE":"UKX","^VIX":"VIX","^TNX":"TNX",
+    "DX-Y.NYB":"DXY","GC=F":"XAU/USD","CL=F":"WTI/USD",
+}
+
+def fetch_twelvedata(ticker, days=220):
     """Fuente intermedia entre Stooq y yfinance. Usa API key (no scraping),
     así que no sufre los bloqueos por IP compartida que afectan a Yahoo desde
     Railway. Requiere la env var TWELVEDATA_API_KEY (plan gratuito: 800
     peticiones/día, 8/min — https://twelvedata.com/register)."""
     if not TWELVEDATA_API_KEY:
         return None
+    sym = TWELVEDATA_SYMBOL_MAP.get(ticker, ticker)
     ck = f"td:{ticker}"
     cached = cache_get(ck)
     if cached is not None: return cached
     def _do():
         r = requests.get("https://api.twelvedata.com/time_series",
-                        params={"symbol":ticker,"interval":"1day","outputsize":days,
+                        params={"symbol":sym,"interval":"1day","outputsize":days,
                                 "apikey":TWELVEDATA_API_KEY},timeout=10)
         j = r.json()
         if j.get("status")=="error" or "values" not in j:
@@ -206,11 +215,11 @@ def fetch_twelvedata(ticker, days=100):
         lo = pd.Series([float(v["low"]) for v in vals])
         vol= pd.Series([float(v.get("volume") or 1e6) for v in vals])
         return build_quote(ticker, c, h, lo, vol)
-    res = with_retry(_do, tries=2, base_delay=2, what=f"fetch_twelvedata {ticker}")
+    res = with_retry(_do, tries=2, base_delay=2, what=f"fetch_twelvedata {ticker}({sym})")
     if res: cache_set(ck, res)
     return res
 
-def fetch_yfinance_fallback(ticker, days=100):
+def fetch_yfinance_fallback(ticker, days=220):
     """Fallback para cuando Stooq no devuelve datos (rate-limit, ticker
     desconocido, bloqueo puntual, etc). Usa yfinance con caché + reintentos
     con espera progresiva para evitar el rate-limit de Yahoo."""
@@ -231,7 +240,7 @@ def fetch_yfinance_fallback(ticker, days=100):
     if res: cache_set(ck, res)
     return res
 
-def fetch_stooq(ticker, days=100):
+def fetch_stooq(ticker, days=220):
     import datetime as dt
     t = ticker.upper()
     ck = f"stooq:{t}"
@@ -526,6 +535,51 @@ def cmd_valor(msg):
 
 # ═══ /FUNDAMENTAL ════════════════════════════════════════════
 
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
+
+def fetch_fundamentales_finnhub(ticker):
+    """Fallback cuando yfinance.info falla (bloqueo de Yahoo). Finnhub se
+    autentica por API key, no por scraping, así que no sufre el bloqueo por
+    IP compartida de Railway. Free tier: ~60 peticiones/min, incluye
+    fundamentales básicos. Requiere env var FINNHUB_API_KEY (gratis en
+    https://finnhub.io/register). Nota: algunos campos (FCF, caja, deuda,
+    insiders) no están en el tier gratuito y quedan como None/ND — el
+    scoring ya trata esos casos con normalidad."""
+    if not FINNHUB_API_KEY:
+        return None
+    def _do():
+        base = "https://finnhub.io/api/v1"
+        p = {"symbol": ticker, "token": FINNHUB_API_KEY}
+        rp = requests.get(f"{base}/stock/profile2", params=p, timeout=8).json()
+        rq = requests.get(f"{base}/quote", params=p, timeout=8).json()
+        rm = requests.get(f"{base}/stock/metric", params={**p,"metric":"all"}, timeout=8).json()
+        m = rm.get("metric") or {}
+        price = rq.get("c") or 0
+        if not price or not rp:
+            raise RuntimeError("Finnhub: sin datos fundamentales")
+        def pct(*keys):
+            for k in keys:
+                v = m.get(k)
+                if v is not None: return v/100
+            return None
+        return {
+            "nombre": rp.get("name", ticker), "sector": rp.get("finnhubIndustry",""),
+            "price": price, "d1": rq.get("dp", 0),
+            "mktcap": (rp.get("marketCapitalization") or 0)*1e6,
+            "pe": m.get("peExclExtraTTM") or m.get("peBasicExclExtraTTM") or m.get("peTTM"),
+            "peg": m.get("pegTTM"),
+            "ev_ebitda": m.get("currentEv/freeCashFlowTTM"),
+            "margen_neto": pct("netProfitMarginTTM"), "margen_bruto": pct("grossMarginTTM"),
+            "roe": pct("roeTTM"), "fcf": None,
+            "caja": None, "deuda_total": None,
+            "ebitda": None, "rev_growth": pct("revenueGrowthTTMYoy","revenueGrowthQuarterlyYoy"),
+            "earn_growth": pct("epsGrowthTTMYoy"), "rev_ttm": None,
+            "current_ratio": m.get("currentRatioQuarterly") or m.get("currentRatioAnnual"),
+            "insider_pct": None,
+            "div_yield": pct("dividendYieldIndicatedAnnual","dividendYieldAnnual"),
+        }
+    return with_retry(_do, tries=2, base_delay=2, what=f"fetch_fundamentales_finnhub {ticker}")
+
 def fetch_fundamentales(ticker):
     ck = f"fund:{ticker}"
     cached = cache_get(ck)
@@ -552,7 +606,10 @@ def fetch_fundamentales(ticker):
             "current_ratio":info.get("currentRatio"),"insider_pct":info.get("heldPercentInsiders"),
             "div_yield":dy,
         }
-    res = with_retry(_do, tries=3, base_delay=3, what=f"fetch_fundamentales {ticker}")
+    res = with_retry(_do, tries=2, base_delay=2, what=f"fetch_fundamentales {ticker}")
+    if res is None:
+        log.debug(f"fetch_fundamentales {ticker}: yfinance agotado, probando Finnhub")
+        res = fetch_fundamentales_finnhub(ticker)
     if res: cache_set(ck, res)
     return res
 
