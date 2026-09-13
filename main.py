@@ -6901,3 +6901,4 @@ if __name__ == "__main__":
     # precalentar_cache()
     log.info("Financial Bot arrancado - Version Completa v6")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
+
