@@ -377,28 +377,61 @@ def calc_macd(series, fast=12, slow=26, signal=9):
 
 def fetch_stooq(ticker, days=100):
     """
-    Obtiene datos históricos via Stooq — alternativa a yfinance para índices.
-    Sin rate limit, sin bloqueo de IPs de servidor.
-    Tickers: ^SPX, ^NDX, ^GDAX, ^IBEX, ^VIX, etc.
+    Obtiene datos históricos via Stooq — sin rate limit, sin bloqueo de IPs.
+    Funciona para índices, acciones US, acciones europeas.
     """
     import datetime as dt_mod
-    # Convertir tickers yfinance a formato Stooq
+
+    # Convertir ticker al formato Stooq
     stooq_map = {
+        # Índices
         "^GSPC": "^spx",   "^IXIC": "^ndx",   "^GDAXI": "^dax",
         "^IBEX": "^ibex",  "^FCHI": "^cac",    "^FTSE": "^ukx",
         "^VIX":  "^vix",   "^TNX":  "^tnx",    "DX-Y.NYB": "usdidx",
-        "GC=F":  "xauusd", "CL=F":  "cl.f",    "^RUT": "^rut",
-        "^STOXX50E": "^sx5e",
+        "GC=F":  "xauusd", "CL=F":  "cl.f",
+        # Acciones US conocidas
+        "AAPL": "aapl.us", "MSFT": "msft.us", "NVDA": "nvda.us",
+        "TSLA": "tsla.us", "AMZN": "amzn.us", "GOOGL": "googl.us",
+        "META": "meta.us", "NFLX": "nflx.us", "AMD": "amd.us",
+        "INTC": "intc.us", "IONQ": "ionq.us", "PLTR": "pltr.us",
+        "COIN": "coin.us", "RKLB": "rklb.us", "SMCI": "smci.us",
+        "NKE":  "nke.us",  "DIS":  "dis.us",   "JPM": "jpm.us",
+        "BAC":  "bac.us",  "XOM":  "xom.us",   "CVX": "cvx.us",
+        "IBIT": "ibit.us", "SPY":  "spy.us",   "QQQ": "qqq.us",
+        "GLD":  "gld.us",  "SLV":  "slv.us",
     }
-    stooq_ticker = stooq_map.get(ticker, ticker.lower().replace("^", "").replace("=f", ".f"))
+
+    # Autoconversión para tickers europeos
+    def to_stooq(t):
+        if t in stooq_map:
+            return stooq_map[t]
+        # Acciones españolas: SAN.MC → san.mc
+        if t.endswith(".MC"):
+            return t.lower().replace(".mc", ".mc")
+        # Acciones alemanas: BMW.DE → bmw.de
+        if t.endswith(".DE"):
+            return t.lower()
+        # Acciones francesas: BNP.PA → bnp.pa
+        if t.endswith(".PA"):
+            return t.lower()
+        # Acciones UK: BP.L → bp.uk
+        if t.endswith(".L"):
+            return t.lower().replace(".l", ".uk")
+        # Acciones US sin sufijo: intentar con .us
+        if "." not in t and not t.startswith("^"):
+            return f"{t.lower()}.us"
+        return t.lower()
+
+    stooq_ticker = to_stooq(ticker)
 
     try:
         fecha_ini = (dt_mod.date.today() - dt_mod.timedelta(days=days+30)).strftime("%Y%m%d")
         fecha_fin = dt_mod.date.today().strftime("%Y%m%d")
         url = f"https://stooq.com/q/d/l/?s={stooq_ticker}&d1={fecha_ini}&d2={fecha_fin}&i=d"
-        r = requests.get(url, timeout=10,
-                        headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+
         if r.status_code != 200 or "No data" in r.text or len(r.text) < 50:
+            log.debug(f"fetch_stooq {ticker} ({stooq_ticker}): sin datos")
             return None
 
         from io import StringIO
@@ -704,7 +737,13 @@ def _fetch_quote_real(ticker, period="3mo"):
         if resultado:
             return resultado
 
-    # yfinance para acciones y ETFs
+    # Stooq para acciones (US y europeas) — sin rate limit
+    if "-USD" not in ticker:
+        resultado = fetch_stooq(ticker)
+        if resultado:
+            return resultado
+
+    # yfinance como último fallback
     for p in [period, "1mo", "3mo"]:
         try:
             tk = yf.Ticker(ticker)
