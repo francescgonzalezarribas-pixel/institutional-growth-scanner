@@ -140,6 +140,20 @@ BINANCE_MAP = {
     "BTC-USD":"BTCUSDT","ETH-USD":"ETHUSDT","SOL-USD":"SOLUSDT",
     "BNB-USD":"BNBUSDT","XRP-USD":"XRPUSDT","ADA-USD":"ADAUSDT",
     "AVAX-USD":"AVAXUSDT","LINK-USD":"LINKUSDT","DOGE-USD":"DOGEUSDT",
+    "DOT-USD":"DOTUSDT","MATIC-USD":"MATICUSDT","POL-USD":"POLUSDT",
+    "TRX-USD":"TRXUSDT","LTC-USD":"LTCUSDT","SHIB-USD":"SHIBUSDT",
+    "UNI-USD":"UNIUSDT","ATOM-USD":"ATOMUSDT","XLM-USD":"XLMUSDT",
+    "NEAR-USD":"NEARUSDT","APT-USD":"APTUSDT","ARB-USD":"ARBUSDT",
+    "OP-USD":"OPUSDT","FIL-USD":"FILUSDT","ICP-USD":"ICPUSDT",
+    "HBAR-USD":"HBARUSDT","VET-USD":"VETUSDT","ALGO-USD":"ALGOUSDT",
+    "SUI-USD":"SUIUSDT","TON-USD":"TONUSDT","INJ-USD":"INJUSDT",
+    "RNDR-USD":"RNDRUSDT","PEPE-USD":"PEPEUSDT","WIF-USD":"WIFUSDT",
+    "FET-USD":"FETUSDT","TIA-USD":"TIAUSDT","SEI-USD":"SEIUSDT",
+    "STX-USD":"STXUSDT","IMX-USD":"IMXUSDT","GRT-USD":"GRTUSDT",
+    "AAVE-USD":"AAVEUSDT","MKR-USD":"MKRUSDT","LDO-USD":"LDOUSDT",
+    "SAND-USD":"SANDUSDT","MANA-USD":"MANAUSDT","AXS-USD":"AXSUSDT",
+    "EOS-USD":"EOSUSDT","XTZ-USD":"XTZUSDT","THETA-USD":"THETAUSDT",
+    "FTM-USD":"FTMUSDT","CHZ-USD":"CHZUSDT","ETC-USD":"ETCUSDT",
 }
 STOOQ_MAP = {
     "^GSPC":"^spx","^IXIC":"^ndx","^GDAXI":"^dax","^IBEX":"^ibex",
@@ -287,7 +301,28 @@ def get_quote(ticker):
     t = normalize_ticker(ticker)
     if t in BINANCE_MAP:
         return fetch_binance(BINANCE_MAP[t])
-    return fetch_stooq(t)
+    if t.endswith("-USD"):
+        # Ticker con pinta de cripto pero no está en nuestro mapa fijo:
+        # probamos directamente contra Binance (cubre cualquier par listado
+        # ahí, no solo los ~50 que tenemos mapeados a mano).
+        base = t[:-4]
+        dyn = fetch_binance(f"{base}USDT")
+        if dyn: return dyn
+    res = fetch_stooq(t)
+    if res is None and "-" not in t and "." not in t and len(t) <= 10:
+        # Último recurso: si no parece encontrarse como acción, probamos si
+        # es una cripto escrita sin sufijo (p.ej. "PEPE" en vez de PEPE-USD).
+        dyn = fetch_binance(f"{t}USDT")
+        if dyn: return dyn
+    return res
+
+def is_crypto_ticker(t):
+    """Determina si un ticker (ya normalizado) debe tratarse como cripto:
+    está en el mapa fijo, o tiene pinta de par cripto (-USD) y de hecho
+    responde en Binance."""
+    if t in BINANCE_MAP or t.endswith("-USD"):
+        return True
+    return False
 
 def get_fear_greed():
     try:
@@ -325,7 +360,7 @@ def get_trends(keyword="Bitcoin"):
 
 def calcular_valor(ticker):
     t = normalize_ticker(ticker)
-    es_crypto = t in BINANCE_MAP
+    es_crypto = is_crypto_ticker(t)
     d = get_quote(t)
     if not d:
         log.warning(f"calcular_valor {t}: sin datos de precio")
@@ -422,13 +457,29 @@ def calcular_valor(ticker):
         max_pts = len(comp)*10
     else:
         vix_d = get_quote("^VIX")
+        vix, nota = None, ""
         if vix_d:
-            vix=vix_d["price"]
-            if vix>35:   p=10; v=f"{vix} — pánico"
-            elif vix>28: p=8;  v=f"{vix} — miedo"
-            elif vix>22: p=6;  v=f"{vix} — moderado"
-            elif vix>16: p=3;  v=f"{vix} — calma"
-            else:        p=2;  v=f"{vix} — complacencia"
+            vix = vix_d["price"]
+        else:
+            # El VIX real no está disponible (proveedor caído/sin cobertura).
+            # En vez de dejarlo en "N/D", usamos un proxy: volatilidad
+            # realizada anualizada del S&P 500 (o, si tampoco hay S&P,
+            # del propio ticker) — mide lo mismo que el VIX intenta medir
+            # (nerviosismo del mercado) sin depender de un proveedor externo
+            # frágil.
+            spx_d = get_quote("^GSPC")
+            base_closes = spx_d["closes"] if spx_d else d["closes"]
+            rets = base_closes.pct_change().dropna()
+            window = min(20, len(rets))
+            if window >= 5:
+                vix = round(float(rets.tail(window).std() * (252**0.5) * 100), 1)
+                nota = " (proxy)"
+        if vix is not None:
+            if vix>35:   p=10; v=f"{vix} — pánico{nota}"
+            elif vix>28: p=8;  v=f"{vix} — miedo{nota}"
+            elif vix>22: p=6;  v=f"{vix} — moderado{nota}"
+            elif vix>16: p=3;  v=f"{vix} — calma{nota}"
+            else:        p=2;  v=f"{vix} — complacencia{nota}"
             comp["VIX"] = {"p":p,"v":v}
         else:
             comp["VIX"] = {"p":5,"v":"N/D"}
@@ -954,8 +1005,12 @@ def cmd_start(msg):
         "/fundamental NVDA — Análisis fundamental 0-100\n"
         "/fundamental NKE — Con velocímetro y IA\n\n"
         "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n\n"
-        "Tickers crypto: BTC-USD ETH-USD SOL-USD XRP-USD\n"
-        "Tickers acciones: TSLA NVDA AAPL NKE SAN.MC BMW.DE")
+        "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
+        "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE, SHIB-USD...) "
+        "— cualquier par que exista en Binance contra USDT.\n"
+        "Acciones/ETFs US: el ticker tal cual (TSLA, NVDA, AAPL, SPY...).\n"
+        "Acciones internacionales: ticker + sufijo de bolsa "
+        "(SAN.MC España, BMW.DE Alemania, MC.PA Francia, VOD.L Londres...).")
 
 if __name__ == "__main__":
     # FIX 409: si el contenedor anterior no llegó a cerrar su getUpdates a
