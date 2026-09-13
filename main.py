@@ -579,7 +579,7 @@ def fetch_fmp_quote(ticker, days=100):
 
 # Cache para evitar rate limit de Yahoo Finance
 _QUOTE_CACHE = {}
-_QUOTE_CACHE_TTL = 300  # 5 minutos
+_QUOTE_CACHE_TTL = 900  # 15 minutos — reduce llamadas a Yahoo Finance
 
 # Tickers macro que se usan en múltiples funciones — precalentar caché
 MACRO_CACHE_TICKERS = ["DX-Y.NYB", "^VIX", "^TNX", "GC=F", "CL=F", "IBIT", "^GSPC", "^GDAXI", "^IBEX"]
@@ -704,13 +704,7 @@ def _fetch_quote_real(ticker, period="3mo"):
         if resultado:
             return resultado
 
-    # Para acciones usar FMP si está disponible (sin rate limit de IP)
-    if FMP_API_KEY and "-USD" not in ticker and not ticker.startswith("^") and "=F" not in ticker:
-        resultado = fetch_fmp_quote(ticker)
-        if resultado:
-            return resultado
-
-    # yfinance como fallback para índices, ETFs y cuando FMP falla
+    # yfinance para acciones y ETFs
     for p in [period, "1mo", "3mo"]:
         try:
             tk = yf.Ticker(ticker)
