@@ -27,6 +27,41 @@ ai  = Groq(api_key=GROQ_API_KEY)
 SYSTEM = """Eres un analista financiero senior. Responde SIEMPRE en español.
 Sin markdown. Máximo 4 párrafos concisos y accionables."""
 
+# ═══ CACHÉ + RETRY (fix rate-limit yfinance/Stooq) ══════════
+_CACHE = {}
+CACHE_TTL = 180  # segundos — 3 min
+
+def cache_get(key):
+    hit = _CACHE.get(key)
+    if not hit: return None
+    ts, val = hit
+    if time.time() - ts > CACHE_TTL:
+        _CACHE.pop(key, None)
+        return None
+    return val
+
+def cache_set(key, val):
+    _CACHE[key] = (time.time(), val)
+
+def with_retry(fn, tries=3, base_delay=2, what=""):
+    """Reintenta fn() con espera progresiva si detecta rate-limit ('Too Many
+    Requests', 429, 'Rate limited'). Devuelve None si todos los intentos fallan."""
+    last_err = None
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            is_rate_limit = ("Too Many Requests" in msg or "429" in msg
+                              or "Rate limited" in msg or "rate limit" in msg.lower())
+            wait = base_delay * (i + 1) if is_rate_limit else base_delay
+            log.warning(f"with_retry {what} intento {i+1}/{tries} falló ({'rate-limit' if is_rate_limit else 'error'}): {e}")
+            if i < tries - 1:
+                time.sleep(wait)
+    log.warning(f"with_retry {what}: agotados los reintentos, último error: {last_err}")
+    return None
+
 def allowed(msg):
     if ALLOWED_USER_ID == 0: return True
     return msg.from_user.id == ALLOWED_USER_ID
@@ -120,42 +155,51 @@ STOOQ_MAP = {
 }
 
 def fetch_binance(symbol, days=100):
-    try:
+    ck = f"binance:{symbol}"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
         r = requests.get("https://api.binance.com/api/v3/klines",
                         params={"symbol":symbol,"interval":"1d","limit":days+10},timeout=8)
-        if r.status_code!=200: return None
+        if r.status_code!=200: raise RuntimeError(f"HTTP {r.status_code}")
         klines = r.json()
-        if len(klines)<5: return None
+        if len(klines)<5: raise RuntimeError("pocos datos")
         c  = pd.Series([float(k[4]) for k in klines])
         h  = pd.Series([float(k[2]) for k in klines])
         lo = pd.Series([float(k[3]) for k in klines])
         vol= pd.Series([float(k[5]) for k in klines])
         return build_quote(symbol.replace("USDT","-USD"),c,h,lo,vol)
-    except Exception as e:
-        log.warning(f"fetch_binance {symbol}: {e}")
-        return None
+    res = with_retry(_do, tries=2, base_delay=2, what=f"fetch_binance {symbol}")
+    if res: cache_set(ck, res)
+    return res
 
 def fetch_yfinance_fallback(ticker, days=100):
-    """FIX: fallback para cuando Stooq no devuelve datos (rate-limit, ticker
-    desconocido, bloqueo puntual, etc). Usa yfinance, que ya forma parte del
-    stack para /fundamental."""
-    try:
+    """Fallback para cuando Stooq no devuelve datos (rate-limit, ticker
+    desconocido, bloqueo puntual, etc). Usa yfinance con caché + reintentos
+    con espera progresiva para evitar el rate-limit de Yahoo."""
+    ck = f"yf:{ticker}"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
         import yfinance as yf
         hist = yf.Ticker(ticker).history(period=f"{days+30}d")
         if hist is None or hist.empty or len(hist) < 5:
-            return None
+            raise RuntimeError("sin datos")
         c  = hist["Close"].reset_index(drop=True)
         h  = hist["High"].reset_index(drop=True)
         lo = hist["Low"].reset_index(drop=True)
         vol = hist["Volume"].reset_index(drop=True) if "Volume" in hist.columns else pd.Series([1e6]*len(c))
         return build_quote(ticker, c, h, lo, vol)
-    except Exception as e:
-        log.warning(f"fetch_yfinance_fallback {ticker}: {e}")
-        return None
+    res = with_retry(_do, tries=3, base_delay=3, what=f"fetch_yfinance_fallback {ticker}")
+    if res: cache_set(ck, res)
+    return res
 
 def fetch_stooq(ticker, days=100):
     import datetime as dt
     t = ticker.upper()
+    ck = f"stooq:{t}"
+    cached = cache_get(ck)
+    if cached is not None: return cached
     def to_stooq(t):
         if t in STOOQ_MAP: return STOOQ_MAP[t]
         if t.endswith(".MC"): return t.lower()
@@ -165,18 +209,17 @@ def fetch_stooq(ticker, days=100):
         if "." not in t: return f"{t.lower()}.us"
         return t.lower()
     st = to_stooq(t)
-    try:
+    def _do():
         d1 = (dt.date.today()-dt.timedelta(days=days+30)).strftime("%Y%m%d")
         d2 = dt.date.today().strftime("%Y%m%d")
         url = f"https://stooq.com/q/d/l/?s={st}&d1={d1}&d2={d2}&i=d"
         r = requests.get(url,timeout=10,headers={"User-Agent":"Mozilla/5.0"})
         if r.status_code!=200 or "No data" in r.text or len(r.text)<50:
-            log.debug(f"fetch_stooq {ticker}({st}): sin datos, probando yfinance")
-            return fetch_yfinance_fallback(t, days)
+            raise RuntimeError("sin datos en Stooq")
         from io import StringIO
         df = pd.read_csv(StringIO(r.text))
         if df.empty or len(df)<5:
-            return fetch_yfinance_fallback(t, days)
+            raise RuntimeError("Stooq: pocos datos")
         df.columns = [c.strip() for c in df.columns]
         df = df.sort_values("Date")
         c  = df["Close"].astype(float)
@@ -184,9 +227,12 @@ def fetch_stooq(ticker, days=100):
         lo = df["Low"].astype(float)
         vol= df["Volume"].astype(float) if "Volume" in df.columns else pd.Series([1e6]*len(c))
         return build_quote(t,c,h,lo,vol)
-    except Exception as e:
-        log.warning(f"fetch_stooq {ticker}: {e}, probando yfinance")
-        return fetch_yfinance_fallback(t, days)
+    res = with_retry(_do, tries=2, base_delay=1, what=f"fetch_stooq {ticker}")
+    if res is None:
+        log.debug(f"fetch_stooq {ticker}({st}): agotado, probando yfinance")
+        res = fetch_yfinance_fallback(t, days)
+    if res: cache_set(ck, res)
+    return res
 
 def get_quote(ticker):
     t = ticker.upper()
@@ -441,10 +487,14 @@ def cmd_valor(msg):
 # ═══ /FUNDAMENTAL ════════════════════════════════════════════
 
 def fetch_fundamentales(ticker):
-    try:
+    ck = f"fund:{ticker}"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
         import yfinance as yf
         info = yf.Ticker(ticker).info
-        if not info or not info.get("regularMarketPrice"): return None
+        if not info or not info.get("regularMarketPrice"):
+            raise RuntimeError("sin datos fundamentales")
         dy = info.get("dividendYield")
         if dy and dy>1: dy=dy/100
         return {
@@ -462,9 +512,9 @@ def fetch_fundamentales(ticker):
             "current_ratio":info.get("currentRatio"),"insider_pct":info.get("heldPercentInsiders"),
             "div_yield":dy,
         }
-    except Exception as e:
-        log.warning(f"fetch_fundamentales {ticker}: {e}")
-        return None
+    res = with_retry(_do, tries=3, base_delay=3, what=f"fetch_fundamentales {ticker}")
+    if res: cache_set(ck, res)
+    return res
 
 def calcular_fundamental(ticker):
     f = fetch_fundamentales(ticker)
@@ -811,5 +861,13 @@ def cmd_start(msg):
         "Tickers acciones: TSLA NVDA AAPL NKE SAN.MC BMW.DE")
 
 if __name__ == "__main__":
+    # FIX 409: si el contenedor anterior no llegó a cerrar su getUpdates a
+    # tiempo, esto libera el "lock" de Telegram antes de empezar a hacer
+    # polling, en vez de chocar con la sesión previa.
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception as e:
+        log.warning(f"remove_webhook al arrancar: {e}")
     log.info("AnalisisPro Bot arrancado")
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
