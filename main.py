@@ -173,6 +173,43 @@ def fetch_binance(symbol, days=100):
     if res: cache_set(ck, res)
     return res
 
+TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY", "")
+
+# Alias para tickers crypto escritos sin sufijo -USD (p.ej. "BTC" -> "BTC-USD")
+CRYPTO_ALIAS = {k.split("-")[0]: k for k in BINANCE_MAP}
+
+def normalize_ticker(ticker):
+    t = ticker.upper().strip()
+    return CRYPTO_ALIAS.get(t, t)
+
+def fetch_twelvedata(ticker, days=100):
+    """Fuente intermedia entre Stooq y yfinance. Usa API key (no scraping),
+    así que no sufre los bloqueos por IP compartida que afectan a Yahoo desde
+    Railway. Requiere la env var TWELVEDATA_API_KEY (plan gratuito: 800
+    peticiones/día, 8/min — https://twelvedata.com/register)."""
+    if not TWELVEDATA_API_KEY:
+        return None
+    ck = f"td:{ticker}"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
+        r = requests.get("https://api.twelvedata.com/time_series",
+                        params={"symbol":ticker,"interval":"1day","outputsize":days,
+                                "apikey":TWELVEDATA_API_KEY},timeout=10)
+        j = r.json()
+        if j.get("status")=="error" or "values" not in j:
+            raise RuntimeError(f"Twelve Data: {j.get('message','sin datos')}")
+        vals = list(reversed(j["values"]))  # Twelve Data devuelve orden descendente
+        if len(vals)<5: raise RuntimeError("Twelve Data: pocos datos")
+        c  = pd.Series([float(v["close"]) for v in vals])
+        h  = pd.Series([float(v["high"]) for v in vals])
+        lo = pd.Series([float(v["low"]) for v in vals])
+        vol= pd.Series([float(v.get("volume") or 1e6) for v in vals])
+        return build_quote(ticker, c, h, lo, vol)
+    res = with_retry(_do, tries=2, base_delay=2, what=f"fetch_twelvedata {ticker}")
+    if res: cache_set(ck, res)
+    return res
+
 def fetch_yfinance_fallback(ticker, days=100):
     """Fallback para cuando Stooq no devuelve datos (rate-limit, ticker
     desconocido, bloqueo puntual, etc). Usa yfinance con caché + reintentos
@@ -229,24 +266,18 @@ def fetch_stooq(ticker, days=100):
         return build_quote(t,c,h,lo,vol)
     res = with_retry(_do, tries=2, base_delay=1, what=f"fetch_stooq {ticker}")
     if res is None:
-        log.debug(f"fetch_stooq {ticker}({st}): agotado, probando yfinance")
+        log.debug(f"fetch_stooq {ticker}({st}): agotado, probando Twelve Data")
+        res = fetch_twelvedata(t, days)
+    if res is None:
+        log.debug(f"fetch_stooq {ticker}: Twelve Data también agotado, probando yfinance")
         res = fetch_yfinance_fallback(t, days)
     if res: cache_set(ck, res)
     return res
 
 def get_quote(ticker):
-    t = ticker.upper()
+    t = normalize_ticker(ticker)
     if t in BINANCE_MAP:
-        res = fetch_binance(BINANCE_MAP[t])
-        if res is not None:
-            return res
-        # Fallback si Binance está bloqueado (HTTP 451, etc.)
-        log.warning(f"Binance falló para {t}, usando yfinance")
-        return fetch_yfinance_fallback(t)
-    # Acciones: yfinance primero (Stooq falla con mucha frecuencia)
-    res = fetch_yfinance_fallback(t)
-    if res is not None:
-        return res
+        return fetch_binance(BINANCE_MAP[t])
     return fetch_stooq(t)
 
 def get_fear_greed():
@@ -284,7 +315,7 @@ def get_trends(keyword="Bitcoin"):
 # ═══ /VALOR ══════════════════════════════════════════════════
 
 def calcular_valor(ticker):
-    t = ticker.upper()
+    t = normalize_ticker(ticker)
     es_crypto = t in BINANCE_MAP
     d = get_quote(t)
     if not d:
@@ -496,151 +527,33 @@ def cmd_valor(msg):
 # ═══ /FUNDAMENTAL ════════════════════════════════════════════
 
 def fetch_fundamentales(ticker):
-    """Fundamentales robustos: no depende del endpoint .info (roto con 401/crumb).
-    Usa fast_info + financials/balance_sheet/cashflow, y .info solo como bonus si responde."""
     ck = f"fund:{ticker}"
     cached = cache_get(ck)
-    if cached is not None:
-        return cached
-
+    if cached is not None: return cached
     def _do():
         import yfinance as yf
-        t = yf.Ticker(ticker)
-
-        # --- Precio y market cap vía fast_info (sigue funcionando) ---
-        fi = t.fast_info
-        if fi is None:
+        info = yf.Ticker(ticker).info
+        if not info or not info.get("regularMarketPrice"):
             raise RuntimeError("sin datos fundamentales")
-        if not isinstance(fi, dict):
-            try:
-                fi = dict(fi)
-            except Exception:
-                fi = {
-                    "lastPrice": getattr(fi, "last_price", None),
-                    "marketCap": getattr(fi, "market_cap", None),
-                    "yearHigh": getattr(fi, "year_high", None),
-                    "yearLow": getattr(fi, "year_low", None),
-                }
-        price = fi.get("lastPrice") or fi.get("regularMarketPrice") or fi.get("last_price")
-        mktcap = fi.get("marketCap") or fi.get("market_cap") or 0
-        if not price:
-            raise RuntimeError("sin precio")
-
-        # Valores por defecto
-        nombre = ticker
-        sector = ""
-        pe = peg = ev_ebitda = margen_neto = margen_bruto = roe = None
-        fcf = caja = deuda_total = ebitda = None
-        rev_growth = earn_growth = rev_ttm = current_ratio = None
-        insider_pct = div_yield = None
-        d1 = 0
-
-        # --- Intento suave de .info (si un día vuelve, se aprovecha) ---
-        try:
-            info = t.info or {}
-            if info and len(info) > 5:
-                nombre = info.get("longName") or ticker
-                sector = info.get("sector") or ""
-                pe = info.get("trailingPE")
-                peg = info.get("pegRatio")
-                ev_ebitda = info.get("enterpriseToEbitda")
-                margen_neto = info.get("profitMargins")
-                margen_bruto = info.get("grossMargins")
-                roe = info.get("returnOnEquity")
-                fcf = info.get("freeCashflow")
-                caja = info.get("totalCash")
-                deuda_total = info.get("totalDebt")
-                ebitda = info.get("ebitda")
-                rev_growth = info.get("revenueGrowth")
-                earn_growth = info.get("earningsGrowth")
-                rev_ttm = info.get("totalRevenue")
-                current_ratio = info.get("currentRatio")
-                insider_pct = info.get("heldPercentInsiders")
-                dy = info.get("dividendYield")
-                if dy and dy > 1:
-                    dy = dy / 100
-                div_yield = dy
-                d1 = info.get("regularMarketChangePercent") or 0
-                if not mktcap:
-                    mktcap = info.get("marketCap") or 0
-                if not price:
-                    price = info.get("regularMarketPrice") or info.get("currentPrice") or price
-        except Exception as e:
-            log.debug(f"info fallback {ticker}: {e}")
-
-        # --- Relleno desde estados financieros si .info falló ---
-        if pe is None or margen_neto is None or deuda_total is None or fcf is None:
-            try:
-                fin = t.financials
-                bs = t.balance_sheet
-                cf = t.cashflow
-                if fin is not None and not fin.empty:
-                    if "Net Income" in fin.index and "Total Revenue" in fin.index:
-                        ni = fin.loc["Net Income"].iloc[0]
-                        tr = fin.loc["Total Revenue"].iloc[0]
-                        if tr and tr != 0:
-                            margen_neto = float(ni / tr) if margen_neto is None else margen_neto
-                            rev_ttm = float(tr) if rev_ttm is None else rev_ttm
-                    if "Gross Profit" in fin.index and "Total Revenue" in fin.index:
-                        gp = fin.loc["Gross Profit"].iloc[0]
-                        tr = fin.loc["Total Revenue"].iloc[0]
-                        if tr and tr != 0 and margen_bruto is None:
-                            margen_bruto = float(gp / tr)
-                    # Crecimiento ingresos (2 periodos)
-                    if "Total Revenue" in fin.index and fin.shape[1] >= 2:
-                        r0 = fin.loc["Total Revenue"].iloc[0]
-                        r1 = fin.loc["Total Revenue"].iloc[1]
-                        if r1 and r1 != 0 and rev_growth is None:
-                            rev_growth = float((r0 - r1) / abs(r1))
-                if bs is not None and not bs.empty:
-                    for key in ("Total Debt", "Long Term Debt"):
-                        if key in bs.index and deuda_total is None:
-                            deuda_total = float(bs.loc[key].iloc[0])
-                            break
-                    for key in ("Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"):
-                        if key in bs.index and caja is None:
-                            caja = float(bs.loc[key].iloc[0])
-                            break
-                    ca = bs.loc["Current Assets"].iloc[0] if "Current Assets" in bs.index else None
-                    cl = bs.loc["Current Liabilities"].iloc[0] if "Current Liabilities" in bs.index else None
-                    if ca and cl and cl != 0 and current_ratio is None:
-                        current_ratio = float(ca / cl)
-                if cf is not None and not cf.empty:
-                    for key in ("Free Cash Flow", "Operating Cash Flow"):
-                        if key in cf.index and fcf is None:
-                            fcf = float(cf.loc[key].iloc[0])
-                            if key == "Free Cash Flow":
-                                break
-            except Exception as e:
-                log.debug(f"financials fallback {ticker}: {e}")
-
+        dy = info.get("dividendYield")
+        if dy and dy>1: dy=dy/100
         return {
-            "nombre": nombre,
-            "sector": sector,
-            "price": float(price),
-            "d1": float(d1) if d1 else 0,
-            "mktcap": float(mktcap) if mktcap else 0,
-            "pe": pe,
-            "peg": peg,
-            "ev_ebitda": ev_ebitda,
-            "margen_neto": margen_neto,
-            "margen_bruto": margen_bruto,
-            "roe": roe,
-            "fcf": fcf,
-            "caja": caja,
-            "deuda_total": deuda_total,
-            "ebitda": ebitda,
-            "rev_growth": rev_growth,
-            "earn_growth": earn_growth,
-            "rev_ttm": rev_ttm,
-            "current_ratio": current_ratio,
-            "insider_pct": insider_pct,
-            "div_yield": div_yield,
+            "nombre":info.get("longName",ticker),"sector":info.get("sector",""),
+            "price":info.get("regularMarketPrice") or info.get("currentPrice",0),
+            "d1":info.get("regularMarketChangePercent",0),
+            "mktcap":info.get("marketCap",0),
+            "pe":info.get("trailingPE"),"peg":info.get("pegRatio"),
+            "ev_ebitda":info.get("enterpriseToEbitda"),
+            "margen_neto":info.get("profitMargins"),"margen_bruto":info.get("grossMargins"),
+            "roe":info.get("returnOnEquity"),"fcf":info.get("freeCashflow"),
+            "caja":info.get("totalCash"),"deuda_total":info.get("totalDebt"),
+            "ebitda":info.get("ebitda"),"rev_growth":info.get("revenueGrowth"),
+            "earn_growth":info.get("earningsGrowth"),"rev_ttm":info.get("totalRevenue"),
+            "current_ratio":info.get("currentRatio"),"insider_pct":info.get("heldPercentInsiders"),
+            "div_yield":dy,
         }
-
     res = with_retry(_do, tries=3, base_delay=3, what=f"fetch_fundamentales {ticker}")
-    if res:
-        cache_set(ck, res)
+    if res: cache_set(ck, res)
     return res
 
 def calcular_fundamental(ticker):
