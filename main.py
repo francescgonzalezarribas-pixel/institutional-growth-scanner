@@ -6897,7 +6897,7 @@ if __name__ == "__main__":
         scheduler.add_job(precalentar_cache,     "interval", hours=2)
         scheduler.start()
         log.info("Jobs automaticos activados")
-    # Precalentar caché al arrancar
-    precalentar_cache()
+    # Precalentar caché desactivado — evita saturar yfinance al arrancar
+    # precalentar_cache()
     log.info("Financial Bot arrancado - Version Completa v6")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
