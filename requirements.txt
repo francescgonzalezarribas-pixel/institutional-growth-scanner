@@ -1,12 +1,9 @@
 pyTelegramBotAPI==4.21.0
 groq>=0.9.0
 yfinance==0.2.52
-feedparser>=6.0.10
 requests>=2.31.0
 pandas>=2.0.0
 numpy>=1.24.0
-pytz>=2024.1
-apscheduler>=3.10.0
 matplotlib>=3.7.0
-mplfinance>=0.12.9b0
-pytrends>=4.9.0 
+pytz>=2024.1
+pytrends>=4.9.0
