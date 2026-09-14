@@ -331,26 +331,6 @@ TWELVEDATA_SYMBOL_MAP = {
     "DX-Y.NYB":"DXY","GC=F":"XAU/USD","CL=F":"WTI/USD",
 }
 
-# Límite real de Twelve Data en el plan gratuito: 8 peticiones/minuto. Si
-# varios tickers fallan en Stooq a la vez (p.ej. dentro de /mercados) y
-# todos caen sobre Twelve Data en ráfaga, se revienta ese límite de golpe
-# y se rompe la cadena de respaldo para todos a la vez. Este limitador
-# global espacia las llamadas para no pasar nunca de ~7/min.
-_TD_CALL_TIMES = []
-_TD_MAX_PER_MIN = 7
-
-def _throttle_twelvedata():
-    global _TD_CALL_TIMES
-    now = time.time()
-    _TD_CALL_TIMES = [t for t in _TD_CALL_TIMES if now - t < 60]
-    if len(_TD_CALL_TIMES) >= _TD_MAX_PER_MIN:
-        wait = 60 - (now - _TD_CALL_TIMES[0]) + 0.5
-        if wait > 0:
-            time.sleep(wait)
-        now = time.time()
-        _TD_CALL_TIMES = [t for t in _TD_CALL_TIMES if now - t < 60]
-    _TD_CALL_TIMES.append(time.time())
-
 def fetch_twelvedata(ticker, days=220):
     """Fuente intermedia entre Stooq y yfinance. Usa API key (no scraping),
     así que no sufre los bloqueos por IP compartida que afectan a Yahoo desde
@@ -363,7 +343,6 @@ def fetch_twelvedata(ticker, days=220):
     cached = cache_get(ck)
     if cached is not None: return cached
     def _do():
-        _throttle_twelvedata()
         r = requests.get("https://api.twelvedata.com/time_series",
                         params={"symbol":sym,"interval":"1day","outputsize":days,
                                 "apikey":TWELVEDATA_API_KEY},timeout=10)
@@ -1168,8 +1147,7 @@ def cmd_start(msg):
             "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n"
             "/cartera Buffett — Cartera 13F de grandes inversores\n"
             "/dominancia — Zonas históricas de compra/venta BTC (USDT.D)\n"
-            "/ballenas BTC — Muros de órdenes grandes (order book)\n"
-            "/mercados — Resumen en vivo, ordenado por lo que más se mueve\n\n"
+            "/ballenas BTC — Muros de órdenes grandes (order book)\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
@@ -1820,10 +1798,7 @@ def chart_ballenas(ticker, walls, intraday):
 
     if intraday is not None:
         ax.plot(intraday["fechas"], intraday["closes"], color='white', linewidth=1.5, zorder=6)
-        x_izq, x_der = intraday["fechas"][0], intraday["fechas"][-1]
-    else:
-        x_izq, x_der = 0, 1
-    margen = (x_der - x_izq) * 0.30 if hasattr(x_der, "__sub__") else 1
+        ax.set_xlim(intraday["fechas"][0], intraday["fechas"][-1])
 
     todos_usd = [w[2] for w in walls["bids"] + walls["asks"]] or [1]
     max_usd = max(todos_usd)
@@ -1832,47 +1807,63 @@ def chart_ballenas(ticker, walls, intraday):
 
     ask_ys = _espaciar_etiquetas([p for p, q, usd in walls["asks"]], min_gap) if walls["asks"] else {}
     bid_ys = _espaciar_etiquetas([p for p, q, usd in walls["bids"]], min_gap) if walls["bids"] else {}
-    x_texto = x_der + margen * 0.08
+
+    # FIX: en vez de calcular la posición del texto en coordenadas de fecha
+    # (frágil: dependía de bbox_inches='tight' para no recortarlo, y a
+    # veces sí lo recortaba), reservamos un hueco FIJO de verdad en el
+    # lienzo con subplots_adjust, y colocamos las etiquetas con
+    # get_yaxis_transform(): x en fracción del área del gráfico (no
+    # depende de fechas), y en coordenadas de precio real.
+    trans = ax.get_yaxis_transform()
+    x_label = 1.02
 
     for p, q, usd in walls["asks"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
         ax.axhspan(p*0.998, p*1.002, color='#FF3333', alpha=alpha, zorder=1)
         y_label = ask_ys[p]
         if abs(y_label - p) > min_gap * 0.3:
-            ax.plot([x_der, x_texto], [p, y_label], color='#FF8888', linewidth=0.6, alpha=0.5, zorder=2)
-        ax.text(x_texto, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", color='white', fontsize=10.5,
-                va='center', ha='left', fontweight='bold', clip_on=False, zorder=8,
+            ax.plot([1.0, x_label], [p, y_label], transform=trans, color='#FF8888',
+                    linewidth=0.6, alpha=0.5, zorder=2, clip_on=False)
+        ax.text(x_label, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", transform=trans,
+                color='white', fontsize=10.5, va='center', ha='left', fontweight='bold',
+                clip_on=False, zorder=8,
                 bbox=dict(boxstyle='round,pad=0.25', facecolor='#0d1117', edgecolor='#FF3333', alpha=0.9))
     for p, q, usd in walls["bids"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
         ax.axhspan(p*0.998, p*1.002, color='#00CC44', alpha=alpha, zorder=1)
         y_label = bid_ys[p]
         if abs(y_label - p) > min_gap * 0.3:
-            ax.plot([x_der, x_texto], [p, y_label], color='#88FF88', linewidth=0.6, alpha=0.5, zorder=2)
-        ax.text(x_texto, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", color='white', fontsize=10.5,
-                va='center', ha='left', fontweight='bold', clip_on=False, zorder=8,
+            ax.plot([1.0, x_label], [p, y_label], transform=trans, color='#88FF88',
+                    linewidth=0.6, alpha=0.5, zorder=2, clip_on=False)
+        ax.text(x_label, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", transform=trans,
+                color='white', fontsize=10.5, va='center', ha='left', fontweight='bold',
+                clip_on=False, zorder=8,
                 bbox=dict(boxstyle='round,pad=0.25', facecolor='#0d1117', edgecolor='#00CC44', alpha=0.9))
 
     ax.axhline(walls["mid"], color='#00FFFF', linestyle='--', linewidth=1.2, zorder=5)
-    for x_pos, ha in [(x_izq, 'left'), (x_texto, 'left')]:
-        ax.text(x_pos, walls["mid"], f" AHORA ${walls['mid']:,.1f} ", color='#0d1117',
-                fontsize=10, fontweight='bold', va='center', ha=ha, zorder=9, clip_on=False,
+    for x_pos in (0.0, x_label):
+        ax.text(x_pos, walls["mid"], f" AHORA ${walls['mid']:,.1f} ", transform=trans,
+                color='#0d1117', fontsize=10, fontweight='bold', va='center', ha='left',
+                zorder=9, clip_on=False,
                 bbox=dict(boxstyle='round,pad=0.25', facecolor='#00FFFF', edgecolor='none', alpha=0.95))
 
     ax.set_title(f'{ticker} — Muros de órdenes grandes (order book Binance)',
                  color='white', fontsize=13, fontweight='bold')
     ax.set_ylabel('Precio USD', color='#AAAAAA')
-    ax.set_xlim(x_izq, x_der + margen)
     ax.tick_params(colors='#AAAAAA')
     for spine in ax.spines.values(): spine.set_color('#333333')
     ax.grid(color='#222222', linestyle='--', alpha=0.3)
     if intraday is not None:
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
         fig.autofmt_xdate()
+    # Reservamos de verdad el ~28% derecho del lienzo para las etiquetas
+    # (en vez de fiarnos de que bbox_inches='tight' calcule bien el
+    # espacio necesario al guardar — a veces recortaba justo donde
+    # empezaba el texto).
+    plt.subplots_adjust(left=0.07, right=0.73, top=0.93, bottom=0.18)
 
-    plt.tight_layout()
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117')
     plt.close()
     buf.seek(0)
     return buf
@@ -1939,121 +1930,6 @@ def cmd_ballenas(msg):
               "1. ¿Qué nivel de resistencia y soporte parecen más relevantes?\n"
               "2. ¿Qué estrategia de entrada/salida sugieren estos muros?\n"
               "3. Riesgo de que sean órdenes 'trampa' (spoofing) que se cancelan antes de ejecutarse")
-    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
-
-# ═══ /MERCADOS — Resumen en vivo, ordenado por lo que más se mueve ══
-# Solo tickers conocidos y fijos (índices, cripto, materias primas,
-# grandes tecnológicas) — NADA de "gainers/losers" de todo el mercado.
-# Motivo: con microcaps desconocidos (tipo CTNT, FTFT...) la IA no tiene
-# ninguna noticia real sobre la que basarse y se inventa explicaciones que
-# suenan creíbles pero son pura fabricación. Con esta lista limitada, al
-# menos son empresas que el modelo puede conocer de verdad.
-MERCADOS_TICKERS = {
-    "Ethereum": "ETH-USD", "Bitcoin": "BTC-USD",
-    "Nasdaq": "^IXIC", "S&P 500": "^GSPC", "IBEX 35": "^IBEX",
-    "DAX": "^GDAXI", "CAC 40": "^FCHI",
-    "Oro": "GC=F", "Petróleo": "CL=F", "USD Index": "DX-Y.NYB",
-    "Apple": "AAPL", "Nvidia": "NVDA", "Tesla": "TSLA", "Microsoft": "MSFT",
-    "Amazon": "AMZN", "Google": "GOOGL", "Meta": "META",
-}
-
-# Respaldo para índices que a menudo fallan en Stooq/Twelve Data (el plan
-# gratuito de Twelve Data no cubre índices en crudo): usamos el ETF que
-# los replica, que ya sabemos fiable.
-MERCADOS_FALLBACK = {"^IXIC": "QQQ", "^GSPC": "SPY"}
-
-def calcular_mercados():
-    resultados = []
-    for nombre, ticker in MERCADOS_TICKERS.items():
-        d = get_quote(ticker)
-        if not d and ticker in MERCADOS_FALLBACK:
-            d = get_quote(MERCADOS_FALLBACK[ticker])
-        if d:
-            resultados.append({"nombre": nombre, "d1": d["d1"], "price": d["price"]})
-        time.sleep(0.4)  # evita bombardear Stooq con ~17 tickers en ráfaga
-    resultados.sort(key=lambda x: -abs(x["d1"]))
-    return resultados
-
-def chart_mercados(resultados):
-    n = len(resultados)
-    fig, ax = plt.subplots(figsize=(12, max(5, n*0.85)))
-    fig.patch.set_facecolor('#0d1117')
-    ax.set_facecolor('#0d1117')
-
-    nombres = [r["nombre"] for r in resultados]
-    valores = [r["d1"] for r in resultados]
-    colores = ['#00CC44' if v >= 0 else '#FF3333' for v in valores]
-    y_pos = list(range(n))
-
-    ax.barh(y_pos, valores, color=colores, height=0.55, zorder=3)
-    ax.axvline(0, color='#666666', linewidth=1, zorder=2)
-
-    max_abs = max(abs(v) for v in valores) or 1
-    for i, v in enumerate(valores):
-        offset = max_abs * 0.04
-        ax.text(v + (offset if v >= 0 else -offset), i, f"{v:+.2f}%",
-                va='center', ha='left' if v >= 0 else 'right',
-                color=colores[i], fontweight='bold', fontsize=13)
-
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(nombres, color='white', fontsize=13, fontweight='bold')
-    ax.invert_yaxis()
-    ax.set_xlim(-max_abs*1.35, max_abs*1.35)
-    ax.set_xticks([])
-    for spine in ax.spines.values(): spine.set_visible(False)
-    ax.tick_params(left=False)
-
-    fecha_txt = datetime.now(MADRID).strftime('%d/%m %H:%M')
-    ax.set_title(f'MERCADOS — {fecha_txt}', color='white', fontsize=16,
-                 fontweight='bold', loc='left', pad=15)
-
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-@bot.message_handler(commands=["mercados"])
-def cmd_mercados(msg):
-    if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
-        return
-    m = bot.send_message(msg.chat.id, "Consultando mercados en directo... (10-15s)")
-    resultados = calcular_mercados()
-    if not resultados:
-        safe_send(msg.chat.id, "No he podido obtener datos de mercado ahora mismo. Reintenta en un momento.",
-                  message_id=m.message_id)
-        return
-    try:
-        chart = chart_mercados(resultados)
-        bot.delete_message(msg.chat.id, m.message_id)
-        bot.send_photo(msg.chat.id, chart)
-    except Exception as e:
-        log.warning(f"chart_mercados: {e}")
-        lines = [f"{r['nombre']}: {r['d1']:+.2f}%" for r in resultados]
-        safe_send(msg.chat.id, "MERCADOS\n\n" + "\n".join(lines), message_id=m.message_id)
-        return
-
-    destacado = resultados[0]
-    resumen_txt = ", ".join(f"{r['nombre']} {r['d1']:+.2f}%" for r in resultados)
-    # IMPORTANTE: no le pedimos "por qué" se ha movido cada cosa — el
-    # modelo no tiene acceso a noticias reales y tiende a inventarse
-    # catalizadores concretos (resultados, downgrades, contratos...) que
-    # suenan creíbles pero son pura fabricación. Le pedimos solo lectura
-    # de los números que sí tenemos, con instrucción explícita de no
-    # inventar hechos noticiosos.
-    prompt = (f"Resumen de mercados ahora mismo: {resumen_txt}.\n"
-              f"El que más se ha movido es {destacado['nombre']} ({destacado['d1']:+.2f}%).\n\n"
-              "No inventes noticias, resultados empresariales, decisiones de bancos centrales "
-              "ni ningún otro catalizador concreto — no tienes acceso a noticias reales de hoy "
-              "y afirmar causas específicas sin saberlas sería engañoso.\n\n"
-              "1. Lectura general del panorama (qué activos lideran subidas/bajadas y qué tipo de "
-              "sentimiento de mercado sugiere esa combinación, en términos generales)\n"
-              "2. ¿Hay alguna correlación o divergencia notable entre los distintos activos?\n"
-              "3. Qué datos o eventos programados suele tener sentido vigilar en general para este "
-              "tipo de sesión (sin inventar cuáles son hoy en concreto)")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
