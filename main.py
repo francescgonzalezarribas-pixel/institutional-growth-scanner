@@ -1814,19 +1814,17 @@ def chart_ballenas(ticker, walls, intraday):
 
     todos_usd = [w[2] for w in walls["bids"] + walls["asks"]] or [1]
     max_usd = max(todos_usd)
-    todos_precios = [w[0] for w in walls["bids"] + walls["asks"]] + [walls["mid"]]
+    todos_precios = [w[0] for w in walls["bids"] + walls["asks"]]
     p_min, p_max = min(todos_precios), max(todos_precios)
     min_gap = (p_max - p_min or walls["mid"]*0.01) * 0.09
 
-    # Repartimos TODAS las etiquetas juntas (muros + AHORA) en una sola
-    # pasada, así nunca se pisan entre sí.
+    # Repartimos las etiquetas de los muros para que no se pisen entre sí.
     precios_combinados = sorted(set(
-        [p for p, q, usd in walls["asks"]] + [p for p, q, usd in walls["bids"]] + [walls["mid"]]
+        [p for p, q, usd in walls["asks"]] + [p for p, q, usd in walls["bids"]]
     ))
     ys_combinado = _espaciar_etiquetas(precios_combinados, min_gap)
     ask_ys = {p: ys_combinado[p] for p, q, usd in walls["asks"]}
     bid_ys = {p: ys_combinado[p] for p, q, usd in walls["bids"]}
-    mid_y = ys_combinado[walls["mid"]]
 
     for p, q, usd in walls["asks"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
@@ -1835,6 +1833,18 @@ def chart_ballenas(ticker, walls, intraday):
         alpha = 0.25 + 0.55 * (usd / max_usd)
         ax.axhspan(p*0.998, p*1.002, color='#00CC44', alpha=alpha, zorder=1)
     ax.axhline(walls["mid"], color='#00FFFF', linestyle='--', linewidth=1.2, zorder=5)
+
+    # "AHORA" va DENTRO del propio gráfico de precio, sobre el último punto
+    # de la línea — así nunca compite por espacio con las etiquetas de los
+    # muros en el panel de la derecha.
+    if intraday is not None:
+        x_ahora = intraday["fechas"][-1]
+        y_offset = (p_max - p_min or walls["mid"]*0.01) * 0.05
+        ax.plot(x_ahora, walls["mid"], 'o', color='#00FFFF', markersize=10, zorder=10,
+                markeredgecolor='white', markeredgewidth=1.5)
+        ax.text(x_ahora, walls["mid"] + y_offset, f"AHORA ${walls['mid']:,.1f}",
+                color='#0d1117', fontsize=10, fontweight='bold', ha='right', va='bottom', zorder=11,
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='#00FFFF', edgecolor='none', alpha=0.95))
 
     ax.set_title(f'{ticker} — Muros de órdenes grandes (order book Binance)',
                  color='white', fontsize=13, fontweight='bold', loc='left')
@@ -1868,11 +1878,6 @@ def chart_ballenas(ticker, walls, intraday):
         ax2.text(0.08, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", color='white', fontsize=10.5,
                  va='center', ha='left', fontweight='bold', zorder=8,
                  bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117', edgecolor='#00CC44', alpha=0.9))
-    if abs(mid_y - walls["mid"]) > min_gap * 0.3:
-        ax2.plot([0, 0.06], [walls["mid"], mid_y], color='#00FFFF', linewidth=0.6, alpha=0.6, zorder=6)
-    ax2.text(0.08, mid_y, f"AHORA ${walls['mid']:,.1f}", color='#0d1117', fontsize=10.5,
-              fontweight='bold', va='center', ha='left', zorder=9,
-              bbox=dict(boxstyle='round,pad=0.3', facecolor='#00FFFF', edgecolor='none', alpha=0.95))
 
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117')
