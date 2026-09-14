@@ -1922,6 +1922,12 @@ def cmd_ballenas(msg):
 
 
 # ═══ /MERCADOS — Resumen en vivo, ordenado por lo que más se mueve ══
+# Solo tickers conocidos y fijos (índices, cripto, materias primas,
+# grandes tecnológicas) — NADA de "gainers/losers" de todo el mercado.
+# Motivo: con microcaps desconocidos (tipo CTNT, FTFT...) la IA no tiene
+# ninguna noticia real sobre la que basarse y se inventa explicaciones que
+# suenan creíbles pero son pura fabricación. Con esta lista limitada, al
+# menos son empresas que el modelo puede conocer de verdad.
 MERCADOS_TICKERS = {
     "Ethereum": "ETH-USD", "Bitcoin": "BTC-USD",
     "Nasdaq": "^IXIC", "S&P 500": "^GSPC", "IBEX 35": "^IBEX",
@@ -1931,43 +1937,9 @@ MERCADOS_TICKERS = {
     "Amazon": "AMZN", "Google": "GOOGL", "Meta": "META",
 }
 
-FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
-
-def fetch_market_movers(top_n=15):
-    """Gainers/losers REALES de todo el mercado (no solo nuestra lista fija
-    de arriba), vía Financial Modeling Prep. Así, si algo fuera de la lista
-    (p.ej. Vertiv) pega un subidón fuerte, también aparece. Requiere la env
-    var FMP_API_KEY (gratis, 250 peticiones/día — financialmodelingprep.com)."""
-    if not FMP_API_KEY:
-        return []
-    out = []
-    for endpoint in ("biggest-gainers", "biggest-losers"):
-        try:
-            r = requests.get(f"https://financialmodelingprep.com/stable/{endpoint}",
-                            params={"apikey": FMP_API_KEY}, timeout=10)
-            if r.status_code != 200:
-                log.warning(f"fetch_market_movers {endpoint}: HTTP {r.status_code} — {r.text[:300]}")
-                continue
-            data = r.json()
-            if not isinstance(data, list):
-                log.warning(f"fetch_market_movers {endpoint}: formato inesperado: {str(data)[:300]}")
-                continue
-            if data:
-                log.info(f"fetch_market_movers {endpoint}: ejemplo item: {data[0]}")
-            for item in data[:top_n]:
-                try:
-                    out.append({"nombre": item.get("symbol", "?"),
-                                "d1": float(item.get("changesPercentage", 0)),
-                                "price": float(item.get("price", 0))})
-                except Exception:
-                    continue
-        except Exception as e:
-            log.warning(f"fetch_market_movers {endpoint}: {e}")
-    return out
-
-# Respaldo para índices que fallan a menudo en Stooq/Twelve Data (los
-# índices "en crudo" a veces no están cubiertos en el plan gratuito de
-# Twelve Data): usamos el ETF que los replica, que ya sabemos fiable.
+# Respaldo para índices que a menudo fallan en Stooq/Twelve Data (el plan
+# gratuito de Twelve Data no cubre índices en crudo): usamos el ETF que
+# los replica, que ya sabemos fiable.
 MERCADOS_FALLBACK = {"^IXIC": "QQQ", "^GSPC": "SPY"}
 
 def calcular_mercados():
@@ -1978,13 +1950,6 @@ def calcular_mercados():
             d = get_quote(MERCADOS_FALLBACK[ticker])
         if d:
             resultados.append({"nombre": nombre, "d1": d["d1"], "price": d["price"]})
-    resultados += fetch_market_movers()
-    # dedupe por nombre (si algo de la lista fija coincide con un mover real)
-    vistos = {}
-    for r in resultados:
-        if r["nombre"] not in vistos:
-            vistos[r["nombre"]] = r
-    resultados = list(vistos.values())
     resultados.sort(key=lambda x: -abs(x["d1"]))
     return resultados
 
@@ -2034,7 +1999,7 @@ def cmd_mercados(msg):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
         return
     m = bot.send_message(msg.chat.id, "Consultando mercados en directo... (10-15s)")
-    resultados = calcular_mercados()[:12]
+    resultados = calcular_mercados()
     if not resultados:
         safe_send(msg.chat.id, "No he podido obtener datos de mercado ahora mismo. Reintenta en un momento.",
                   message_id=m.message_id)
@@ -2051,12 +2016,24 @@ def cmd_mercados(msg):
 
     destacado = resultados[0]
     resumen_txt = ", ".join(f"{r['nombre']} {r['d1']:+.2f}%" for r in resultados)
+    # IMPORTANTE: no le pedimos "por qué" se ha movido cada cosa — el
+    # modelo no tiene acceso a noticias reales y tiende a inventarse
+    # catalizadores concretos (resultados, downgrades, contratos...) que
+    # suenan creíbles pero son pura fabricación. Le pedimos solo lectura
+    # de los números que sí tenemos, con instrucción explícita de no
+    # inventar hechos noticiosos.
     prompt = (f"Resumen de mercados ahora mismo: {resumen_txt}.\n"
               f"El que más se ha movido es {destacado['nombre']} ({destacado['d1']:+.2f}%).\n\n"
-              "1. ¿Qué está impulsando el movimiento más destacado?\n"
-              "2. ¿Hay alguna correlación o divergencia entre mercados que llame la atención hoy?\n"
-              "3. Qué vigilar el resto de la sesión")
+              "No inventes noticias, resultados empresariales, decisiones de bancos centrales "
+              "ni ningún otro catalizador concreto — no tienes acceso a noticias reales de hoy "
+              "y afirmar causas específicas sin saberlas sería engañoso.\n\n"
+              "1. Lectura general del panorama (qué activos lideran subidas/bajadas y qué tipo de "
+              "sentimiento de mercado sugiere esa combinación, en términos generales)\n"
+              "2. ¿Hay alguna correlación o divergencia notable entre los distintos activos?\n"
+              "3. Qué datos o eventos programados suele tener sentido vigilar en general para este "
+              "tipo de sesión (sin inventar cuáles son hoy en concreto)")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 
 if __name__ == "__main__":
     # FIX 409: si el contenedor anterior no llegó a cerrar su getUpdates a
