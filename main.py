@@ -1805,8 +1805,17 @@ def chart_ballenas(ticker, walls, intraday):
     todos_precios = [w[0] for w in walls["bids"] + walls["asks"]] + [walls["mid"]]
     min_gap = (max(todos_precios) - min(todos_precios) or walls["mid"]*0.01) * 0.045
 
-    ask_ys = _espaciar_etiquetas([p for p, q, usd in walls["asks"]], min_gap) if walls["asks"] else {}
-    bid_ys = _espaciar_etiquetas([p for p, q, usd in walls["bids"]], min_gap) if walls["bids"] else {}
+    # FIX: antes "AHORA" no entraba en el cálculo de espaciado, así que
+    # podía chocar con la etiqueta de un muro si el precio actual caía muy
+    # cerca de uno. Ahora se reparten TODAS las etiquetas juntas (muros +
+    # AHORA) en una sola pasada, así nunca se pisan entre sí.
+    precios_combinados = sorted(set(
+        [p for p, q, usd in walls["asks"]] + [p for p, q, usd in walls["bids"]] + [walls["mid"]]
+    ))
+    ys_combinado = _espaciar_etiquetas(precios_combinados, min_gap)
+    ask_ys = {p: ys_combinado[p] for p, q, usd in walls["asks"]}
+    bid_ys = {p: ys_combinado[p] for p, q, usd in walls["bids"]}
+    mid_y = ys_combinado[walls["mid"]]
 
     # FIX: en vez de calcular la posición del texto en coordenadas de fecha
     # (frágil: dependía de bbox_inches='tight' para no recortarlo, y a
@@ -1841,11 +1850,17 @@ def chart_ballenas(ticker, walls, intraday):
                 bbox=dict(boxstyle='round,pad=0.25', facecolor='#0d1117', edgecolor='#00CC44', alpha=0.9))
 
     ax.axhline(walls["mid"], color='#00FFFF', linestyle='--', linewidth=1.2, zorder=5)
-    for x_pos in (0.0, x_label):
-        ax.text(x_pos, walls["mid"], f" AHORA ${walls['mid']:,.1f} ", transform=trans,
-                color='#0d1117', fontsize=10, fontweight='bold', va='center', ha='left',
-                zorder=9, clip_on=False,
-                bbox=dict(boxstyle='round,pad=0.25', facecolor='#00FFFF', edgecolor='none', alpha=0.95))
+    if abs(mid_y - walls["mid"]) > min_gap * 0.3:
+        ax.plot([1.0, x_label], [walls["mid"], mid_y], transform=trans, color='#00FFFF',
+                linewidth=0.6, alpha=0.6, zorder=6, clip_on=False)
+    ax.text(0.0, walls["mid"], f" AHORA ${walls['mid']:,.1f} ", transform=trans,
+            color='#0d1117', fontsize=10, fontweight='bold', va='center', ha='left',
+            zorder=9, clip_on=False,
+            bbox=dict(boxstyle='round,pad=0.25', facecolor='#00FFFF', edgecolor='none', alpha=0.95))
+    ax.text(x_label, mid_y, f" AHORA ${walls['mid']:,.1f} ", transform=trans,
+            color='#0d1117', fontsize=10, fontweight='bold', va='center', ha='left',
+            zorder=9, clip_on=False,
+            bbox=dict(boxstyle='round,pad=0.25', facecolor='#00FFFF', edgecolor='none', alpha=0.95))
 
     ax.set_title(f'{ticker} — Muros de órdenes grandes (order book Binance)',
                  color='white', fontsize=13, fontweight='bold')
