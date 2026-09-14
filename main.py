@@ -436,9 +436,12 @@ def get_quote(ticker):
         dyn = fetch_binance(f"{base}USDT")
         if dyn: return dyn
     res = fetch_stooq(t)
-    if res is None and "-" not in t and "." not in t and len(t) <= 10:
+    if res is None and "-" not in t and "." not in t and "^" not in t and "=" not in t and len(t) <= 10:
         # Último recurso: si no parece encontrarse como acción, probamos si
         # es una cripto escrita sin sufijo (p.ej. "PEPE" en vez de PEPE-USD).
+        # Excluimos "^" (índices, p.ej. ^GSPC) y "=" (materias primas, p.ej.
+        # GC=F): nunca son pares cripto, probarlo solo malgasta una llamada
+        # y ensucia el log con un HTTP 400 inevitable.
         dyn = fetch_binance(f"{t}USDT")
         if dyn: return dyn
     return res
@@ -1962,10 +1965,17 @@ def fetch_market_movers(top_n=15):
             log.warning(f"fetch_market_movers {endpoint}: {e}")
     return out
 
+# Respaldo para índices que fallan a menudo en Stooq/Twelve Data (los
+# índices "en crudo" a veces no están cubiertos en el plan gratuito de
+# Twelve Data): usamos el ETF que los replica, que ya sabemos fiable.
+MERCADOS_FALLBACK = {"^IXIC": "QQQ", "^GSPC": "SPY"}
+
 def calcular_mercados():
     resultados = []
     for nombre, ticker in MERCADOS_TICKERS.items():
         d = get_quote(ticker)
+        if not d and ticker in MERCADOS_FALLBACK:
+            d = get_quote(MERCADOS_FALLBACK[ticker])
         if d:
             resultados.append({"nombre": nombre, "d1": d["d1"], "price": d["price"]})
     resultados += fetch_market_movers()
