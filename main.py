@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""AnalisisPro Bot — Versión corregida con /valor /fundamental /halvingbtc"""
-import os, io, time, logging, requests
+"""AnalisisPro Bot — Con suscripciones (5€/mes vía NOWPayments) + /valor /fundamental /halvingbtc"""
+import os, io, json, time, logging, requests
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -11,7 +11,7 @@ import matplotlib.dates as mdates
 import telebot
 from groq import Groq
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
@@ -23,6 +23,91 @@ MADRID = pytz.timezone("Europe/Madrid")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 ai  = Groq(api_key=GROQ_API_KEY)
+
+# ═══ SISTEMA DE SUSCRIPCIONES ════════════════════════════════
+NOWPAYMENTS_KEY  = os.environ.get("NOWPAYMENTS_API_KEY", "")
+WALLET_USDT      = os.environ.get("WALLET_USDT", "")
+PRECIO_MENSUAL   = 5  # EUR
+TRIAL_DIAS       = 7
+SUBS_FILE        = os.environ.get("SUBS_FILE", "subscribers.json")
+
+def _load_subs():
+    try:
+        with open(SUBS_FILE, "r") as f:
+            raw = json.load(f)
+        out = {}
+        for cid, s in raw.items():
+            out[int(cid)] = {
+                "activo": s.get("activo", False),
+                "expiry": datetime.fromisoformat(s["expiry"]) if s.get("expiry") else None,
+                "trial_used": s.get("trial_used", False),
+            }
+        return out
+    except Exception as e:
+        log.info(f"_load_subs: sin fichero previo o vacío ({e})")
+        return {}
+
+def _save_subs():
+    try:
+        raw = {}
+        for cid, s in SUSCRIPTORES.items():
+            raw[str(cid)] = {
+                "activo": s.get("activo", False),
+                "expiry": s["expiry"].isoformat() if s.get("expiry") else None,
+                "trial_used": s.get("trial_used", False),
+            }
+        with open(SUBS_FILE, "w") as f:
+            json.dump(raw, f)
+    except Exception as e:
+        log.warning(f"_save_subs: {e}")
+
+# {chat_id: {"activo":bool, "expiry":datetime, "trial_used":bool}}
+SUSCRIPTORES = _load_subs()
+
+def is_premium(chat_id):
+    if chat_id == ALLOWED_USER_ID: return True
+    sub = SUSCRIPTORES.get(chat_id, {})
+    if not sub.get("activo"): return False
+    expiry = sub.get("expiry")
+    if expiry and datetime.now() > expiry:
+        SUSCRIPTORES[chat_id]["activo"] = False
+        _save_subs()
+        return False
+    return True
+
+def activar(chat_id, dias=30):
+    ahora = datetime.now()
+    sub = SUSCRIPTORES.get(chat_id, {})
+    if sub.get("activo") and sub.get("expiry") and sub["expiry"] > ahora:
+        nueva = sub["expiry"] + timedelta(days=dias)
+    else:
+        nueva = ahora + timedelta(days=dias)
+    SUSCRIPTORES[chat_id] = {
+        "activo": True, "expiry": nueva,
+        "trial_used": sub.get("trial_used", False),
+    }
+    _save_subs()
+    return nueva
+
+def crear_pago():
+    try:
+        r = requests.post(
+            "https://api.nowpayments.io/v1/invoice",
+            headers={"x-api-key": NOWPAYMENTS_KEY, "Content-Type": "application/json"},
+            json={
+                "price_amount": PRECIO_MENSUAL,
+                "price_currency": "eur",
+                "pay_currency": "usdttrc20",
+                "order_id": f"premium_{int(datetime.now().timestamp())}",
+                "order_description": "AnalisisPro Premium 1 mes",
+            }, timeout=10
+        )
+        data = r.json()
+        return data.get("invoice_url"), data.get("id")
+    except Exception as e:
+        log.error(f"NOWPayments: {e}")
+        return None, None
+
 
 SYSTEM = """Eres un analista financiero senior. Responde SIEMPRE en español.
 Sin markdown. Máximo 4 párrafos concisos y accionables."""
@@ -555,7 +640,9 @@ def chart_valor(res):
 
 @bot.message_handler(commands=["valor"])
 def cmd_valor(msg):
-    if not allowed(msg): return
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
     parts = msg.text.split()
     if len(parts)<2:
         safe_send(msg.chat.id,
@@ -823,7 +910,9 @@ def chart_fundamental(res):
 
 @bot.message_handler(commands=["fundamental"])
 def cmd_fundamental(msg):
-    if not allowed(msg): return
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
     parts = msg.text.split()
     if len(parts)<2:
         safe_send(msg.chat.id,"Uso: /fundamental TICKER\n\nEjemplos:\n/fundamental TSLA\n/fundamental NVDA\n/fundamental NKE")
@@ -969,7 +1058,9 @@ def chart_halving():
 
 @bot.message_handler(commands=["halvingbtc"])
 def cmd_halvingbtc(msg):
-    if not allowed(msg): return
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
     m = bot.send_message(msg.chat.id,"Generando ciclo de 4 años de Bitcoin... (15s)")
     try:
         chart=chart_halving()
@@ -996,21 +1087,170 @@ def cmd_halvingbtc(msg):
 
 @bot.message_handler(commands=["start","ayuda"])
 def cmd_start(msg):
-    if not allowed(msg): return
-    safe_send(msg.chat.id,
-        "AnalisisPro — Comandos:\n\n"
-        "/valor BTC-USD — Índice barato/caro 0-100 para crypto\n"
-        "/valor TSLA — Índice para acciones US\n"
-        "/valor SAN.MC — Acciones españolas\n\n"
-        "/fundamental NVDA — Análisis fundamental 0-100\n"
-        "/fundamental NKE — Con velocímetro y IA\n\n"
-        "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n\n"
-        "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
-        "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE, SHIB-USD...) "
-        "— cualquier par que exista en Binance contra USDT.\n"
-        "Acciones/ETFs US: el ticker tal cual (TSLA, NVDA, AAPL, SPY...).\n"
-        "Acciones internacionales: ticker + sufijo de bolsa "
-        "(SAN.MC España, BMW.DE Alemania, MC.PA Francia, VOD.L Londres...).")
+    chat_id = msg.from_user.id
+    nombre = msg.from_user.first_name or "inversor"
+    if is_premium(chat_id):
+        safe_send(chat_id,
+            f"Bienvenido {nombre}! 👋\n\n"
+            "/valor BTC-USD — Índice barato/caro 0-100 para crypto\n"
+            "/valor TSLA — Índice para acciones US\n"
+            "/valor SAN.MC — Acciones españolas\n\n"
+            "/fundamental NVDA — Análisis fundamental 0-100\n"
+            "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n\n"
+            "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
+            "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
+            "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
+            "/mistatus — Ver tu suscripción")
+        return
+    safe_send(chat_id,
+        f"Hola {nombre}! 👋\n\n"
+        "AnalisisPro — Bot de análisis financiero con IA\n\n"
+        "📊 Índice barato/caro con velocímetro\n"
+        "🔍 Análisis fundamental 0-100\n"
+        "📈 Ciclo Bitcoin con halvings y proyección\n\n"
+        "🎁 Prueba 7 días GRATIS → /trial\n"
+        f"💳 Suscripción → /premium ({PRECIO_MENSUAL}€/mes)")
+
+@bot.message_handler(commands=["trial"])
+def cmd_trial(msg):
+    chat_id = msg.from_user.id
+    sub = SUSCRIPTORES.get(chat_id, {})
+    if sub.get("trial_used"):
+        safe_send(chat_id, f"Ya usaste el trial gratuito.\n\nPara continuar: /premium ({PRECIO_MENSUAL}€/mes)")
+        return
+    if is_premium(chat_id):
+        safe_send(chat_id, "Ya tienes acceso activo. Usa /mistatus para ver cuándo expira.")
+        return
+    expiry = activar(chat_id, dias=TRIAL_DIAS)
+    SUSCRIPTORES[chat_id]["trial_used"] = True
+    _save_subs()
+    nombre = msg.from_user.first_name or "?"
+    username = f"@{msg.from_user.username}" if msg.from_user.username else "sin username"
+    safe_send(ALLOWED_USER_ID,
+        f"🆕 NUEVO TRIAL\nNombre: {nombre}\nUsername: {username}\n"
+        f"Chat ID: {chat_id}\nExpira: {expiry.strftime('%d/%m/%Y')}")
+    safe_send(chat_id,
+        f"✅ TRIAL ACTIVADO — 7 días gratis\n\n"
+        f"Expira: {expiry.strftime('%d/%m/%Y')}\n\n"
+        "Comandos disponibles:\n"
+        "/valor BTC-USD\n/fundamental NVDA\n/halvingbtc\n\n"
+        f"Al terminar el trial: /premium ({PRECIO_MENSUAL}€/mes)")
+
+@bot.message_handler(commands=["premium"])
+def cmd_premium(msg):
+    chat_id = msg.from_user.id
+    if is_premium(chat_id):
+        sub = SUSCRIPTORES.get(chat_id, {})
+        expiry = sub.get("expiry")
+        safe_send(chat_id,
+            f"Ya tienes acceso premium activo ✅\n"
+            f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'indefinido'}")
+        return
+    enlace, _ = crear_pago()
+    if enlace:
+        safe_send(chat_id,
+            f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
+            "✅ Acceso a todos los comandos\n"
+            "✅ Análisis con IA incluido\n"
+            "✅ Sin límites\n\n"
+            f"👇 Enlace de pago (equivalente en USDT TRC20):\n{enlace}\n\n"
+            "Después de pagar: /verificar HASH_TRANSACCION")
+    else:
+        safe_send(chat_id,
+            f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
+            f"Envía el equivalente a {PRECIO_MENSUAL}€ en USDT (red TRC20) a:\n`{WALLET_USDT}`\n\n"
+            "Después envía el hash de la transacción:\n/verificar HASH")
+
+@bot.message_handler(commands=["verificar"])
+def cmd_verificar(msg):
+    chat_id = msg.from_user.id
+    parts = msg.text.split()
+    if len(parts) < 2:
+        safe_send(chat_id, "Uso: /verificar HASH_TRANSACCION")
+        return
+    tx_hash = parts[1]
+    try:
+        r = requests.get(
+            f"https://apilist.tronscan.org/api/transaction-info?hash={tx_hash}",
+            timeout=10)
+        data = r.json()
+        confirmado = data.get("confirmed", False)
+        cantidad = 0
+        token = data.get("tokenTransferInfo", {})
+        if token:
+            cantidad = float(token.get("amount_str", "0")) / 1e6
+        if not confirmado:
+            safe_send(chat_id, "Transacción no confirmada aún. Espera unos minutos e inténtalo de nuevo.")
+            return
+        # Umbral aproximado: el importe en USDT varía según el cambio EUR/USD
+        # del momento del pago, así que aceptamos con un margen del 10%.
+        umbral_min = PRECIO_MENSUAL * 0.90
+        if cantidad >= umbral_min:
+            expiry = activar(chat_id, dias=30)
+            safe_send(chat_id,
+                f"✅ PAGO VERIFICADO — {cantidad:.2f} USDT\n\n"
+                f"Acceso premium hasta {expiry.strftime('%d/%m/%Y')}\n\n"
+                "Comandos: /valor /fundamental /halvingbtc")
+            safe_send(ALLOWED_USER_ID,
+                f"💰 NUEVO SUSCRIPTOR\nChat ID: {chat_id}\n"
+                f"Nombre: {msg.from_user.first_name}\n"
+                f"Pago: {cantidad:.2f} USDT\nTX: {tx_hash[:20]}...")
+        else:
+            safe_send(chat_id,
+                f"Pago detectado pero insuficiente ({cantidad:.2f} USDT).\n"
+                f"Se esperaban ~{PRECIO_MENSUAL} USDT equivalentes.")
+    except Exception as e:
+        log.error(f"verificar: {e}")
+        safe_send(chat_id, "No pude verificar automáticamente. Contacta al administrador.")
+
+@bot.message_handler(commands=["mistatus"])
+def cmd_mistatus(msg):
+    chat_id = msg.from_user.id
+    if chat_id == ALLOWED_USER_ID:
+        activos = sum(1 for s in SUSCRIPTORES.values() if s.get("activo"))
+        safe_send(chat_id, f"Eres el administrador.\nSuscriptores activos: {activos}")
+        return
+    sub = SUSCRIPTORES.get(chat_id)
+    if not sub or not sub.get("activo"):
+        safe_send(chat_id, f"No tienes suscripción activa.\n\n/trial — 7 días gratis\n/premium — {PRECIO_MENSUAL}€/mes")
+        return
+    expiry = sub.get("expiry")
+    dias = (expiry - datetime.now()).days if expiry else 0
+    safe_send(chat_id,
+        "ESTADO DE TU SUSCRIPCIÓN\n\n"
+        f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'N/D'}\n"
+        f"Días restantes: {dias}\n\n"
+        f"{'⚠️ Renueva pronto con /premium' if dias<5 else '✅ Acceso activo'}")
+
+@bot.message_handler(commands=["activar"])
+def cmd_activar(msg):
+    if msg.from_user.id != ALLOWED_USER_ID: return
+    parts = msg.text.split()
+    if len(parts) < 2:
+        safe_send(msg.chat.id, "Uso: /activar CHAT_ID [dias]\nEj: /activar 123456789 30")
+        return
+    try:
+        target = int(parts[1])
+        dias = int(parts[2]) if len(parts) > 2 else 30
+        expiry = activar(target, dias=dias)
+        safe_send(msg.chat.id, f"✅ Activado {target} hasta {expiry.strftime('%d/%m/%Y')}")
+        safe_send(target, f"✅ Acceso premium activado hasta {expiry.strftime('%d/%m/%Y')}\n\n/valor /fundamental /halvingbtc")
+    except Exception as e:
+        safe_send(msg.chat.id, f"Error: {e}")
+
+@bot.message_handler(commands=["suscriptores"])
+def cmd_suscriptores(msg):
+    if msg.from_user.id != ALLOWED_USER_ID: return
+    activos = [(cid, s) for cid, s in SUSCRIPTORES.items() if s.get("activo")]
+    if not activos:
+        safe_send(msg.chat.id, "Sin suscriptores activos.")
+        return
+    lines = [f"SUSCRIPTORES ACTIVOS: {len(activos)}\n"]
+    for cid, s in activos:
+        expiry = s.get("expiry")
+        dias = (expiry - datetime.now()).days if expiry else 0
+        lines.append(f"ID: {cid} — {dias} días restantes")
+    safe_send(msg.chat.id, "\n".join(lines))
 
 if __name__ == "__main__":
     # FIX 409: si el contenedor anterior no llegó a cerrar su getUpdates a
