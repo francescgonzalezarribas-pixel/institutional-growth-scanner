@@ -1938,17 +1938,19 @@ def fetch_market_movers(top_n=15):
     if not FMP_API_KEY:
         return []
     out = []
-    for endpoint in ("gainers", "losers"):
+    for endpoint in ("biggest-gainers", "biggest-losers"):
         try:
-            r = requests.get(f"https://financialmodelingprep.com/api/v3/{endpoint}",
+            r = requests.get(f"https://financialmodelingprep.com/stable/{endpoint}",
                             params={"apikey": FMP_API_KEY}, timeout=10)
             if r.status_code != 200:
-                log.warning(f"fetch_market_movers {endpoint}: HTTP {r.status_code} — {r.text[:200]}")
+                log.warning(f"fetch_market_movers {endpoint}: HTTP {r.status_code} — {r.text[:300]}")
                 continue
             data = r.json()
             if not isinstance(data, list):
-                log.warning(f"fetch_market_movers {endpoint}: formato inesperado: {str(data)[:200]}")
+                log.warning(f"fetch_market_movers {endpoint}: formato inesperado: {str(data)[:300]}")
                 continue
+            if data:
+                log.info(f"fetch_market_movers {endpoint}: ejemplo item: {data[0]}")
             for item in data[:top_n]:
                 try:
                     out.append({"nombre": item.get("symbol", "?"),
