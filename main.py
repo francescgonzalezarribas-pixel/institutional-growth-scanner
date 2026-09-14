@@ -1341,7 +1341,7 @@ def fetch_13f_holdings(cik, accession):
     accn_nodash = accession.replace("-", "")
     try:
         idx = requests.get(
-            f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn_nodash}/{accession}-index.json",
+            f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn_nodash}/index.json",
             headers=SEC_HEADERS, timeout=10).json()
         items = idx.get("directory", {}).get("item", [])
         for it in items:
