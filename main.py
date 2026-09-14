@@ -1792,9 +1792,21 @@ def _espaciar_etiquetas(precios, min_gap):
     return dict(zip(precios, ys))
 
 def chart_ballenas(ticker, walls, intraday):
-    fig, ax = plt.subplots(figsize=(14, 9))
+    # REDISEÑO: en vez de dibujar las etiquetas "fuera" del área de fechas
+    # (con transformaciones de eje que varias veces se han recortado mal
+    # al guardar la imagen), usamos un panel de texto COMPLETAMENTE APARTE
+    # a la derecha — el mismo patrón que ya funciona bien en /valor y
+    # /fundamental, que nunca han tenido este problema de recortes.
+    fig = plt.figure(figsize=(14, 9))
     fig.patch.set_facecolor('#0d1117')
+    ax = fig.add_axes([0.06, 0.11, 0.58, 0.80])   # gráfico de precio (izquierda)
+    ax2 = fig.add_axes([0.68, 0.11, 0.30, 0.80])  # panel de etiquetas (derecha)
     ax.set_facecolor('#0d1117')
+    ax2.set_facecolor('#0d1117')
+    for spine in ('top', 'right', 'bottom'): ax2.spines[spine].set_visible(False)
+    ax2.spines['left'].set_color('#333333')
+    ax2.tick_params(axis='y', colors='#AAAAAA', left=True, labelleft=True)
+    ax2.tick_params(axis='x', bottom=False, labelbottom=False)
 
     if intraday is not None:
         ax.plot(intraday["fechas"], intraday["closes"], color='white', linewidth=1.5, zorder=6)
@@ -1803,12 +1815,11 @@ def chart_ballenas(ticker, walls, intraday):
     todos_usd = [w[2] for w in walls["bids"] + walls["asks"]] or [1]
     max_usd = max(todos_usd)
     todos_precios = [w[0] for w in walls["bids"] + walls["asks"]] + [walls["mid"]]
-    min_gap = (max(todos_precios) - min(todos_precios) or walls["mid"]*0.01) * 0.075
+    p_min, p_max = min(todos_precios), max(todos_precios)
+    min_gap = (p_max - p_min or walls["mid"]*0.01) * 0.09
 
-    # FIX: antes "AHORA" no entraba en el cálculo de espaciado, así que
-    # podía chocar con la etiqueta de un muro si el precio actual caía muy
-    # cerca de uno. Ahora se reparten TODAS las etiquetas juntas (muros +
-    # AHORA) en una sola pasada, así nunca se pisan entre sí.
+    # Repartimos TODAS las etiquetas juntas (muros + AHORA) en una sola
+    # pasada, así nunca se pisan entre sí.
     precios_combinados = sorted(set(
         [p for p, q, usd in walls["asks"]] + [p for p, q, usd in walls["bids"]] + [walls["mid"]]
     ))
@@ -1817,53 +1828,16 @@ def chart_ballenas(ticker, walls, intraday):
     bid_ys = {p: ys_combinado[p] for p, q, usd in walls["bids"]}
     mid_y = ys_combinado[walls["mid"]]
 
-    # FIX: en vez de calcular la posición del texto en coordenadas de fecha
-    # (frágil: dependía de bbox_inches='tight' para no recortarlo, y a
-    # veces sí lo recortaba), reservamos un hueco FIJO de verdad en el
-    # lienzo con subplots_adjust, y colocamos las etiquetas con
-    # get_yaxis_transform(): x en fracción del área del gráfico (no
-    # depende de fechas), y en coordenadas de precio real.
-    trans = ax.get_yaxis_transform()
-    x_label = 1.14  # más allá del eje de precios de la derecha (ver abajo)
-
     for p, q, usd in walls["asks"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
         ax.axhspan(p*0.998, p*1.002, color='#FF3333', alpha=alpha, zorder=1)
-        y_label = ask_ys[p]
-        if abs(y_label - p) > min_gap * 0.3:
-            ax.plot([1.0, x_label], [p, y_label], transform=trans, color='#FF8888',
-                    linewidth=0.6, alpha=0.5, zorder=2, clip_on=False)
-        ax.text(x_label, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", transform=trans,
-                color='white', fontsize=10.5, va='center', ha='left', fontweight='bold',
-                clip_on=False, zorder=8,
-                bbox=dict(boxstyle='round,pad=0.25', facecolor='#0d1117', edgecolor='#FF3333', alpha=0.9))
     for p, q, usd in walls["bids"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
         ax.axhspan(p*0.998, p*1.002, color='#00CC44', alpha=alpha, zorder=1)
-        y_label = bid_ys[p]
-        if abs(y_label - p) > min_gap * 0.3:
-            ax.plot([1.0, x_label], [p, y_label], transform=trans, color='#88FF88',
-                    linewidth=0.6, alpha=0.5, zorder=2, clip_on=False)
-        ax.text(x_label, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", transform=trans,
-                color='white', fontsize=10.5, va='center', ha='left', fontweight='bold',
-                clip_on=False, zorder=8,
-                bbox=dict(boxstyle='round,pad=0.25', facecolor='#0d1117', edgecolor='#00CC44', alpha=0.9))
-
     ax.axhline(walls["mid"], color='#00FFFF', linestyle='--', linewidth=1.2, zorder=5)
-    if abs(mid_y - walls["mid"]) > min_gap * 0.3:
-        ax.plot([1.0, x_label], [walls["mid"], mid_y], transform=trans, color='#00FFFF',
-                linewidth=0.6, alpha=0.6, zorder=6, clip_on=False)
-    ax.text(0.0, walls["mid"], f" AHORA ${walls['mid']:,.1f} ", transform=trans,
-            color='#0d1117', fontsize=10, fontweight='bold', va='center', ha='left',
-            zorder=9, clip_on=False,
-            bbox=dict(boxstyle='round,pad=0.25', facecolor='#00FFFF', edgecolor='none', alpha=0.95))
-    ax.text(x_label, mid_y, f" AHORA ${walls['mid']:,.1f} ", transform=trans,
-            color='#0d1117', fontsize=10, fontweight='bold', va='center', ha='left',
-            zorder=9, clip_on=False,
-            bbox=dict(boxstyle='round,pad=0.25', facecolor='#00FFFF', edgecolor='none', alpha=0.95))
 
     ax.set_title(f'{ticker} — Muros de órdenes grandes (order book Binance)',
-                 color='white', fontsize=13, fontweight='bold')
+                 color='white', fontsize=13, fontweight='bold', loc='left')
     ax.set_ylabel('Precio USD', color='#AAAAAA')
     ax.tick_params(colors='#AAAAAA')
     for spine in ax.spines.values(): spine.set_color('#333333')
@@ -1872,19 +1846,33 @@ def chart_ballenas(ticker, walls, intraday):
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
         fig.autofmt_xdate()
 
-    # Escala de precios duplicada a la derecha (los mismos números que a
-    # la izquierda: 76500, 77000...), para que se pueda leer el precio de
-    # un muro sin tener que mirar al otro lado del gráfico.
-    ax_der = ax.twinx()
-    ax_der.set_ylim(ax.get_ylim())
-    ax_der.tick_params(colors='#AAAAAA')
-    ax_der.spines['right'].set_color('#333333')
+    # El panel de etiquetas usa el MISMO rango de precio que el gráfico
+    # (ax.get_ylim() ya está fijado por los datos que acabamos de dibujar),
+    # así las etiquetas quedan a la misma altura visual que su muro
+    # correspondiente, pero en un espacio propio donde el texto tiene todo
+    # el ancho que necesita sin depender de ninguna transformación de fecha.
+    ax2.set_ylim(ax.get_ylim())
+    ax2.set_xlim(0, 1)
 
-    # Reservamos de verdad el hueco derecho del lienzo para el eje de
-    # precios + las etiquetas de los muros (en vez de fiarnos de que
-    # bbox_inches='tight' calcule bien el espacio al guardar — a veces
-    # recortaba justo donde empezaba el texto).
-    plt.subplots_adjust(left=0.07, right=0.62, top=0.93, bottom=0.18)
+    for p, q, usd in walls["asks"]:
+        y_label = ask_ys[p]
+        if abs(y_label - p) > min_gap * 0.3:
+            ax2.plot([0, 0.06], [p, y_label], color='#FF8888', linewidth=0.6, alpha=0.5, zorder=2)
+        ax2.text(0.08, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", color='white', fontsize=10.5,
+                 va='center', ha='left', fontweight='bold', zorder=8,
+                 bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117', edgecolor='#FF3333', alpha=0.9))
+    for p, q, usd in walls["bids"]:
+        y_label = bid_ys[p]
+        if abs(y_label - p) > min_gap * 0.3:
+            ax2.plot([0, 0.06], [p, y_label], color='#88FF88', linewidth=0.6, alpha=0.5, zorder=2)
+        ax2.text(0.08, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", color='white', fontsize=10.5,
+                 va='center', ha='left', fontweight='bold', zorder=8,
+                 bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117', edgecolor='#00CC44', alpha=0.9))
+    if abs(mid_y - walls["mid"]) > min_gap * 0.3:
+        ax2.plot([0, 0.06], [walls["mid"], mid_y], color='#00FFFF', linewidth=0.6, alpha=0.6, zorder=6)
+    ax2.text(0.08, mid_y, f"AHORA ${walls['mid']:,.1f}", color='#0d1117', fontsize=10.5,
+              fontweight='bold', va='center', ha='left', zorder=9,
+              bbox=dict(boxstyle='round,pad=0.3', facecolor='#00FFFF', edgecolor='none', alpha=0.95))
 
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117')
