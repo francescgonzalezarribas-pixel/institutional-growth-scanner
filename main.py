@@ -1803,7 +1803,7 @@ def chart_ballenas(ticker, walls, intraday):
     todos_usd = [w[2] for w in walls["bids"] + walls["asks"]] or [1]
     max_usd = max(todos_usd)
     todos_precios = [w[0] for w in walls["bids"] + walls["asks"]] + [walls["mid"]]
-    min_gap = (max(todos_precios) - min(todos_precios) or walls["mid"]*0.01) * 0.045
+    min_gap = (max(todos_precios) - min(todos_precios) or walls["mid"]*0.01) * 0.075
 
     # FIX: antes "AHORA" no entraba en el cálculo de espaciado, así que
     # podía chocar con la etiqueta de un muro si el precio actual caía muy
@@ -1824,7 +1824,7 @@ def chart_ballenas(ticker, walls, intraday):
     # get_yaxis_transform(): x en fracción del área del gráfico (no
     # depende de fechas), y en coordenadas de precio real.
     trans = ax.get_yaxis_transform()
-    x_label = 1.02
+    x_label = 1.14  # más allá del eje de precios de la derecha (ver abajo)
 
     for p, q, usd in walls["asks"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
@@ -1871,11 +1871,20 @@ def chart_ballenas(ticker, walls, intraday):
     if intraday is not None:
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
         fig.autofmt_xdate()
-    # Reservamos de verdad el ~28% derecho del lienzo para las etiquetas
-    # (en vez de fiarnos de que bbox_inches='tight' calcule bien el
-    # espacio necesario al guardar — a veces recortaba justo donde
-    # empezaba el texto).
-    plt.subplots_adjust(left=0.07, right=0.73, top=0.93, bottom=0.18)
+
+    # Escala de precios duplicada a la derecha (los mismos números que a
+    # la izquierda: 76500, 77000...), para que se pueda leer el precio de
+    # un muro sin tener que mirar al otro lado del gráfico.
+    ax_der = ax.twinx()
+    ax_der.set_ylim(ax.get_ylim())
+    ax_der.tick_params(colors='#AAAAAA')
+    ax_der.spines['right'].set_color('#333333')
+
+    # Reservamos de verdad el hueco derecho del lienzo para el eje de
+    # precios + las etiquetas de los muros (en vez de fiarnos de que
+    # bbox_inches='tight' calcule bien el espacio al guardar — a veces
+    # recortaba justo donde empezaba el texto).
+    plt.subplots_adjust(left=0.07, right=0.62, top=0.93, bottom=0.18)
 
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117')
