@@ -546,19 +546,22 @@ def calcular_valor(ticker):
         if vix_d:
             vix = vix_d["price"]
         else:
-            # El VIX real no está disponible (proveedor caído/sin cobertura).
-            # En vez de dejarlo en "N/D", usamos un proxy: volatilidad
-            # realizada anualizada del S&P 500 (o, si tampoco hay S&P,
-            # del propio ticker) — mide lo mismo que el VIX intenta medir
-            # (nerviosismo del mercado) sin depender de un proveedor externo
-            # frágil.
-            spx_d = get_quote("^GSPC")
-            base_closes = spx_d["closes"] if spx_d else d["closes"]
-            rets = base_closes.pct_change().dropna()
-            window = min(20, len(rets))
-            if window >= 5:
-                vix = round(float(rets.tail(window).std() * (252**0.5) * 100), 1)
-                nota = " (proxy)"
+            # El VIX real no está disponible (proveedor caído/sin cobertura
+            # de índices). Usamos como proxy la volatilidad realizada
+            # anualizada de SPY (el ETF que replica el S&P 500) — a
+            # diferencia de "^GSPC", SPY es una acción normal y funciona de
+            # forma fiable en Stooq/Twelve Data. Importante: NO usamos la
+            # volatilidad del propio ticker analizado como último recurso,
+            # porque eso mezcla "el mercado está nervioso" con "esta acción
+            # en concreto es volátil por naturaleza" (p.ej. TSLA siempre
+            # tendría ~10/10 aunque el mercado esté tranquilo).
+            spy_d = get_quote("SPY")
+            if spy_d:
+                rets = spy_d["closes"].pct_change().dropna()
+                window = min(20, len(rets))
+                if window >= 5:
+                    vix = round(float(rets.tail(window).std() * (252**0.5) * 100), 1)
+                    nota = " (proxy SPY)"
         if vix is not None:
             if vix>35:   p=10; v=f"{vix} — pánico{nota}"
             elif vix>28: p=8;  v=f"{vix} — miedo{nota}"
@@ -622,15 +625,15 @@ def chart_valor(res):
     fig.text(0.5,0.400,'COMPONENTES',ha='center',fontsize=10,color='#666666',fontweight='bold')
     ax2=fig.add_axes([0.05,0.03,0.90,0.36])
     ax2.set_facecolor('#0d1117'); ax2.axis('off')
-    ax2.set_xlim(-3.5,11.5); ax2.set_ylim(-0.5,n-0.5)
+    ax2.set_xlim(-3.5,13.5); ax2.set_ylim(-0.5,n-0.5)
     for idx,(nom,datos) in enumerate(reversed(list(comp.items()))):
         pts=datos['p']; val=datos['v']; y=idx
         ax2.barh(y,10,height=0.65,color='#1a1a2e',zorder=1)
         bc='#FF3333' if pts<=3 else '#FF7700' if pts<=5 else '#FFCC00' if pts<=7 else '#00CC44'
         ax2.barh(y,pts,height=0.65,color=bc,alpha=0.9,zorder=2)
         ax2.text(-0.2,y,nom,va='center',ha='right',color='white',fontsize=11,fontweight='bold')
-        ax2.text(pts+0.15,y,str(val)[:40],va='center',ha='left',color='#CCCCCC',fontsize=9)
-        ax2.text(10.2,y,f"{pts}/10",va='center',ha='left',color=bc,fontsize=11,fontweight='bold')
+        ax2.text(pts+0.15,y,str(val)[:38],va='center',ha='left',color='#CCCCCC',fontsize=9)
+        ax2.text(11.2,y,f"{pts}/10",va='center',ha='left',color=bc,fontsize=11,fontweight='bold')
     buf=io.BytesIO()
     try: plt.tight_layout(pad=1.5)
     except: pass
