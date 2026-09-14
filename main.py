@@ -1815,20 +1815,24 @@ def chart_ballenas(ticker, walls, intraday):
         y_label = ask_ys[p]
         if abs(y_label - p) > min_gap * 0.3:
             ax.plot([x_der, x_texto], [p, y_label], color='#FF8888', linewidth=0.6, alpha=0.5, zorder=2)
-        ax.text(x_texto, y_label, f"${usd/1e6:.2f}M", color='#FF9999', fontsize=10.5,
-                va='center', ha='left', fontweight='bold', clip_on=False)
+        ax.text(x_texto, y_label, f"${usd/1e6:.2f}M", color='white', fontsize=10.5,
+                va='center', ha='left', fontweight='bold', clip_on=False, zorder=8,
+                bbox=dict(boxstyle='round,pad=0.25', facecolor='#0d1117', edgecolor='#FF3333', alpha=0.9))
     for p, q, usd in walls["bids"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
         ax.axhspan(p*0.998, p*1.002, color='#00CC44', alpha=alpha, zorder=1)
         y_label = bid_ys[p]
         if abs(y_label - p) > min_gap * 0.3:
             ax.plot([x_der, x_texto], [p, y_label], color='#88FF88', linewidth=0.6, alpha=0.5, zorder=2)
-        ax.text(x_texto, y_label, f"${usd/1e6:.2f}M", color='#99FF99', fontsize=10.5,
-                va='center', ha='left', fontweight='bold', clip_on=False)
+        ax.text(x_texto, y_label, f"${usd/1e6:.2f}M", color='white', fontsize=10.5,
+                va='center', ha='left', fontweight='bold', clip_on=False, zorder=8,
+                bbox=dict(boxstyle='round,pad=0.25', facecolor='#0d1117', edgecolor='#00CC44', alpha=0.9))
 
     ax.axhline(walls["mid"], color='#00FFFF', linestyle='--', linewidth=1.2, zorder=5)
-    ax.text(x_izq, walls["mid"], f"AHORA ${walls['mid']:,.1f} ", color='#00FFFF',
-            fontsize=10, fontweight='bold', va='bottom', ha='left')
+    for x_pos, ha in [(x_izq, 'left'), (x_texto, 'left')]:
+        ax.text(x_pos, walls["mid"], f" AHORA ${walls['mid']:,.1f} ", color='#0d1117',
+                fontsize=10, fontweight='bold', va='center', ha=ha, zorder=9, clip_on=False,
+                bbox=dict(boxstyle='round,pad=0.25', facecolor='#00FFFF', edgecolor='none', alpha=0.95))
 
     ax.set_title(f'{ticker} — Muros de órdenes grandes (order book Binance)',
                  color='white', fontsize=13, fontweight='bold')
