@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """AnalisisPro Bot — Con suscripciones (5€/mes vía NOWPayments) + /valor /fundamental /halvingbtc"""
-import os, io, json, time, logging, requests
+import os, io, json, re, time, logging, requests
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -1099,7 +1099,8 @@ def cmd_start(msg):
             "/valor TSLA — Índice para acciones US\n"
             "/valor SAN.MC — Acciones españolas\n\n"
             "/fundamental NVDA — Análisis fundamental 0-100\n"
-            "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n\n"
+            "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n"
+            "/cartera Buffett — Cartera 13F de grandes inversores\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
@@ -1224,6 +1225,224 @@ def cmd_mistatus(msg):
         f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'N/D'}\n"
         f"Días restantes: {dias}\n\n"
         f"{'⚠️ Renueva pronto con /premium' if dias<5 else '✅ Acceso activo'}")
+
+# ═══ /CARTERA — Carteras de grandes inversores (13F oficial SEC) ═
+# Fuente: filings 13F-HR presentados obligatoriamente ante la SEC cada
+# trimestre. No dependemos de Dataroma ni de ningún scraper de terceros
+# (Dataroma bloquea el acceso automatizado) — vamos directos a la fuente
+# oficial y pública.
+
+SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "AnalisisProBot/1.0 (contacto: admin@example.com)")
+SEC_HEADERS = {"User-Agent": SEC_USER_AGENT}
+CIK_CACHE_FILE = os.environ.get("CIK_CACHE_FILE", "cik_cache.json")
+
+def _load_cik_cache():
+    try:
+        with open(CIK_CACHE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_cik_cache(cache):
+    try:
+        with open(CIK_CACHE_FILE, "w") as f:
+            json.dump(cache, f)
+    except Exception as e:
+        log.warning(f"_save_cik_cache: {e}")
+
+_CIK_CACHE = _load_cik_cache()
+
+# Alias -> nombre oficial del gestor tal como aparece registrado en la SEC.
+# Los 4 marcados fueron verificados manualmente contra EDGAR; el resto se
+# resuelve en tiempo real buscando por nombre (ver resolve_cik) — si la
+# búsqueda automática falla para alguno, lo ajustamos cuando veamos el log.
+INVESTOR_ALIASES = {
+    "buffett": "Berkshire Hathaway", "berkshire": "Berkshire Hathaway",              # verificado: CIK 1067983
+    "ackman": "Pershing Square Capital Management",                                  # verificado: CIK 1336528
+    "pershing": "Pershing Square Capital Management",
+    "burry": "Scion Asset Management", "scion": "Scion Asset Management",            # verificado: CIK 1649339 (fondo cerrado nov-2025, último 13F disponible)
+    "klarman": "Baupost Group", "baupost": "Baupost Group",                          # verificado: CIK 1061768
+    "tepper": "Appaloosa Management LP", "appaloosa": "Appaloosa Management LP",
+    "icahn": "Icahn Enterprises",
+    "druckenmiller": "Duquesne Family Office", "duquesne": "Duquesne Family Office",
+    "marks": "Oaktree Capital Management", "oaktree": "Oaktree Capital Management",
+    "simons": "Renaissance Technologies", "renaissance": "Renaissance Technologies",
+    "soros": "Soros Fund Management",
+    "dalio": "Bridgewater Associates", "bridgewater": "Bridgewater Associates",
+    "pabrai": "Pabrai Investment Funds",
+    "lilu": "Himalaya Capital Management", "himalaya": "Himalaya Capital Management",
+    "greenblatt": "Gotham Asset Management", "gotham": "Gotham Asset Management",
+    "watsa": "Fairfax Financial Holdings", "fairfax": "Fairfax Financial Holdings",
+    "akre": "Akre Capital Management",
+    "coleman": "Tiger Global Management", "tiger": "Tiger Global Management",
+    "calpers": "California Public Employees Retirement System",
+}
+
+def resolve_cik(query_name):
+    """Busca el CIK (código de identificación en la SEC) de un gestor
+    institucional por nombre, usando el buscador oficial de EDGAR. El
+    resultado se cachea en disco (CIK_CACHE_FILE) para no repetir la
+    búsqueda en cada consulta."""
+    key = query_name.lower()
+    if key in _CIK_CACHE:
+        return _CIK_CACHE[key]
+    try:
+        r = requests.get("https://www.sec.gov/cgi-bin/browse-edgar",
+                        params={"action":"getcompany","company":query_name,
+                                "type":"13F-HR","dateb":"","owner":"include",
+                                "count":"10","output":"atom"},
+                        headers=SEC_HEADERS, timeout=10)
+        m = re.search(r"CIK=(\d{4,10})", r.text) or re.search(r"<cik>(\d+)</cik>", r.text, re.IGNORECASE)
+        if m:
+            cik = m.group(1).zfill(10)
+            _CIK_CACHE[key] = cik
+            _save_cik_cache(_CIK_CACHE)
+            return cik
+    except Exception as e:
+        log.warning(f"resolve_cik {query_name}: {e}")
+    return None
+
+def fetch_13f_filings_list(cik):
+    """Lista de filings 13F-HR de un CIK (más reciente primero)."""
+    try:
+        r = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json",
+                        headers=SEC_HEADERS, timeout=10)
+        recent = r.json().get("filings", {}).get("recent", {})
+        forms = recent.get("form", [])
+        accns = recent.get("accessionNumber", [])
+        dates = recent.get("filingDate", [])
+        out = [{"accession": accns[i], "date": dates[i]}
+               for i, f in enumerate(forms) if f == "13F-HR"]
+        return out
+    except Exception as e:
+        log.warning(f"fetch_13f_filings_list {cik}: {e}")
+        return []
+
+def _parse_infotable_xml(xml_text):
+    rows = []
+    for block in re.findall(r"<infoTable>(.*?)</infoTable>", xml_text, re.DOTALL | re.IGNORECASE):
+        def grab(tag):
+            m = re.search(fr"<{tag}>(.*?)</{tag}>", block, re.DOTALL | re.IGNORECASE)
+            return m.group(1).strip() if m else ""
+        nombre = grab("nameOfIssuer")
+        cusip = grab("cusip")
+        try: valor = float(grab("value") or 0)
+        except: valor = 0
+        try: shares = float(grab("sshPrnamt") or 0)
+        except: shares = 0
+        rows.append({"nombre": nombre, "cusip": cusip, "valor": valor, "shares": shares})
+    return rows
+
+def fetch_13f_holdings(cik, accession):
+    """Descarga y parsea la tabla de posiciones de un 13F-HR concreto.
+    El fichero XML con las posiciones no siempre se llama igual según quién
+    presenta el filing, así que buscamos dinámicamente entre los XML del
+    filing cuál contiene <infoTable> en vez de asumir un nombre fijo."""
+    accn_nodash = accession.replace("-", "")
+    try:
+        idx = requests.get(
+            f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn_nodash}/{accession}-index.json",
+            headers=SEC_HEADERS, timeout=10).json()
+        items = idx.get("directory", {}).get("item", [])
+        for it in items:
+            name = it.get("name", "")
+            if not name.lower().endswith(".xml"):
+                continue
+            url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn_nodash}/{name}"
+            xr = requests.get(url, headers=SEC_HEADERS, timeout=10)
+            if "<infoTable>" in xr.text:
+                return _parse_infotable_xml(xr.text)
+    except Exception as e:
+        log.warning(f"fetch_13f_holdings {cik}/{accession}: {e}")
+    return None
+
+def calcular_cartera(query):
+    key = query.lower().strip()
+    full_name = INVESTOR_ALIASES.get(key, query)
+    cik = resolve_cik(full_name)
+    if not cik:
+        return None
+    filings = fetch_13f_filings_list(cik)
+    if not filings:
+        return None
+    actual = fetch_13f_holdings(cik, filings[0]["accession"])
+    if not actual:
+        return None
+    anterior = fetch_13f_holdings(cik, filings[1]["accession"]) if len(filings) > 1 else []
+    prev_by_cusip = {h["cusip"]: h for h in (anterior or []) if h["cusip"]}
+    actual_by_cusip = {h["cusip"]: h for h in actual if h["cusip"]}
+
+    total_valor = sum(h["valor"] for h in actual)
+    top = sorted(actual, key=lambda h: -h["valor"])[:10]
+
+    nuevas, aumentadas, reducidas, cerradas = [], [], [], []
+    for cusip, h in actual_by_cusip.items():
+        prev = prev_by_cusip.get(cusip)
+        if not prev:
+            nuevas.append(h)
+        elif h["shares"] > prev["shares"] * 1.05:
+            aumentadas.append(h)
+        elif h["shares"] < prev["shares"] * 0.95:
+            reducidas.append(h)
+    for cusip, h in prev_by_cusip.items():
+        if cusip not in actual_by_cusip:
+            cerradas.append(h)
+
+    return {"gestor": full_name, "fecha": filings[0]["date"],
+            "total_valor": total_valor, "n_posiciones": len(actual),
+            "top": top, "nuevas": nuevas, "aumentadas": aumentadas,
+            "reducidas": reducidas, "cerradas": cerradas}
+
+@bot.message_handler(commands=["cartera"])
+def cmd_cartera(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        safe_send(msg.chat.id,
+            "Uso: /cartera NOMBRE\n\n"
+            "Disponibles: Buffett, Ackman, Burry, Klarman, Tepper, Icahn, "
+            "Druckenmiller, Marks, Simons, Soros, Dalio, Pabrai, LiLu, "
+            "Greenblatt, Watsa, Akre, Coleman, CalPERS\n\n"
+            "Datos oficiales de la SEC (13F), trimestrales.")
+        return
+    query = parts[1]
+    m = bot.send_message(msg.chat.id, f"Consultando cartera de {query} en la SEC... (10-20s)")
+    res = calcular_cartera(query)
+    if not res:
+        safe_send(msg.chat.id,
+            f"No he encontrado datos de 13F para \"{query}\". Prueba con otro nombre de la lista de /cartera.",
+            message_id=m.message_id)
+        return
+    total_b = round(res["total_valor"]/1e9, 2)
+    lines = [f"CARTERA — {res['gestor']}",
+             f"13F al {res['fecha']} | Valor total: ${total_b}B | {res['n_posiciones']} posiciones\n",
+             "TOP 10 POSICIONES:"]
+    for h in res["top"]:
+        pct = h["valor"]/res["total_valor"]*100 if res["total_valor"] else 0
+        lines.append(f"• {h['nombre']} — {pct:.1f}% — ${round(h['valor']/1e6,1)}M")
+    if res["nuevas"]:
+        lines.append("\n🆕 NUEVAS POSICIONES:")
+        for h in res["nuevas"][:8]: lines.append(f"• {h['nombre']}")
+    if res["aumentadas"]:
+        lines.append("\n📈 AUMENTADAS:")
+        for h in res["aumentadas"][:8]: lines.append(f"• {h['nombre']}")
+    if res["reducidas"]:
+        lines.append("\n📉 REDUCIDAS:")
+        for h in res["reducidas"][:8]: lines.append(f"• {h['nombre']}")
+    if res["cerradas"]:
+        lines.append("\n❌ POSICIONES CERRADAS:")
+        for h in res["cerradas"][:8]: lines.append(f"• {h['nombre']}")
+    safe_send(msg.chat.id, "\n".join(lines)[:4096], message_id=m.message_id)
+
+    prompt = (f"Cartera 13F de {res['gestor']} al {res['fecha']}, valor ${total_b}B, {res['n_posiciones']} posiciones.\n"
+              f"Top 3: {', '.join(h['nombre'] for h in res['top'][:3])}\n"
+              f"Nuevas: {', '.join(h['nombre'] for h in res['nuevas'][:5]) or 'ninguna'}\n"
+              f"Cerradas: {', '.join(h['nombre'] for h in res['cerradas'][:5]) or 'ninguna'}\n\n"
+              "1. ¿Qué tesis de inversión revela este movimiento?\n2. ¿Qué sector está ganando/perdiendo peso?\n"
+              "3. ¿Vale la pena replicar alguna de estas posiciones?")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 @bot.message_handler(commands=["activar"])
 def cmd_activar(msg):
