@@ -1494,115 +1494,62 @@ def cmd_suscriptores(msg):
     safe_send(msg.chat.id, "\n".join(lines))
 
 # ═══ /DOMINANCIA — Zonas históricas de compra/venta de BTC ══════
-# Basado en la dominancia de USDT (% del market cap total en cripto que es
-# USDT): dominancia alta = dinero refugiado en stablecoins = miedo =
-# históricamente buena zona de compra. Dominancia baja = todo el mundo
-# metido en cripto = codicia = históricamente buena zona de venta.
-# Fuente: CoinCap v3 (gratis, requiere API key — COINCAP_API_KEY).
+# Basado en el Fear & Greed Index de alternative.me: miedo extremo =
+# históricamente buena zona de compra, codicia extrema = históricamente
+# buena zona de venta. Gratis, sin API key, sin límite de peticiones,
+# histórico completo desde 2018 — no dependemos de ningún plan de pago.
+# (Se intentó primero con la dominancia real de USDT vía CoinGecko/CoinCap,
+# pero ambos requieren plan de pago para histórico o agotan el free tier
+# en la primera consulta — ver conversación.)
 
-COINCAP_API_KEY = os.environ.get("COINCAP_API_KEY", "")
-DOMINANCE_CACHE_FILE = os.environ.get("DOMINANCE_CACHE_FILE", "usdt_dominance_cache.json")
-DOMINANCE_CACHE_DAYS = 7  # no refrescar más a menudo: el plan gratis de CoinCap da 500 peticiones/mes
+FEARGREED_CACHE_FILE = os.environ.get("FEARGREED_CACHE_FILE", "feargreed_cache.json")
+FEARGREED_CACHE_HOURS = 12  # el índice solo se actualiza una vez al día, no hace falta más
 
-def _load_dominance_cache():
+def _load_feargreed_cache():
     try:
-        with open(DOMINANCE_CACHE_FILE, "r") as f:
+        with open(FEARGREED_CACHE_FILE, "r") as f:
             return json.load(f)
     except Exception:
         return None
 
-def _save_dominance_cache(data):
+def _save_feargreed_cache(data):
     try:
-        with open(DOMINANCE_CACHE_FILE, "w") as f:
+        with open(FEARGREED_CACHE_FILE, "w") as f:
             json.dump(data, f)
     except Exception as e:
-        log.warning(f"_save_dominance_cache: {e}")
+        log.warning(f"_save_feargreed_cache: {e}")
 
-def _coincap_get(path, params=None):
-    if not COINCAP_API_KEY:
-        log.warning("_coincap_get: falta COINCAP_API_KEY")
-        return None
-    try:
-        r = requests.get(f"https://rest.coincap.io/v3{path}",
-                        headers={"Authorization": f"Bearer {COINCAP_API_KEY}"},
-                        params=params or {}, timeout=15)
-        if r.status_code != 200:
-            log.warning(f"CoinCap {path}: HTTP {r.status_code} — {r.text[:300]}")
-            return None
-        return r.json()
-    except Exception as e:
-        log.warning(f"CoinCap {path}: {e}")
-        return None
-
-def fetch_dominance_history():
-    """Histórico de dominancia de USDT = market cap de USDT / market cap
-    total del mercado cripto, en cada fecha. Se cachea en disco y solo se
-    refresca cada DOMINANCE_CACHE_DAYS días para no agotar el plan gratis
-    de CoinCap. Si el formato de respuesta de CoinCap no es el esperado,
-    deja un log detallado (claves recibidas) para depurar sin adivinar."""
-    cache = _load_dominance_cache()
-    if cache and (time.time() - cache.get("_fetched_at", 0)) < DOMINANCE_CACHE_DAYS * 86400:
+def fetch_feargreed_history():
+    """Histórico completo del Fear & Greed Index (alternative.me), day a
+    día desde 2018. Se cachea en disco para no repetir la descarga completa
+    en cada consulta."""
+    cache = _load_feargreed_cache()
+    if cache and (time.time() - cache.get("_fetched_at", 0)) < FEARGREED_CACHE_HOURS * 3600:
         return cache["series"]
-
-    total = _coincap_get("/assets/totals/total-marketcap-history")
-    usdt = _coincap_get("/assets/tether/history", params={"interval": "d1"})
-
-    if not total or not usdt:
-        log.warning("fetch_dominance_history: CoinCap no devolvió datos (total o usdt vacío)")
-        return cache["series"] if cache else None
-
     try:
-        total_pts = total.get("data", total) if isinstance(total, dict) else total
-        usdt_pts = usdt.get("data", usdt) if isinstance(usdt, dict) else usdt
-        if not isinstance(total_pts, list) or not isinstance(usdt_pts, list):
-            log.warning(f"fetch_dominance_history: formato inesperado. total keys={list(total.keys()) if isinstance(total,dict) else type(total)}, "
-                        f"usdt keys={list(usdt.keys()) if isinstance(usdt,dict) else type(usdt)}")
-            return cache["series"] if cache else None
-        if total_pts:
-            log.info(f"fetch_dominance_history: ejemplo punto 'total': {total_pts[0]}")
-        if usdt_pts:
-            log.info(f"fetch_dominance_history: ejemplo punto 'usdt': {usdt_pts[0]}")
-
-        total_by_t = {}
-        for p in total_pts:
-            t = int(p.get("time") or p.get("t") or 0)
-            v = float(p.get("totalMarketCapUsd") or p.get("marketCapUsd") or p.get("value") or 0)
-            if t and v: total_by_t[t] = v
-        usdt_by_t = {}
-        for p in usdt_pts:
-            t = int(p.get("time") or p.get("t") or 0)
-            v = float(p.get("marketCapUsd") or 0)
-            if t and v: usdt_by_t[t] = v
-
-        series = []
-        for t, tv in total_by_t.items():
-            uv = usdt_by_t.get(t)
-            if uv:
-                series.append({"t": t, "dom": uv / tv * 100})
+        r = requests.get("https://api.alternative.me/fng/",
+                        params={"limit": "0", "format": "json"}, timeout=15)
+        data = r.json().get("data", [])
+        series = [{"t": int(p["timestamp"]) * 1000,
+                   "value": int(p["value"]),
+                   "clase": p.get("value_classification", "")}
+                  for p in data]
         series.sort(key=lambda x: x["t"])
-
-        if len(series) < 30:
-            log.warning(f"fetch_dominance_history: solo {len(series)} puntos cruzados válidos "
-                        f"(total={len(total_pts)}, usdt={len(usdt_pts)}) — revisar nombres de campos/timestamps")
-            if not series:
-                return cache["series"] if cache else None
-
-        _save_dominance_cache({"_fetched_at": time.time(), "series": series})
-        return series
+        if series:
+            _save_feargreed_cache({"_fetched_at": time.time(), "series": series})
+            return series
     except Exception as e:
-        log.warning(f"fetch_dominance_history: parseo falló: {e}")
-        return cache["series"] if cache else None
+        log.warning(f"fetch_feargreed_history: {e}")
+    return cache["series"] if cache else None
 
-def calcular_zonas_dominancia(series, pct=15):
-    doms = sorted(p["dom"] for p in series)
-    n = len(doms)
-    venta_umbral = doms[int(n * pct / 100)]          # dominancia baja -> codicia -> vender
-    compra_umbral = doms[int(n * (100 - pct) / 100)]  # dominancia alta -> miedo -> comprar
-    return compra_umbral, venta_umbral
+# Umbrales estándar del índice (los mismos que usa alternative.me para
+# clasificar "Extreme Fear" / "Extreme Greed").
+FEARGREED_COMPRA_UMBRAL = 25
+FEARGREED_VENTA_UMBRAL = 75
 
-def chart_dominancia(series, compra_umbral, venta_umbral, btc_data):
+def chart_feargreed(series, btc_data):
     fechas = [pd.Timestamp(p["t"], unit="ms") for p in series]
-    doms = [p["dom"] for p in series]
+    valores = [p["value"] for p in series]
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True,
                                     gridspec_kw={"height_ratios": [2, 1]})
@@ -1615,30 +1562,31 @@ def chart_dominancia(series, compra_umbral, venta_umbral, btc_data):
         btc_fechas = fechas[-n_btc:] if n_btc <= len(fechas) else fechas
         ax1.plot(btc_fechas[-n_btc:], np.log10(closes.tail(n_btc)), color='white', linewidth=1.6, zorder=5)
     for i in range(len(fechas) - 1):
-        if doms[i] >= compra_umbral:
+        if valores[i] <= FEARGREED_COMPRA_UMBRAL:
             ax1.axvspan(fechas[i], fechas[i+1], color='#00CC44', alpha=0.15, zorder=0)
-        elif doms[i] <= venta_umbral:
+        elif valores[i] >= FEARGREED_VENTA_UMBRAL:
             ax1.axvspan(fechas[i], fechas[i+1], color='#FF3333', alpha=0.15, zorder=0)
-    ax1.set_title('BTC — Zonas históricas de compra/venta (dominancia USDT)', color='white', fontsize=13, fontweight='bold')
+    ax1.set_title('BTC — Zonas históricas de compra/venta (Fear & Greed Index)', color='white', fontsize=13, fontweight='bold')
     ax1.set_ylabel('Precio BTC (log)', color='#AAAAAA')
     ax1.tick_params(colors='#AAAAAA')
     for spine in ax1.spines.values(): spine.set_color('#333333')
     ax1.grid(color='#222222', linestyle='--', alpha=0.3)
 
-    ax2.plot(fechas, doms, color='#4488FF', linewidth=1.5, zorder=5)
-    ax2.axhline(compra_umbral, color='#00CC44', linestyle='--', linewidth=1.2)
-    ax2.axhline(venta_umbral, color='#FF3333', linestyle='--', linewidth=1.2)
-    ax2.fill_between(fechas, compra_umbral, max(doms), where=[d >= compra_umbral for d in doms],
-                      color='#00CC44', alpha=0.15)
-    ax2.fill_between(fechas, min(doms), venta_umbral, where=[d <= venta_umbral for d in doms],
-                      color='#FF3333', alpha=0.15)
-    ax2.plot(fechas[-1], doms[-1], 'o', color='#00FFFF', markersize=12, zorder=10,
+    ax2.plot(fechas, valores, color='#4488FF', linewidth=1.2, zorder=5)
+    ax2.axhline(FEARGREED_COMPRA_UMBRAL, color='#00CC44', linestyle='--', linewidth=1.2)
+    ax2.axhline(FEARGREED_VENTA_UMBRAL, color='#FF3333', linestyle='--', linewidth=1.2)
+    ax2.fill_between(fechas, 0, FEARGREED_COMPRA_UMBRAL,
+                      where=[v <= FEARGREED_COMPRA_UMBRAL for v in valores], color='#00CC44', alpha=0.15)
+    ax2.fill_between(fechas, FEARGREED_VENTA_UMBRAL, 100,
+                      where=[v >= FEARGREED_VENTA_UMBRAL for v in valores], color='#FF3333', alpha=0.15)
+    ax2.plot(fechas[-1], valores[-1], 'o', color='#00FFFF', markersize=12, zorder=10,
               markeredgecolor='white', markeredgewidth=2)
-    ax2.annotate(f'AHORA: {doms[-1]:.1f}%', xy=(fechas[-1], doms[-1]),
-                 xytext=(fechas[-1], doms[-1] + (max(doms)-min(doms))*0.08),
+    ax2.annotate(f'AHORA: {valores[-1]}', xy=(fechas[-1], valores[-1]),
+                 xytext=(fechas[-1], min(95, valores[-1] + 10)),
                  fontsize=10, color='#00FFFF', fontweight='bold', ha='right',
                  bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117', edgecolor='#00FFFF', alpha=0.9))
-    ax2.set_ylabel('Dominancia USDT %', color='#AAAAAA')
+    ax2.set_ylim(0, 100)
+    ax2.set_ylabel('Fear & Greed Index', color='#AAAAAA')
     ax2.tick_params(colors='#AAAAAA')
     for spine in ax2.spines.values(): spine.set_color('#333333')
     ax2.grid(color='#222222', linestyle='--', alpha=0.3)
@@ -1656,48 +1604,49 @@ def cmd_dominancia(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
         return
-    m = bot.send_message(msg.chat.id, "Calculando zonas de dominancia USDT... (10-20s)")
-    series = fetch_dominance_history()
+    m = bot.send_message(msg.chat.id, "Calculando zonas de compra/venta BTC... (10-20s)")
+    series = fetch_feargreed_history()
     if not series or len(series) < 30:
         safe_send(msg.chat.id,
-            "No he podido obtener histórico de dominancia de CoinCap todavía. "
-            "Comprueba que COINCAP_API_KEY esté bien puesta en Railway, o vuelve a intentarlo en unos minutos.",
+            "No he podido obtener el histórico de Fear & Greed. Vuelve a intentarlo en unos minutos.",
             message_id=m.message_id)
         return
-    compra_umbral, venta_umbral = calcular_zonas_dominancia(series, pct=15)
     dias_cubiertos = max(1, int((series[-1]["t"] - series[0]["t"]) / 86400000))
     btc_data = fetch_binance("BTCUSDT", days=min(1000, dias_cubiertos + 10))
 
     try:
-        chart = chart_dominancia(series, compra_umbral, venta_umbral, btc_data)
+        chart = chart_feargreed(series, btc_data)
         bot.delete_message(msg.chat.id, m.message_id)
         bot.send_photo(msg.chat.id, chart)
     except Exception as e:
-        log.warning(f"chart_dominancia: {e}")
+        log.warning(f"chart_feargreed: {e}")
         safe_send(msg.chat.id, "Tengo los datos pero falló al dibujar el gráfico. Reintenta en un momento.",
                   message_id=m.message_id)
         return
 
-    dom_actual = series[-1]["dom"]
-    if dom_actual >= compra_umbral:
-        zona = "ZONA DE COMPRA — miedo histórico"
-    elif dom_actual <= venta_umbral:
-        zona = "ZONA DE VENTA — codicia histórica"
+    valor_actual = series[-1]["value"]
+    clase_actual = series[-1]["clase"]
+    if valor_actual <= FEARGREED_COMPRA_UMBRAL:
+        zona = "ZONA DE COMPRA — miedo extremo"
+    elif valor_actual >= FEARGREED_VENTA_UMBRAL:
+        zona = "ZONA DE VENTA — codicia extrema"
     else:
         zona = "NEUTRAL"
     safe_send(msg.chat.id,
-        f"DOMINANCIA USDT — {dom_actual:.2f}%\n\n"
-        f"Zona de compra (histórico): dominancia > {compra_umbral:.1f}%\n"
-        f"Zona de venta (histórico): dominancia < {venta_umbral:.1f}%\n"
+        f"FEAR & GREED — {valor_actual}/100 ({clase_actual})\n\n"
+        f"Zona de compra (histórico): índice ≤ {FEARGREED_COMPRA_UMBRAL}\n"
+        f"Zona de venta (histórico): índice ≥ {FEARGREED_VENTA_UMBRAL}\n"
         f"Estado actual: {zona}\n\n"
         f"Basado en {len(series)} días de histórico (~{dias_cubiertos} días de rango).")
 
-    prompt = (f"Dominancia de USDT actual: {dom_actual:.2f}%. Zona de compra histórica: >{compra_umbral:.1f}%. "
-              f"Zona de venta histórica: <{venta_umbral:.1f}%. Estado: {zona}.\n\n"
+    prompt = (f"Fear & Greed Index actual: {valor_actual}/100 ({clase_actual}). "
+              f"Zona de compra histórica: ≤{FEARGREED_COMPRA_UMBRAL}. Zona de venta histórica: ≥{FEARGREED_VENTA_UMBRAL}. "
+              f"Estado: {zona}.\n\n"
               "1. ¿Qué nos dice esto sobre el sentimiento del mercado ahora mismo?\n"
               "2. ¿Es fiable esta señal por sí sola o hay que combinarla con algo más?\n"
-              "3. Estrategia concreta dado este nivel de dominancia")
+              "3. Estrategia concreta dado este nivel de sentimiento")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 
 if __name__ == "__main__":
     # FIX 409: si el contenedor anterior no llegó a cerrar su getUpdates a
