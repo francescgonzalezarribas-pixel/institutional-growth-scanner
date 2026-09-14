@@ -1356,6 +1356,22 @@ def fetch_13f_holdings(cik, accession):
         log.warning(f"fetch_13f_holdings {cik}/{accession}: {e}")
     return None
 
+def _agregar_por_cusip(holdings):
+    """Suma en una sola posición todas las líneas del 13F que comparten el
+    mismo CUSIP. Es habitual que un gestor grande (p.ej. Berkshire, con
+    varias filiales — GEICO, National Indemnity...) declare la misma acción
+    en varias líneas separadas; sin esto, la misma empresa aparecería
+    repetida y con el % de cartera repartido de forma engañosa."""
+    agrupado = {}
+    for h in holdings:
+        if not h["cusip"]:
+            continue
+        if h["cusip"] not in agrupado:
+            agrupado[h["cusip"]] = {"nombre": h["nombre"], "cusip": h["cusip"], "valor": 0, "shares": 0}
+        agrupado[h["cusip"]]["valor"] += h["valor"]
+        agrupado[h["cusip"]]["shares"] += h["shares"]
+    return list(agrupado.values())
+
 def calcular_cartera(query):
     key = query.lower().strip()
     full_name = INVESTOR_ALIASES.get(key, query)
@@ -1365,12 +1381,14 @@ def calcular_cartera(query):
     filings = fetch_13f_filings_list(cik)
     if not filings:
         return None
-    actual = fetch_13f_holdings(cik, filings[0]["accession"])
-    if not actual:
+    actual_raw = fetch_13f_holdings(cik, filings[0]["accession"])
+    if not actual_raw:
         return None
-    anterior = fetch_13f_holdings(cik, filings[1]["accession"]) if len(filings) > 1 else []
-    prev_by_cusip = {h["cusip"]: h for h in (anterior or []) if h["cusip"]}
-    actual_by_cusip = {h["cusip"]: h for h in actual if h["cusip"]}
+    anterior_raw = fetch_13f_holdings(cik, filings[1]["accession"]) if len(filings) > 1 else []
+    actual = _agregar_por_cusip(actual_raw)
+    anterior = _agregar_por_cusip(anterior_raw or [])
+    prev_by_cusip = {h["cusip"]: h for h in anterior}
+    actual_by_cusip = {h["cusip"]: h for h in actual}
 
     total_valor = sum(h["valor"] for h in actual)
     top = sorted(actual, key=lambda h: -h["valor"])[:10]
