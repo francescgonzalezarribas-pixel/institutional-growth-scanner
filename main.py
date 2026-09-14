@@ -1147,7 +1147,9 @@ def cmd_start(msg):
             "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n"
             "/cartera Buffett — Cartera 13F de grandes inversores\n"
             "/dominancia — Zonas históricas de compra/venta BTC (USDT.D)\n"
-            "/ballenas BTC — Muros de órdenes grandes (order book)\n\n"
+            "/ballenas BTC — Muros de órdenes grandes (order book)\n"
+            "/noticias — Noticias de bolsa, economía y cripto de varias fuentes\n"
+            "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
@@ -1947,6 +1949,209 @@ def cmd_ballenas(msg):
               "1. ¿Qué nivel de resistencia y soporte parecen más relevantes?\n"
               "2. ¿Qué estrategia de entrada/salida sugieren estos muros?\n"
               "3. Riesgo de que sean órdenes 'trampa' (spoofing) que se cancelan antes de ejecutarse")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+
+# ═══ /NOTICIAS — Agregador de noticias financieras y cripto ═════
+# Varias fuentes distintas vía RSS (gratis, sin API key, sin límite de
+# peticiones): Investing.com (bolsa/economía/cripto), Cointelegraph en
+# español y CoinDesk. Parseamos el XML con la librería estándar de Python
+# (xml.etree.ElementTree), sin depender de ninguna librería externa nueva.
+import xml.etree.ElementTree as ET
+
+NOTICIAS_FEEDS = {
+    "📈 Bolsa (Investing.com)": "https://es.investing.com/rss/news_25.rss",
+    "🏦 Economía (Investing.com)": "https://es.investing.com/rss/news_14.rss",
+    "🪙 Cripto (Investing.com)": "https://es.investing.com/rss/news_301.rss",
+    "🪙 Cripto (Cointelegraph ES)": "https://es.cointelegraph.com/feed",
+    "🪙 Cripto (CoinDesk)": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+}
+
+def fetch_rss(url, max_items=4):
+    try:
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            log.warning(f"fetch_rss {url}: HTTP {r.status_code}")
+            return []
+        root = ET.fromstring(r.content)
+        items = []
+        for item in root.findall(".//item")[:max_items]:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            if title and link:
+                items.append({"title": title, "link": link})
+        return items
+    except Exception as e:
+        log.warning(f"fetch_rss {url}: {e}")
+        return []
+
+def fetch_todas_noticias():
+    resultado = {}
+    for nombre, url in NOTICIAS_FEEDS.items():
+        items = fetch_rss(url, max_items=4)
+        if items:
+            resultado[nombre] = items
+    return resultado
+
+@bot.message_handler(commands=["noticias"])
+def cmd_noticias(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Consultando noticias... (10-15s)")
+    data = fetch_todas_noticias()
+    if not data:
+        safe_send(msg.chat.id, "No he podido obtener noticias ahora mismo. Reintenta en un momento.",
+                  message_id=m.message_id)
+        return
+
+    lines = ["📰 NOTICIAS FINANCIERAS Y CRIPTO"]
+    for fuente, items in data.items():
+        lines.append(f"\n— {fuente} —")
+        for it in items:
+            titulo = it["title"][:100]
+            lines.append(f"• {titulo}\n  {it['link']}")
+    texto = "\n".join(lines)
+    safe_send(msg.chat.id, texto[:4096], message_id=m.message_id)
+
+    # Análisis con IA basado SOLO en los titulares reales que acabamos de
+    # traer — sin inventar detalles que no estén en el titular (mismo
+    # principio que en /mercados: no fabricar catalizadores concretos).
+    titulares = []
+    for fuente, items in data.items():
+        for it in items[:3]:
+            titulares.append(f"- {it['title']}")
+    prompt = ("Estos son titulares reales y recientes de varias fuentes financieras y cripto:\n"
+              + "\n".join(titulares) +
+              "\n\nNo inventes datos, cifras ni detalles que no estén en los titulares — trabaja "
+              "solo con lo que dicen literalmente.\n\n"
+              "1. ¿Cuáles son los 2-3 temas que más se repiten o parecen más relevantes?\n"
+              "2. ¿Se intuye algún sesgo de sentimiento general (optimismo/pesimismo) en el conjunto?\n"
+              "3. Qué merece la pena seguir de cerca en los próximos días")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+
+# ═══ /MACRO — Macroeconomía (FRED) + derivados cripto (Binance) ═
+# Datos macro oficiales de la Reserva Federal (FRED, gratis, requiere API
+# key — https://fred.stlouisfed.org/docs/api/api_key.html) y métricas de
+# derivados cripto estilo Coinglass (open interest, ratio long/short,
+# funding rate) vía la API pública de futuros de Binance, que ya usamos en
+# el resto del bot — sin necesitar ninguna key nueva para esa parte.
+
+FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
+
+# (nombre a mostrar, series_id de FRED, transformación, unidad)
+# units="pc1" le pide a FRED el cambio interanual (%) directamente, para no
+# tener que calcularlo nosotros a partir del índice bruto.
+MACRO_SERIES = [
+    ("Tipos Fed (Fed Funds Rate)", "FEDFUNDS", None, "%"),
+    ("Inflación EE.UU. (CPI interanual)", "CPIAUCSL", "pc1", "%"),
+    ("Paro EE.UU.", "UNRATE", None, "%"),
+    ("Bono EE.UU. 10 años", "DGS10", None, "%"),
+    ("Bono EE.UU. 2 años", "DGS2", None, "%"),
+]
+
+def fetch_fred_latest(series_id, units=None):
+    if not FRED_API_KEY:
+        return None
+    try:
+        params = {"series_id": series_id, "api_key": FRED_API_KEY,
+                  "file_type": "json", "sort_order": "desc", "limit": 2}
+        if units:
+            params["units"] = units
+        r = requests.get("https://api.stlouisfed.org/fred/series/observations",
+                        params=params, timeout=10)
+        if r.status_code != 200:
+            log.warning(f"fetch_fred_latest {series_id}: HTTP {r.status_code} — {r.text[:200]}")
+            return None
+        obs = [o for o in r.json().get("observations", []) if o.get("value") not in (".", None, "")]
+        if not obs:
+            return None
+        return {"valor": float(obs[0]["value"]), "fecha": obs[0]["date"],
+                "anterior": float(obs[1]["value"]) if len(obs) > 1 else None}
+    except Exception as e:
+        log.warning(f"fetch_fred_latest {series_id}: {e}")
+        return None
+
+def fetch_derivados_cripto(symbol):
+    """Métricas estilo Coinglass (open interest, ratio long/short, funding)
+    vía la API pública de futuros de Binance — gratis, sin key, ya la
+    usamos para el funding rate en /valor."""
+    try:
+        r_oi = requests.get("https://fapi.binance.com/fapi/v1/openInterest",
+                            params={"symbol": symbol}, timeout=8)
+        oi_coins = float(r_oi.json().get("openInterest", 0))
+        r_ls = requests.get("https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
+                            params={"symbol": symbol, "period": "1h", "limit": 1}, timeout=8)
+        ls_data = r_ls.json()
+        ls_ratio = float(ls_data[0]["longShortRatio"]) if ls_data else None
+        funding = get_funding(symbol)
+        return {"oi_coins": oi_coins, "ls_ratio": ls_ratio, "funding": funding}
+    except Exception as e:
+        log.warning(f"fetch_derivados_cripto {symbol}: {e}")
+        return None
+
+@bot.message_handler(commands=["macro"])
+def cmd_macro(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    if not FRED_API_KEY:
+        safe_send(msg.chat.id,
+            "Falta configurar FRED_API_KEY en el servidor.\n\n"
+            "Clave gratis en: https://fred.stlouisfed.org/docs/api/api_key.html")
+        return
+    m = bot.send_message(msg.chat.id, "Consultando datos macro y derivados... (10-15s)")
+
+    macro_resultados = []
+    for nombre, series_id, units, unidad in MACRO_SERIES:
+        d = fetch_fred_latest(series_id, units)
+        if d:
+            macro_resultados.append((nombre, d, unidad))
+
+    btc_price = get_quote("BTC-USD")
+    eth_price = get_quote("ETH-USD")
+    btc_deriv = fetch_derivados_cripto("BTCUSDT")
+    eth_deriv = fetch_derivados_cripto("ETHUSDT")
+
+    if not macro_resultados and not btc_deriv and not eth_deriv:
+        safe_send(msg.chat.id, "No he podido obtener datos ahora mismo. Reintenta en un momento.",
+                  message_id=m.message_id)
+        return
+
+    lines = ["📊 MACRO Y DERIVADOS CRIPTO\n", "— Macroeconomía EE.UU. (FRED) —"]
+    if macro_resultados:
+        for nombre, d, unidad in macro_resultados:
+            cambio = f" (dato anterior: {d['anterior']:.2f}{unidad})" if d["anterior"] is not None else ""
+            lines.append(f"• {nombre}: {d['valor']:.2f}{unidad} — {d['fecha']}{cambio}")
+    else:
+        lines.append("Sin datos disponibles.")
+
+    lines.append("\n— Derivados Cripto (Binance) —")
+    for nombre, dv, precio_d in [("Bitcoin", btc_deriv, btc_price), ("Ethereum", eth_deriv, eth_price)]:
+        if dv:
+            oi_usd_txt = ""
+            if precio_d:
+                oi_usd_txt = f" (${dv['oi_coins']*precio_d['price']/1e9:.2f}B)"
+            ls_txt = f"{dv['ls_ratio']:.2f}" if dv["ls_ratio"] is not None else "N/D"
+            fund_txt = f"{dv['funding']:+.4f}%" if dv["funding"] is not None else "N/D"
+            lines.append(f"• {nombre}: Open Interest {dv['oi_coins']:,.0f}{oi_usd_txt} | "
+                        f"Ratio Long/Short {ls_txt} | Funding {fund_txt}")
+    safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
+
+    resumen = "; ".join(f"{n}: {d['valor']:.2f}{u}" for n, d, u in macro_resultados)
+    deriv_resumen = ""
+    if btc_deriv:
+        deriv_resumen += f"BTC ratio L/S {btc_deriv['ls_ratio']}, funding {btc_deriv['funding']:+.4f}%. "
+    if eth_deriv:
+        deriv_resumen += f"ETH ratio L/S {eth_deriv['ls_ratio']}, funding {eth_deriv['funding']:+.4f}%."
+    prompt = (f"Datos macro EE.UU. (FRED): {resumen}.\n"
+              f"Derivados cripto (Binance): {deriv_resumen}\n\n"
+              "No inventes datos que no estén aquí.\n\n"
+              "1. ¿Qué lectura general sugiere este panorama macro (tipos, inflación, paro, curva de tipos)?\n"
+              "2. ¿Qué indica el posicionamiento en derivados cripto (ratio long/short, funding) sobre el "
+              "sentimiento del mercado ahora mismo?\n"
+              "3. Qué vigilar en las próximas semanas")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
