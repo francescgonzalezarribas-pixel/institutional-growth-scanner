@@ -1714,6 +1714,29 @@ def cmd_dominancia(msg):
 # lleva puesta cada orden (su columna "3D 12H", "220D 13H"...). Solo
 # mostramos tamaño y precio, no antigüedad.
 
+def _cluster_levels(levels, cluster_pct=0.001):
+    """Agrupa niveles de precio muy próximos entre sí (dentro de
+    cluster_pct, 0.001 = 0.1%) en un único 'muro', sumando su valor. Sin
+    esto, el libro de órdenes tiene muchos niveles casi pegados que se
+    contarían como muros distintos y sus etiquetas se pisarían en el
+    gráfico."""
+    if not levels:
+        return []
+    levels = sorted(levels, key=lambda x: x[0])
+    clusters = []
+    precio_ref, usd_acum, qty_acum, precio_pond = levels[0][0], levels[0][2], levels[0][1], levels[0][0]*levels[0][2]
+    for p, q, usd in levels[1:]:
+        if abs(p - precio_ref) / precio_ref <= cluster_pct:
+            usd_acum += usd
+            qty_acum += q
+            precio_pond += p * usd
+            precio_ref = precio_pond / usd_acum if usd_acum else p
+        else:
+            clusters.append((precio_ref, qty_acum, usd_acum))
+            precio_ref, usd_acum, qty_acum, precio_pond = p, usd, q, p*usd
+    clusters.append((precio_ref, qty_acum, usd_acum))
+    return clusters
+
 def fetch_orderbook_walls(symbol, top_n=6, price_range_pct=0.15):
     """Descarga el libro de órdenes de Binance y devuelve los muros de
     compra/venta más grandes dentro de un rango de precio alrededor del
@@ -1731,9 +1754,11 @@ def fetch_orderbook_walls(symbol, top_n=6, price_range_pct=0.15):
             return None
         mid_price = (bids[0][0] + asks[0][0]) / 2
         lo, hi = mid_price * (1 - price_range_pct), mid_price * (1 + price_range_pct)
-        bid_walls = sorted([(p, q, p*q) for p, q in bids if lo <= p <= hi], key=lambda x: -x[2])
-        ask_walls = sorted([(p, q, p*q) for p, q in asks if lo <= p <= hi], key=lambda x: -x[2])
-        return {"mid": mid_price, "bids": bid_walls[:top_n], "asks": ask_walls[:top_n]}
+        bid_raw = [(p, q, p*q) for p, q in bids if lo <= p <= hi]
+        ask_raw = [(p, q, p*q) for p, q in asks if lo <= p <= hi]
+        bid_walls = sorted(_cluster_levels(bid_raw), key=lambda x: -x[2])[:top_n]
+        ask_walls = sorted(_cluster_levels(ask_raw), key=lambda x: -x[2])[:top_n]
+        return {"mid": mid_price, "bids": bid_walls, "asks": ask_walls}
     except Exception as e:
         log.warning(f"fetch_orderbook_walls {symbol}: {e}")
         return None
@@ -1751,6 +1776,16 @@ def fetch_binance_intraday(symbol, interval="15m", limit=100):
         log.warning(f"fetch_binance_intraday {symbol}: {e}")
         return None
 
+def _espaciar_etiquetas(precios, min_gap):
+    """Dada una lista de precios (ascendente), devuelve las posiciones Y
+    donde colocar cada etiqueta de texto, separadas al menos min_gap entre
+    sí, para que no se pisen cuando varios muros están muy cerca en precio."""
+    precios = sorted(precios)
+    ys = [precios[0]]
+    for p in precios[1:]:
+        ys.append(max(p, ys[-1] + min_gap))
+    return dict(zip(precios, ys))
+
 def chart_ballenas(ticker, walls, intraday):
     fig, ax = plt.subplots(figsize=(14, 9))
     fig.patch.set_facecolor('#0d1117')
@@ -1764,16 +1799,27 @@ def chart_ballenas(ticker, walls, intraday):
 
     todos_usd = [w[2] for w in walls["bids"] + walls["asks"]] or [1]
     max_usd = max(todos_usd)
+    todos_precios = [w[0] for w in walls["bids"] + walls["asks"]] + [walls["mid"]]
+    min_gap = (max(todos_precios) - min(todos_precios) or walls["mid"]*0.01) * 0.045
+
+    ask_ys = _espaciar_etiquetas([p for p, q, usd in walls["asks"]], min_gap) if walls["asks"] else {}
+    bid_ys = _espaciar_etiquetas([p for p, q, usd in walls["bids"]], min_gap) if walls["bids"] else {}
 
     for p, q, usd in walls["asks"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
         ax.axhspan(p*0.998, p*1.002, color='#FF3333', alpha=alpha, zorder=1)
-        ax.text(x_der, p, f" ${usd/1e6:.2f}M", color='#FF8888', fontsize=8.5,
+        y_label = ask_ys[p]
+        if abs(y_label - p) > min_gap * 0.3:
+            ax.plot([x_der, x_der], [p, y_label], color='#FF8888', linewidth=0.6, alpha=0.5, zorder=2)
+        ax.text(x_der, y_label, f" ${usd/1e6:.2f}M", color='#FF8888', fontsize=8.5,
                 va='center', ha='left', fontweight='bold')
     for p, q, usd in walls["bids"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
         ax.axhspan(p*0.998, p*1.002, color='#00CC44', alpha=alpha, zorder=1)
-        ax.text(x_der, p, f" ${usd/1e6:.2f}M", color='#88FF88', fontsize=8.5,
+        y_label = bid_ys[p]
+        if abs(y_label - p) > min_gap * 0.3:
+            ax.plot([x_der, x_der], [p, y_label], color='#88FF88', linewidth=0.6, alpha=0.5, zorder=2)
+        ax.text(x_der, y_label, f" ${usd/1e6:.2f}M", color='#88FF88', fontsize=8.5,
                 va='center', ha='left', fontweight='bold')
 
     ax.axhline(walls["mid"], color='#00FFFF', linestyle='--', linewidth=1.2, zorder=5)
@@ -1814,6 +1860,7 @@ def cmd_ballenas(msg):
     if len(parts) < 2:
         safe_send(msg.chat.id,
             "Uso: /ballenas TICKER\n\nEjemplos:\n/ballenas BTC\n/ballenas ETH\n/ballenas SOL\n\n"
+            "Solo funciona con criptomonedas (no acciones).\n\n"
             "Muestra los muros de compra/venta más grandes del libro de órdenes de Binance, "
             "±15% alrededor del precio actual.\n\n"
             "Nota: a diferencia de Coinglass, no mostramos cuánto tiempo lleva puesta cada orden "
@@ -1825,7 +1872,11 @@ def cmd_ballenas(msg):
     walls = fetch_orderbook_walls(symbol)
     if not walls:
         safe_send(msg.chat.id,
-            f"No he encontrado datos para \"{ticker}\" en Binance. Comprueba el ticker (prueba solo el símbolo, p.ej. BTC, ETH, SOL).",
+            f"\"{ticker}\" no está disponible en el libro de órdenes de Binance.\n\n"
+            "IMPORTANTE: /ballenas de momento SOLO funciona con criptomonedas "
+            "(BTC, ETH, SOL...). Las acciones (TSLA, NVDA...) no están soportadas "
+            "todavía — las acciones nuevas de Binance no están en la API pública "
+            "que usamos.",
             message_id=m.message_id)
         return
     intraday = fetch_binance_intraday(symbol)
