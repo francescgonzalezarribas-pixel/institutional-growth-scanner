@@ -1611,6 +1611,7 @@ def _runs_min_length(bools, min_len=3):
 def chart_feargreed(series, btc_data):
     fechas = [pd.Timestamp(p["t"], unit="ms") for p in series]
     valores = [p["value"] for p in series]
+    margen = (fechas[-1] - fechas[0]) * 0.05
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True,
                                     gridspec_kw={"height_ratios": [2, 1]})
@@ -1641,9 +1642,10 @@ def chart_feargreed(series, btc_data):
     ax2.plot(fechas[-1], valores[-1], 'o', color='#00FFFF', markersize=12, zorder=10,
               markeredgecolor='white', markeredgewidth=2)
     ax2.annotate(f'AHORA: {valores[-1]}', xy=(fechas[-1], valores[-1]),
-                 xytext=(fechas[-1], min(95, valores[-1] + 10)),
-                 fontsize=10, color='#00FFFF', fontweight='bold', ha='right',
-                 bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117', edgecolor='#00FFFF', alpha=0.9))
+                 xytext=(fechas[-1] + margen*0.15, min(90, valores[-1] + 10)),
+                 fontsize=12, color='#00FFFF', fontweight='bold', ha='left', clip_on=False,
+                 bbox=dict(boxstyle='round,pad=0.35', facecolor='#0d1117', edgecolor='#00FFFF', alpha=0.95))
+    ax2.set_xlim(fechas[0], fechas[-1] + margen)
     ax2.set_ylim(0, 100)
     ax2.set_ylabel('Fear & Greed Index', color='#AAAAAA')
     ax2.tick_params(colors='#AAAAAA')
@@ -1796,6 +1798,7 @@ def chart_ballenas(ticker, walls, intraday):
         x_izq, x_der = intraday["fechas"][0], intraday["fechas"][-1]
     else:
         x_izq, x_der = 0, 1
+    margen = (x_der - x_izq) * 0.22 if hasattr(x_der, "__sub__") else 1
 
     todos_usd = [w[2] for w in walls["bids"] + walls["asks"]] or [1]
     max_usd = max(todos_usd)
@@ -1804,31 +1807,33 @@ def chart_ballenas(ticker, walls, intraday):
 
     ask_ys = _espaciar_etiquetas([p for p, q, usd in walls["asks"]], min_gap) if walls["asks"] else {}
     bid_ys = _espaciar_etiquetas([p for p, q, usd in walls["bids"]], min_gap) if walls["bids"] else {}
+    x_texto = x_der + margen * 0.08
 
     for p, q, usd in walls["asks"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
         ax.axhspan(p*0.998, p*1.002, color='#FF3333', alpha=alpha, zorder=1)
         y_label = ask_ys[p]
         if abs(y_label - p) > min_gap * 0.3:
-            ax.plot([x_der, x_der], [p, y_label], color='#FF8888', linewidth=0.6, alpha=0.5, zorder=2)
-        ax.text(x_der, y_label, f" ${usd/1e6:.2f}M", color='#FF8888', fontsize=8.5,
-                va='center', ha='left', fontweight='bold')
+            ax.plot([x_der, x_texto], [p, y_label], color='#FF8888', linewidth=0.6, alpha=0.5, zorder=2)
+        ax.text(x_texto, y_label, f"${usd/1e6:.2f}M", color='#FF9999', fontsize=10.5,
+                va='center', ha='left', fontweight='bold', clip_on=False)
     for p, q, usd in walls["bids"]:
         alpha = 0.25 + 0.55 * (usd / max_usd)
         ax.axhspan(p*0.998, p*1.002, color='#00CC44', alpha=alpha, zorder=1)
         y_label = bid_ys[p]
         if abs(y_label - p) > min_gap * 0.3:
-            ax.plot([x_der, x_der], [p, y_label], color='#88FF88', linewidth=0.6, alpha=0.5, zorder=2)
-        ax.text(x_der, y_label, f" ${usd/1e6:.2f}M", color='#88FF88', fontsize=8.5,
-                va='center', ha='left', fontweight='bold')
+            ax.plot([x_der, x_texto], [p, y_label], color='#88FF88', linewidth=0.6, alpha=0.5, zorder=2)
+        ax.text(x_texto, y_label, f"${usd/1e6:.2f}M", color='#99FF99', fontsize=10.5,
+                va='center', ha='left', fontweight='bold', clip_on=False)
 
     ax.axhline(walls["mid"], color='#00FFFF', linestyle='--', linewidth=1.2, zorder=5)
     ax.text(x_izq, walls["mid"], f"AHORA ${walls['mid']:,.1f} ", color='#00FFFF',
-            fontsize=9, fontweight='bold', va='bottom', ha='left')
+            fontsize=10, fontweight='bold', va='bottom', ha='left')
 
     ax.set_title(f'{ticker} — Muros de órdenes grandes (order book Binance)',
                  color='white', fontsize=13, fontweight='bold')
     ax.set_ylabel('Precio USD', color='#AAAAAA')
+    ax.set_xlim(x_izq, x_der + margen)
     ax.tick_params(colors='#AAAAAA')
     for spine in ax.spines.values(): spine.set_color('#333333')
     ax.grid(color='#222222', linestyle='--', alpha=0.3)
