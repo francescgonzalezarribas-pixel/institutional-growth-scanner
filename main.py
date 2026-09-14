@@ -331,6 +331,26 @@ TWELVEDATA_SYMBOL_MAP = {
     "DX-Y.NYB":"DXY","GC=F":"XAU/USD","CL=F":"WTI/USD",
 }
 
+# Límite real de Twelve Data en el plan gratuito: 8 peticiones/minuto. Si
+# varios tickers fallan en Stooq a la vez (p.ej. dentro de /mercados) y
+# todos caen sobre Twelve Data en ráfaga, se revienta ese límite de golpe
+# y se rompe la cadena de respaldo para todos a la vez. Este limitador
+# global espacia las llamadas para no pasar nunca de ~7/min.
+_TD_CALL_TIMES = []
+_TD_MAX_PER_MIN = 7
+
+def _throttle_twelvedata():
+    global _TD_CALL_TIMES
+    now = time.time()
+    _TD_CALL_TIMES = [t for t in _TD_CALL_TIMES if now - t < 60]
+    if len(_TD_CALL_TIMES) >= _TD_MAX_PER_MIN:
+        wait = 60 - (now - _TD_CALL_TIMES[0]) + 0.5
+        if wait > 0:
+            time.sleep(wait)
+        now = time.time()
+        _TD_CALL_TIMES = [t for t in _TD_CALL_TIMES if now - t < 60]
+    _TD_CALL_TIMES.append(time.time())
+
 def fetch_twelvedata(ticker, days=220):
     """Fuente intermedia entre Stooq y yfinance. Usa API key (no scraping),
     así que no sufre los bloqueos por IP compartida que afectan a Yahoo desde
@@ -343,6 +363,7 @@ def fetch_twelvedata(ticker, days=220):
     cached = cache_get(ck)
     if cached is not None: return cached
     def _do():
+        _throttle_twelvedata()
         r = requests.get("https://api.twelvedata.com/time_series",
                         params={"symbol":sym,"interval":"1day","outputsize":days,
                                 "apikey":TWELVEDATA_API_KEY},timeout=10)
@@ -1950,6 +1971,7 @@ def calcular_mercados():
             d = get_quote(MERCADOS_FALLBACK[ticker])
         if d:
             resultados.append({"nombre": nombre, "d1": d["d1"], "price": d["price"]})
+        time.sleep(0.4)  # evita bombardear Stooq con ~17 tickers en ráfaga
     resultados.sort(key=lambda x: -abs(x["d1"]))
     return resultados
 
