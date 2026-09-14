@@ -272,6 +272,48 @@ def fetch_binance(symbol, days=220):
     if res: cache_set(ck, res)
     return res
 
+def fetch_btc_price_history_long(days):
+    """Histórico largo de BTC-USD desde Binance, paginando peticiones (la
+    API limita a 1000 velas por llamada, así que para pedir años de
+    histórico hay que encadenar varias). A diferencia de fetch_binance,
+    devuelve también las fechas reales de cada vela — necesario para poder
+    alinear correctamente con series de otra fuente (p.ej. Fear & Greed)
+    en vez de asumir que "los últimos N días" de una coinciden con los de
+    la otra."""
+    ck = f"binance_long:BTCUSDT:{days}"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    all_klines = []
+    end_time = None
+    remaining = days
+    try:
+        while remaining > 0:
+            limit = min(1000, remaining + 5)
+            params = {"symbol": "BTCUSDT", "interval": "1d", "limit": limit}
+            if end_time: params["endTime"] = end_time
+            r = requests.get("https://api.binance.com/api/v3/klines", params=params, timeout=10)
+            if r.status_code != 200:
+                log.warning(f"fetch_btc_price_history_long: HTTP {r.status_code}")
+                break
+            batch = r.json()
+            if not batch: break
+            all_klines = batch + all_klines
+            end_time = batch[0][0] - 1
+            remaining -= len(batch)
+            if len(batch) < limit: break  # llegamos al inicio del histórico disponible en Binance
+            time.sleep(0.2)
+        if len(all_klines) < 30:
+            return None
+        dedup = {k[0]: k for k in all_klines}
+        rows = sorted(dedup.values(), key=lambda k: k[0])
+        result = {"fechas": [pd.Timestamp(k[0], unit='ms') for k in rows],
+                  "closes": pd.Series([float(k[4]) for k in rows])}
+        cache_set(ck, result)
+        return result
+    except Exception as e:
+        log.warning(f"fetch_btc_price_history_long: {e}")
+        return None
+
 TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY", "")
 
 # Alias para tickers crypto escritos sin sufijo -USD (p.ej. "BTC" -> "BTC-USD")
@@ -1547,6 +1589,24 @@ def fetch_feargreed_history():
 FEARGREED_COMPRA_UMBRAL = 25
 FEARGREED_VENTA_UMBRAL = 75
 
+def _runs_min_length(bools, min_len=3):
+    """Tramos contiguos donde bools es True y duran al menos min_len puntos
+    — evita pintar parpadeos de un solo día en el gráfico (ruido visual),
+    sin tocar la clasificación numérica real (esa usa el valor diario tal
+    cual, esto solo afecta a qué se sombrea)."""
+    runs, i, n = [], 0, len(bools)
+    while i < n:
+        if bools[i]:
+            j = i
+            while j < n and bools[j]:
+                j += 1
+            if j - i >= min_len:
+                runs.append((i, j))
+            i = j
+        else:
+            i += 1
+    return runs
+
 def chart_feargreed(series, btc_data):
     fechas = [pd.Timestamp(p["t"], unit="ms") for p in series]
     valores = [p["value"] for p in series]
@@ -1556,16 +1616,14 @@ def chart_feargreed(series, btc_data):
     fig.patch.set_facecolor('#0d1117')
     for ax in (ax1, ax2): ax.set_facecolor('#0d1117')
 
-    if btc_data is not None:
-        closes = btc_data["closes"]
-        n_btc = len(closes)
-        btc_fechas = fechas[-n_btc:] if n_btc <= len(fechas) else fechas
-        ax1.plot(btc_fechas[-n_btc:], np.log10(closes.tail(n_btc)), color='white', linewidth=1.6, zorder=5)
-    for i in range(len(fechas) - 1):
-        if valores[i] <= FEARGREED_COMPRA_UMBRAL:
-            ax1.axvspan(fechas[i], fechas[i+1], color='#00CC44', alpha=0.15, zorder=0)
-        elif valores[i] >= FEARGREED_VENTA_UMBRAL:
-            ax1.axvspan(fechas[i], fechas[i+1], color='#FF3333', alpha=0.15, zorder=0)
+    if btc_data is not None and btc_data.get("fechas"):
+        ax1.plot(btc_data["fechas"], np.log10(btc_data["closes"]), color='white', linewidth=1.6, zorder=5)
+    compra_bools = [v <= FEARGREED_COMPRA_UMBRAL for v in valores]
+    venta_bools = [v >= FEARGREED_VENTA_UMBRAL for v in valores]
+    for i, j in _runs_min_length(compra_bools, min_len=3):
+        ax1.axvspan(fechas[i], fechas[j-1], color='#00CC44', alpha=0.18, zorder=0)
+    for i, j in _runs_min_length(venta_bools, min_len=3):
+        ax1.axvspan(fechas[i], fechas[j-1], color='#FF3333', alpha=0.18, zorder=0)
     ax1.set_title('BTC — Zonas históricas de compra/venta (Fear & Greed Index)', color='white', fontsize=13, fontweight='bold')
     ax1.set_ylabel('Precio BTC (log)', color='#AAAAAA')
     ax1.tick_params(colors='#AAAAAA')
@@ -1575,10 +1633,10 @@ def chart_feargreed(series, btc_data):
     ax2.plot(fechas, valores, color='#4488FF', linewidth=1.2, zorder=5)
     ax2.axhline(FEARGREED_COMPRA_UMBRAL, color='#00CC44', linestyle='--', linewidth=1.2)
     ax2.axhline(FEARGREED_VENTA_UMBRAL, color='#FF3333', linestyle='--', linewidth=1.2)
-    ax2.fill_between(fechas, 0, FEARGREED_COMPRA_UMBRAL,
-                      where=[v <= FEARGREED_COMPRA_UMBRAL for v in valores], color='#00CC44', alpha=0.15)
-    ax2.fill_between(fechas, FEARGREED_VENTA_UMBRAL, 100,
-                      where=[v >= FEARGREED_VENTA_UMBRAL for v in valores], color='#FF3333', alpha=0.15)
+    for i, j in _runs_min_length(compra_bools, min_len=3):
+        ax2.axvspan(fechas[i], fechas[j-1], color='#00CC44', alpha=0.15, zorder=0)
+    for i, j in _runs_min_length(venta_bools, min_len=3):
+        ax2.axvspan(fechas[i], fechas[j-1], color='#FF3333', alpha=0.15, zorder=0)
     ax2.plot(fechas[-1], valores[-1], 'o', color='#00FFFF', markersize=12, zorder=10,
               markeredgecolor='white', markeredgewidth=2)
     ax2.annotate(f'AHORA: {valores[-1]}', xy=(fechas[-1], valores[-1]),
@@ -1612,7 +1670,7 @@ def cmd_dominancia(msg):
             message_id=m.message_id)
         return
     dias_cubiertos = max(1, int((series[-1]["t"] - series[0]["t"]) / 86400000))
-    btc_data = fetch_binance("BTCUSDT", days=min(1000, dias_cubiertos + 10))
+    btc_data = fetch_btc_price_history_long(dias_cubiertos + 10)
 
     try:
         chart = chart_feargreed(series, btc_data)
