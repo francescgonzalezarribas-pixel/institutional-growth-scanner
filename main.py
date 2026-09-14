@@ -1143,7 +1143,8 @@ def cmd_start(msg):
             "/fundamental NVDA — Análisis fundamental 0-100\n"
             "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n"
             "/cartera Buffett — Cartera 13F de grandes inversores\n"
-            "/dominancia — Zonas históricas de compra/venta BTC (USDT.D)\n\n"
+            "/dominancia — Zonas históricas de compra/venta BTC (USDT.D)\n"
+            "/ballenas BTC — Muros de órdenes grandes (order book)\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
@@ -1703,6 +1704,156 @@ def cmd_dominancia(msg):
               "1. ¿Qué nos dice esto sobre el sentimiento del mercado ahora mismo?\n"
               "2. ¿Es fiable esta señal por sí sola o hay que combinarla con algo más?\n"
               "3. Estrategia concreta dado este nivel de sentimiento")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+# ═══ /BALLENAS — Muros de órdenes grandes (order book Binance) ══
+# Inspirado en el "Whale Order Analysis" de Coinglass, pero con datos
+# gratuitos y públicos de Binance (sin API key). LIMITACIÓN real a tener en
+# cuenta: la API pública de Binance solo da una FOTO del libro de órdenes
+# en este momento — a diferencia de Coinglass, no sabemos cuánto tiempo
+# lleva puesta cada orden (su columna "3D 12H", "220D 13H"...). Solo
+# mostramos tamaño y precio, no antigüedad.
+
+def fetch_orderbook_walls(symbol, top_n=6, price_range_pct=0.15):
+    """Descarga el libro de órdenes de Binance y devuelve los muros de
+    compra/venta más grandes dentro de un rango de precio alrededor del
+    precio actual (por defecto ±15%)."""
+    try:
+        r = requests.get("https://api.binance.com/api/v3/depth",
+                        params={"symbol": symbol, "limit": 1000}, timeout=8)
+        if r.status_code != 200:
+            log.warning(f"fetch_orderbook_walls {symbol}: HTTP {r.status_code}")
+            return None
+        data = r.json()
+        bids = [(float(p), float(q)) for p, q in data.get("bids", [])]
+        asks = [(float(p), float(q)) for p, q in data.get("asks", [])]
+        if not bids or not asks:
+            return None
+        mid_price = (bids[0][0] + asks[0][0]) / 2
+        lo, hi = mid_price * (1 - price_range_pct), mid_price * (1 + price_range_pct)
+        bid_walls = sorted([(p, q, p*q) for p, q in bids if lo <= p <= hi], key=lambda x: -x[2])
+        ask_walls = sorted([(p, q, p*q) for p, q in asks if lo <= p <= hi], key=lambda x: -x[2])
+        return {"mid": mid_price, "bids": bid_walls[:top_n], "asks": ask_walls[:top_n]}
+    except Exception as e:
+        log.warning(f"fetch_orderbook_walls {symbol}: {e}")
+        return None
+
+def fetch_binance_intraday(symbol, interval="15m", limit=100):
+    try:
+        r = requests.get("https://api.binance.com/api/v3/klines",
+                        params={"symbol": symbol, "interval": interval, "limit": limit}, timeout=8)
+        if r.status_code != 200: return None
+        kl = r.json()
+        if len(kl) < 5: return None
+        return {"fechas": [pd.Timestamp(k[0], unit='ms') for k in kl],
+                "closes": pd.Series([float(k[4]) for k in kl])}
+    except Exception as e:
+        log.warning(f"fetch_binance_intraday {symbol}: {e}")
+        return None
+
+def chart_ballenas(ticker, walls, intraday):
+    fig, ax = plt.subplots(figsize=(14, 9))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    if intraday is not None:
+        ax.plot(intraday["fechas"], intraday["closes"], color='white', linewidth=1.5, zorder=6)
+        x_izq, x_der = intraday["fechas"][0], intraday["fechas"][-1]
+    else:
+        x_izq, x_der = 0, 1
+
+    todos_usd = [w[2] for w in walls["bids"] + walls["asks"]] or [1]
+    max_usd = max(todos_usd)
+
+    for p, q, usd in walls["asks"]:
+        alpha = 0.25 + 0.55 * (usd / max_usd)
+        ax.axhspan(p*0.998, p*1.002, color='#FF3333', alpha=alpha, zorder=1)
+        ax.text(x_der, p, f" ${usd/1e6:.2f}M", color='#FF8888', fontsize=8.5,
+                va='center', ha='left', fontweight='bold')
+    for p, q, usd in walls["bids"]:
+        alpha = 0.25 + 0.55 * (usd / max_usd)
+        ax.axhspan(p*0.998, p*1.002, color='#00CC44', alpha=alpha, zorder=1)
+        ax.text(x_der, p, f" ${usd/1e6:.2f}M", color='#88FF88', fontsize=8.5,
+                va='center', ha='left', fontweight='bold')
+
+    ax.axhline(walls["mid"], color='#00FFFF', linestyle='--', linewidth=1.2, zorder=5)
+    ax.text(x_izq, walls["mid"], f"AHORA ${walls['mid']:,.1f} ", color='#00FFFF',
+            fontsize=9, fontweight='bold', va='bottom', ha='left')
+
+    ax.set_title(f'{ticker} — Muros de órdenes grandes (order book Binance)',
+                 color='white', fontsize=13, fontweight='bold')
+    ax.set_ylabel('Precio USD', color='#AAAAAA')
+    ax.tick_params(colors='#AAAAAA')
+    for spine in ax.spines.values(): spine.set_color('#333333')
+    ax.grid(color='#222222', linestyle='--', alpha=0.3)
+    if intraday is not None:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
+        fig.autofmt_xdate()
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+def resolve_binance_symbol(ticker):
+    t = normalize_ticker(ticker)
+    if t in BINANCE_MAP:
+        return BINANCE_MAP[t]
+    if t.endswith("-USD"):
+        return f"{t[:-4]}USDT"
+    return f"{t}USDT"
+
+@bot.message_handler(commands=["ballenas"])
+def cmd_ballenas(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    parts = msg.text.split()
+    if len(parts) < 2:
+        safe_send(msg.chat.id,
+            "Uso: /ballenas TICKER\n\nEjemplos:\n/ballenas BTC\n/ballenas ETH\n/ballenas SOL\n\n"
+            "Muestra los muros de compra/venta más grandes del libro de órdenes de Binance, "
+            "±15% alrededor del precio actual.\n\n"
+            "Nota: a diferencia de Coinglass, no mostramos cuánto tiempo lleva puesta cada orden "
+            "(la API pública de Binance solo da una foto del momento, no el histórico).")
+        return
+    ticker = parts[1].upper()
+    symbol = resolve_binance_symbol(ticker)
+    m = bot.send_message(msg.chat.id, f"Consultando libro de órdenes de {ticker}...")
+    walls = fetch_orderbook_walls(symbol)
+    if not walls:
+        safe_send(msg.chat.id,
+            f"No he encontrado datos para \"{ticker}\" en Binance. Comprueba el ticker (prueba solo el símbolo, p.ej. BTC, ETH, SOL).",
+            message_id=m.message_id)
+        return
+    intraday = fetch_binance_intraday(symbol)
+    try:
+        chart = chart_ballenas(ticker, walls, intraday)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, chart)
+    except Exception as e:
+        log.warning(f"chart_ballenas: {e}")
+        safe_send(msg.chat.id, "Tengo los datos pero falló al dibujar el gráfico. Reintenta en un momento.",
+                  message_id=m.message_id)
+        return
+
+    lines = [f"{ticker} — ${walls['mid']:,.2f}\n", "MUROS DE VENTA (resistencia):"]
+    for p, q, usd in walls["asks"]:
+        lines.append(f"  ${p:,.2f} — ${usd/1e6:.2f}M")
+    lines.append("\nMUROS DE COMPRA (soporte):")
+    for p, q, usd in walls["bids"]:
+        lines.append(f"  ${p:,.2f} — ${usd/1e6:.2f}M")
+    safe_send(msg.chat.id, "\n".join(lines))
+
+    asks_txt = ", ".join(f"${p:,.0f} (${usd/1e6:.1f}M)" for p, q, usd in walls["asks"][:4])
+    bids_txt = ", ".join(f"${p:,.0f} (${usd/1e6:.1f}M)" for p, q, usd in walls["bids"][:4])
+    prompt = (f"{ticker} cotiza a ${walls['mid']:,.2f}. Muros de venta (resistencia) cercanos: {asks_txt}. "
+              f"Muros de compra (soporte) cercanos: {bids_txt}.\n\n"
+              "1. ¿Qué nivel de resistencia y soporte parecen más relevantes?\n"
+              "2. ¿Qué estrategia de entrada/salida sugieren estos muros?\n"
+              "3. Riesgo de que sean órdenes 'trampa' (spoofing) que se cancelan antes de ejecutarse")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
