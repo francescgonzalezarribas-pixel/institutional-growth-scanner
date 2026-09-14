@@ -1144,7 +1144,8 @@ def cmd_start(msg):
             "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n"
             "/cartera Buffett — Cartera 13F de grandes inversores\n"
             "/dominancia — Zonas históricas de compra/venta BTC (USDT.D)\n"
-            "/ballenas BTC — Muros de órdenes grandes (order book)\n\n"
+            "/ballenas BTC — Muros de órdenes grandes (order book)\n"
+            "/mercados — Resumen en vivo, ordenado por lo que más se mueve\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
@@ -1798,7 +1799,7 @@ def chart_ballenas(ticker, walls, intraday):
         x_izq, x_der = intraday["fechas"][0], intraday["fechas"][-1]
     else:
         x_izq, x_der = 0, 1
-    margen = (x_der - x_izq) * 0.22 if hasattr(x_der, "__sub__") else 1
+    margen = (x_der - x_izq) * 0.30 if hasattr(x_der, "__sub__") else 1
 
     todos_usd = [w[2] for w in walls["bids"] + walls["asks"]] or [1]
     max_usd = max(todos_usd)
@@ -1815,7 +1816,7 @@ def chart_ballenas(ticker, walls, intraday):
         y_label = ask_ys[p]
         if abs(y_label - p) > min_gap * 0.3:
             ax.plot([x_der, x_texto], [p, y_label], color='#FF8888', linewidth=0.6, alpha=0.5, zorder=2)
-        ax.text(x_texto, y_label, f"${usd/1e6:.2f}M", color='white', fontsize=10.5,
+        ax.text(x_texto, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", color='white', fontsize=10.5,
                 va='center', ha='left', fontweight='bold', clip_on=False, zorder=8,
                 bbox=dict(boxstyle='round,pad=0.25', facecolor='#0d1117', edgecolor='#FF3333', alpha=0.9))
     for p, q, usd in walls["bids"]:
@@ -1824,7 +1825,7 @@ def chart_ballenas(ticker, walls, intraday):
         y_label = bid_ys[p]
         if abs(y_label - p) > min_gap * 0.3:
             ax.plot([x_der, x_texto], [p, y_label], color='#88FF88', linewidth=0.6, alpha=0.5, zorder=2)
-        ax.text(x_texto, y_label, f"${usd/1e6:.2f}M", color='white', fontsize=10.5,
+        ax.text(x_texto, y_label, f"${p:,.0f} — ${usd/1e6:.2f}M", color='white', fontsize=10.5,
                 va='center', ha='left', fontweight='bold', clip_on=False, zorder=8,
                 bbox=dict(boxstyle='round,pad=0.25', facecolor='#0d1117', edgecolor='#00CC44', alpha=0.9))
 
@@ -1916,6 +1917,134 @@ def cmd_ballenas(msg):
               "3. Riesgo de que sean órdenes 'trampa' (spoofing) que se cancelan antes de ejecutarse")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
+
+# ═══ /MERCADOS — Resumen en vivo, ordenado por lo que más se mueve ══
+MERCADOS_TICKERS = {
+    "Ethereum": "ETH-USD", "Bitcoin": "BTC-USD",
+    "Nasdaq": "^IXIC", "S&P 500": "^GSPC", "IBEX 35": "^IBEX",
+    "DAX": "^GDAXI", "CAC 40": "^FCHI",
+    "Oro": "GC=F", "Petróleo": "CL=F", "USD Index": "DX-Y.NYB",
+    "Apple": "AAPL", "Nvidia": "NVDA", "Tesla": "TSLA", "Microsoft": "MSFT",
+    "Amazon": "AMZN", "Google": "GOOGL", "Meta": "META",
+}
+
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
+
+def fetch_market_movers(top_n=15):
+    """Gainers/losers REALES de todo el mercado (no solo nuestra lista fija
+    de arriba), vía Financial Modeling Prep. Así, si algo fuera de la lista
+    (p.ej. Vertiv) pega un subidón fuerte, también aparece. Requiere la env
+    var FMP_API_KEY (gratis, 250 peticiones/día — financialmodelingprep.com)."""
+    if not FMP_API_KEY:
+        return []
+    out = []
+    for endpoint in ("gainers", "losers"):
+        try:
+            r = requests.get(f"https://financialmodelingprep.com/api/v3/{endpoint}",
+                            params={"apikey": FMP_API_KEY}, timeout=10)
+            if r.status_code != 200:
+                log.warning(f"fetch_market_movers {endpoint}: HTTP {r.status_code} — {r.text[:200]}")
+                continue
+            data = r.json()
+            if not isinstance(data, list):
+                log.warning(f"fetch_market_movers {endpoint}: formato inesperado: {str(data)[:200]}")
+                continue
+            for item in data[:top_n]:
+                try:
+                    out.append({"nombre": item.get("symbol", "?"),
+                                "d1": float(item.get("changesPercentage", 0)),
+                                "price": float(item.get("price", 0))})
+                except Exception:
+                    continue
+        except Exception as e:
+            log.warning(f"fetch_market_movers {endpoint}: {e}")
+    return out
+
+def calcular_mercados():
+    resultados = []
+    for nombre, ticker in MERCADOS_TICKERS.items():
+        d = get_quote(ticker)
+        if d:
+            resultados.append({"nombre": nombre, "d1": d["d1"], "price": d["price"]})
+    resultados += fetch_market_movers()
+    # dedupe por nombre (si algo de la lista fija coincide con un mover real)
+    vistos = {}
+    for r in resultados:
+        if r["nombre"] not in vistos:
+            vistos[r["nombre"]] = r
+    resultados = list(vistos.values())
+    resultados.sort(key=lambda x: -abs(x["d1"]))
+    return resultados
+
+def chart_mercados(resultados):
+    n = len(resultados)
+    fig, ax = plt.subplots(figsize=(12, max(5, n*0.85)))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    nombres = [r["nombre"] for r in resultados]
+    valores = [r["d1"] for r in resultados]
+    colores = ['#00CC44' if v >= 0 else '#FF3333' for v in valores]
+    y_pos = list(range(n))
+
+    ax.barh(y_pos, valores, color=colores, height=0.55, zorder=3)
+    ax.axvline(0, color='#666666', linewidth=1, zorder=2)
+
+    max_abs = max(abs(v) for v in valores) or 1
+    for i, v in enumerate(valores):
+        offset = max_abs * 0.04
+        ax.text(v + (offset if v >= 0 else -offset), i, f"{v:+.2f}%",
+                va='center', ha='left' if v >= 0 else 'right',
+                color=colores[i], fontweight='bold', fontsize=13)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(nombres, color='white', fontsize=13, fontweight='bold')
+    ax.invert_yaxis()
+    ax.set_xlim(-max_abs*1.35, max_abs*1.35)
+    ax.set_xticks([])
+    for spine in ax.spines.values(): spine.set_visible(False)
+    ax.tick_params(left=False)
+
+    fecha_txt = datetime.now(MADRID).strftime('%d/%m %H:%M')
+    ax.set_title(f'MERCADOS — {fecha_txt}', color='white', fontsize=16,
+                 fontweight='bold', loc='left', pad=15)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+@bot.message_handler(commands=["mercados"])
+def cmd_mercados(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Consultando mercados en directo... (10-15s)")
+    resultados = calcular_mercados()[:12]
+    if not resultados:
+        safe_send(msg.chat.id, "No he podido obtener datos de mercado ahora mismo. Reintenta en un momento.",
+                  message_id=m.message_id)
+        return
+    try:
+        chart = chart_mercados(resultados)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, chart)
+    except Exception as e:
+        log.warning(f"chart_mercados: {e}")
+        lines = [f"{r['nombre']}: {r['d1']:+.2f}%" for r in resultados]
+        safe_send(msg.chat.id, "MERCADOS\n\n" + "\n".join(lines), message_id=m.message_id)
+        return
+
+    destacado = resultados[0]
+    resumen_txt = ", ".join(f"{r['nombre']} {r['d1']:+.2f}%" for r in resultados)
+    prompt = (f"Resumen de mercados ahora mismo: {resumen_txt}.\n"
+              f"El que más se ha movido es {destacado['nombre']} ({destacado['d1']:+.2f}%).\n\n"
+              "1. ¿Qué está impulsando el movimiento más destacado?\n"
+              "2. ¿Hay alguna correlación o divergencia entre mercados que llame la atención hoy?\n"
+              "3. Qué vigilar el resto de la sesión")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 if __name__ == "__main__":
     # FIX 409: si el contenedor anterior no llegó a cerrar su getUpdates a
