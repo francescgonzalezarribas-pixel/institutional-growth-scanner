@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """AnalisisPro Bot — Con suscripciones (5€/mes vía NOWPayments) + /valor /fundamental /halvingbtc"""
-import os, io, json, re, time, logging, requests
+import os, io, json, re, time, logging, requests, threading
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -1103,7 +1103,6 @@ def chart_halving():
     plt.savefig(buf,format='png',dpi=130,facecolor='#0d1117',bbox_inches='tight')
     plt.close(); buf.seek(0)
     return buf
-
 @bot.message_handler(commands=["halvingbtc"])
 def cmd_halvingbtc(msg):
     if not is_premium(msg.from_user.id):
@@ -2155,6 +2154,204 @@ def cmd_macro(msg):
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
+# ═══ DIFUSIÓN AUTOMÁTICA — resumen cada hora (9:00-22:00) + alertas ═
+# de noticias relevantes. A diferencia de todo lo demás en este bot (que
+# solo responde cuando el usuario escribe un comando), esto corre en
+# segundo plano y escribe a los suscriptores por su cuenta.
+
+BROADCAST_CRYPTO = {
+    "Bitcoin": "BTC-USD", "Ethereum": "ETH-USD", "Solana": "SOL-USD", "BNB": "BNB-USD",
+    "XRP": "XRP-USD", "Cardano": "ADA-USD", "Dogecoin": "DOGE-USD", "Avalanche": "AVAX-USD",
+    "Chainlink": "LINK-USD", "Polkadot": "DOT-USD",
+}
+BROADCAST_STOCKS = {
+    "Apple": "AAPL", "Microsoft": "MSFT", "Nvidia": "NVDA", "Amazon": "AMZN",
+    "Google": "GOOGL", "Meta": "META", "Tesla": "TSLA", "JPMorgan": "JPM",
+    "Netflix": "NFLX", "Uber": "UBER",
+}
+BROADCAST_INDICES = {
+    "S&P 500": "^GSPC", "Nasdaq": "^IXIC", "IBEX 35": "^IBEX", "DAX": "^GDAXI", "CAC 40": "^FCHI",
+}
+BROADCAST_FALLBACK = {"^IXIC": "QQQ", "^GSPC": "SPY"}  # mismo fix que ya vimos con /mercados
+
+def calcular_broadcast():
+    """Recorre los ~25 activos con una pequeña pausa entre cada uno —
+    lección aprendida de cuando /mercados reventaba el límite de Twelve
+    Data al pedir muchos tickers en ráfaga."""
+    resultados = []
+    for grupo, tickers in [("🪙 Cripto", BROADCAST_CRYPTO), ("📈 Acciones", BROADCAST_STOCKS),
+                            ("🌍 Índices", BROADCAST_INDICES)]:
+        for nombre, ticker in tickers.items():
+            d = get_quote(ticker)
+            if not d and ticker in BROADCAST_FALLBACK:
+                d = get_quote(BROADCAST_FALLBACK[ticker])
+            if d:
+                resultados.append({"grupo": grupo, "nombre": nombre, "d1": d["d1"]})
+            time.sleep(0.15)
+    return resultados
+
+def chart_broadcast(resultados):
+    n = len(resultados)
+    fig, ax = plt.subplots(figsize=(11, max(6, n*0.42)))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    nombres = [f"{r['nombre']}" for r in resultados]
+    valores = [r["d1"] for r in resultados]
+    colores = ['#00CC44' if v >= 0 else '#FF3333' for v in valores]
+    y_pos = list(range(n))
+
+    ax.barh(y_pos, valores, color=colores, height=0.55, zorder=3)
+    ax.axvline(0, color='#666666', linewidth=1, zorder=2)
+    max_abs = max(abs(v) for v in valores) or 1
+    for i, v in enumerate(valores):
+        flecha = "▲" if v >= 0 else "▼"
+        offset = max_abs * 0.04
+        ax.text(v + (offset if v >= 0 else -offset), i, f"{flecha} {v:+.2f}%",
+                va='center', ha='left' if v >= 0 else 'right',
+                color=colores[i], fontweight='bold', fontsize=10.5)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(nombres, color='white', fontsize=11, fontweight='bold')
+    ax.invert_yaxis()
+    ax.set_xlim(-max_abs*1.4, max_abs*1.4)
+    ax.set_xticks([])
+    for spine in ax.spines.values(): spine.set_visible(False)
+    ax.tick_params(left=False)
+
+    # Separadores entre grupos (Cripto / Acciones / Índices)
+    grupo_actual = None
+    for i, r in enumerate(resultados):
+        if r["grupo"] != grupo_actual:
+            if grupo_actual is not None:
+                ax.axhline(i - 0.5, color='#333333', linewidth=1, zorder=1)
+            grupo_actual = r["grupo"]
+
+    fecha_txt = datetime.now(MADRID).strftime('%d/%m %H:%M')
+    ax.set_title(f'RESUMEN DE MERCADOS — {fecha_txt}', color='white', fontsize=15,
+                 fontweight='bold', loc='left', pad=15)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf.getvalue()
+
+def _lista_suscriptores_activos():
+    ids = set(SUSCRIPTORES.keys())
+    if ALLOWED_USER_ID:
+        ids.add(ALLOWED_USER_ID)
+    return [cid for cid in ids if is_premium(cid)]
+
+# ── Noticias relevantes: solo avisamos de titulares NUEVOS desde la
+# última vez, y solo si la IA los juzga realmente importantes (para no
+# mandar una alerta cada hora con cualquier cosa) ──
+NOTICIAS_VISTAS_FILE = os.environ.get("NOTICIAS_VISTAS_FILE", "noticias_vistas.json")
+
+def _cargar_noticias_vistas():
+    try:
+        with open(NOTICIAS_VISTAS_FILE, "r") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+def _guardar_noticias_vistas(vistas):
+    try:
+        # nos quedamos solo con las últimas ~500 para que el fichero no crezca sin límite
+        recientes = list(vistas)[-500:]
+        with open(NOTICIAS_VISTAS_FILE, "w") as f:
+            json.dump(recientes, f)
+    except Exception as e:
+        log.warning(f"_guardar_noticias_vistas: {e}")
+
+def revisar_noticias_relevantes():
+    vistas = _cargar_noticias_vistas()
+    data = fetch_todas_noticias()
+    nuevas = []
+    for fuente, items in data.items():
+        for it in items:
+            if it["link"] not in vistas:
+                nuevas.append(it)
+    if not nuevas:
+        return None
+    for it in nuevas:
+        vistas.add(it["link"])
+    _guardar_noticias_vistas(vistas)
+
+    titulares = "\n".join(f"- {it['title']}" for it in nuevas[:20])
+    prompt = ("Estos son titulares NUEVOS (desde la última revisión) de fuentes financieras/cripto:\n"
+              f"{titulares}\n\n"
+              "Responde ÚNICAMENTE con los que consideres noticias realmente importantes y con "
+              "potencial de mover mercados de forma notable (decisiones de bancos centrales, "
+              "quiebras, hackeos grandes, cambios regulatorios importantes, datos macro "
+              "sorprendentes...), cada uno en su propia línea empezando por '• '. No inventes "
+              "nada que no esté en los titulares. Si ninguno te parece de verdad relevante, "
+              "responde exactamente: NINGUNA")
+    respuesta = ask_ai(prompt, max_chars=1200)
+    if not respuesta or "NINGUNA" in respuesta.upper()[:30]:
+        return None
+    return respuesta
+
+def ejecutar_broadcast_hora():
+    destinatarios = _lista_suscriptores_activos()
+    if not destinatarios:
+        log.info("ejecutar_broadcast_hora: sin suscriptores activos, nada que enviar")
+        return
+
+    try:
+        resultados = calcular_broadcast()
+        if resultados:
+            img_bytes = chart_broadcast(resultados)
+            for cid in destinatarios:
+                try:
+                    bot.send_photo(cid, io.BytesIO(img_bytes))
+                except Exception as e:
+                    log.warning(f"broadcast precio -> {cid}: {e}")
+                time.sleep(0.05)
+    except Exception as e:
+        log.error(f"ejecutar_broadcast_hora (precios): {e}")
+
+    try:
+        alerta = revisar_noticias_relevantes()
+        if alerta:
+            texto = f"🚨 NOTICIA RELEVANTE\n\n{alerta}"
+            for cid in destinatarios:
+                try:
+                    safe_send(cid, texto)
+                except Exception as e:
+                    log.warning(f"broadcast noticia -> {cid}: {e}")
+                time.sleep(0.05)
+    except Exception as e:
+        log.error(f"ejecutar_broadcast_hora (noticias): {e}")
+
+_ultimo_broadcast_key = None
+
+def _debe_emitir_ahora(ahora):
+    # Franja horaria: en punto, de 9:00 a 22:00 (Madrid) — "9 a 22:30" del
+    # encargo original, redondeado a horas en punto ya que los envíos son
+    # siempre a hora exacta.
+    if not (9 <= ahora.hour <= 22):
+        return False
+    return ahora.minute < 5  # margen de 5 min por si el bucle se retrasa
+
+def _scheduler_loop():
+    global _ultimo_broadcast_key
+    log.info("Scheduler de difusión automática arrancado")
+    while True:
+        try:
+            ahora = datetime.now(MADRID)
+            if _debe_emitir_ahora(ahora):
+                clave = ahora.strftime("%Y-%m-%d %H")
+                if clave != _ultimo_broadcast_key:
+                    _ultimo_broadcast_key = clave
+                    log.info(f"Ejecutando broadcast automático ({clave})")
+                    ejecutar_broadcast_hora()
+        except Exception as e:
+            log.error(f"_scheduler_loop: {e}")
+        time.sleep(60)
+
+
 if __name__ == "__main__":
     # FIX 409: si el contenedor anterior no llegó a cerrar su getUpdates a
     # tiempo, esto libera el "lock" de Telegram antes de empezar a hacer
@@ -2165,4 +2362,6 @@ if __name__ == "__main__":
     except Exception as e:
         log.warning(f"remove_webhook al arrancar: {e}")
     log.info("AnalisisPro Bot arrancado")
+    threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
