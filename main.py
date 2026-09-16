@@ -1103,6 +1103,7 @@ def chart_halving():
     plt.savefig(buf,format='png',dpi=130,facecolor='#0d1117',bbox_inches='tight')
     plt.close(); buf.seek(0)
     return buf
+
 @bot.message_handler(commands=["halvingbtc"])
 def cmd_halvingbtc(msg):
     if not is_premium(msg.from_user.id):
@@ -1148,7 +1149,8 @@ def cmd_start(msg):
             "/dominancia — Zonas históricas de compra/venta BTC (USDT.D)\n"
             "/ballenas BTC — Muros de órdenes grandes (order book)\n"
             "/noticias — Noticias de bolsa, economía y cripto de varias fuentes\n"
-            "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n\n"
+            "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n"
+            "/ticker — Resumen de mercados al momento (bajo demanda)\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
@@ -2293,6 +2295,40 @@ def revisar_noticias_relevantes():
         return None
     return respuesta
 
+@bot.message_handler(commands=["ticker"])
+def cmd_ticker(msg):
+    """Versión bajo demanda del resumen automático — para probarlo cuando
+    quieras sin esperar a que llegue la hora en punto, o simplemente para
+    consultarlo fuera del horario 9:00-22:00."""
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Generando resumen de mercados... (15-20s)")
+    resultados = calcular_broadcast()
+    if not resultados:
+        safe_send(msg.chat.id, "No he podido obtener datos ahora mismo. Reintenta en un momento.",
+                  message_id=m.message_id)
+        return
+    try:
+        img_bytes = chart_broadcast(resultados)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, io.BytesIO(img_bytes))
+    except Exception as e:
+        log.warning(f"cmd_ticker chart: {e}")
+        lines = [f"{r['nombre']}: {r['d1']:+.2f}%" for r in resultados]
+        safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
+
+@bot.message_handler(commands=["scheduler_estado"])
+def cmd_scheduler_estado(msg):
+    if msg.from_user.id != ALLOWED_USER_ID: return
+    ahora = datetime.now(MADRID)
+    en_ventana = _debe_emitir_ahora(ahora)
+    safe_send(msg.chat.id,
+        f"Hora actual (Madrid): {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"¿Dentro de ventana de emisión (9-22h, min<15)?: {'Sí' if en_ventana else 'No'}\n"
+        f"Última clave de difusión emitida: {_ultimo_broadcast_key or 'ninguna todavía'}\n"
+        f"Suscriptores activos: {len(_lista_suscriptores_activos())}")
+
 def ejecutar_broadcast_hora():
     destinatarios = _lista_suscriptores_activos()
     if not destinatarios:
@@ -2333,14 +2369,19 @@ def _debe_emitir_ahora(ahora):
     # siempre a hora exacta.
     if not (9 <= ahora.hour <= 22):
         return False
-    return ahora.minute < 5  # margen de 5 min por si el bucle se retrasa
+    return ahora.minute < 15  # margen amplio por si hay un redeploy justo entonces
 
 def _scheduler_loop():
     global _ultimo_broadcast_key
     log.info("Scheduler de difusión automática arrancado")
+    _n_check = 0
     while True:
         try:
             ahora = datetime.now(MADRID)
+            _n_check += 1
+            if _n_check % 10 == 0:  # latido cada ~10 min, para poder verificar en logs que sigue vivo
+                log.info(f"Scheduler vivo — hora actual Madrid: {ahora.strftime('%Y-%m-%d %H:%M')}, "
+                        f"última difusión: {_ultimo_broadcast_key}")
             if _debe_emitir_ahora(ahora):
                 clave = ahora.strftime("%Y-%m-%d %H")
                 if clave != _ultimo_broadcast_key:
@@ -2364,4 +2405,3 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
