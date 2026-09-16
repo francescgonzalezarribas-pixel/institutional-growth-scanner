@@ -331,6 +331,29 @@ TWELVEDATA_SYMBOL_MAP = {
     "DX-Y.NYB":"DXY","GC=F":"XAU/USD","CL=F":"WTI/USD",
 }
 
+# Límite real de Twelve Data en el plan gratuito: 8 peticiones/minuto. Si
+# varios tickers fallan en Stooq a la vez (p.ej. dentro de /ticker o la
+# difusión automática, que recorren ~25 activos) y todos caen sobre Twelve
+# Data en ráfaga, se revienta ese límite de golpe y se rompe la cadena de
+# respaldo para todos a la vez (acaban también fallando en yfinance, que
+# está bloqueado desde Railway). Este limitador global espacia las
+# llamadas para no pasar nunca de ~7/min. (Se había añadido esto una vez
+# ya, pero se perdió al recuperar una versión anterior del archivo.)
+_TD_CALL_TIMES = []
+_TD_MAX_PER_MIN = 7
+
+def _throttle_twelvedata():
+    global _TD_CALL_TIMES
+    now = time.time()
+    _TD_CALL_TIMES = [t for t in _TD_CALL_TIMES if now - t < 60]
+    if len(_TD_CALL_TIMES) >= _TD_MAX_PER_MIN:
+        wait = 60 - (now - _TD_CALL_TIMES[0]) + 0.5
+        if wait > 0:
+            time.sleep(wait)
+        now = time.time()
+        _TD_CALL_TIMES = [t for t in _TD_CALL_TIMES if now - t < 60]
+    _TD_CALL_TIMES.append(time.time())
+
 def fetch_twelvedata(ticker, days=220):
     """Fuente intermedia entre Stooq y yfinance. Usa API key (no scraping),
     así que no sufre los bloqueos por IP compartida que afectan a Yahoo desde
@@ -343,6 +366,7 @@ def fetch_twelvedata(ticker, days=220):
     cached = cache_get(ck)
     if cached is not None: return cached
     def _do():
+        _throttle_twelvedata()
         r = requests.get("https://api.twelvedata.com/time_series",
                         params={"symbol":sym,"interval":"1day","outputsize":days,
                                 "apikey":TWELVEDATA_API_KEY},timeout=10)
@@ -1103,6 +1127,7 @@ def chart_halving():
     plt.savefig(buf,format='png',dpi=130,facecolor='#0d1117',bbox_inches='tight')
     plt.close(); buf.seek(0)
     return buf
+
 @bot.message_handler(commands=["halvingbtc"])
 def cmd_halvingbtc(msg):
     if not is_premium(msg.from_user.id):
@@ -2188,7 +2213,7 @@ def calcular_broadcast():
                 d = get_quote(BROADCAST_FALLBACK[ticker])
             if d:
                 resultados.append({"grupo": grupo, "nombre": nombre, "d1": d["d1"]})
-            time.sleep(0.15)
+            time.sleep(0.3)
     return resultados
 
 def chart_broadcast(resultados):
@@ -2409,4 +2434,3 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
