@@ -1103,7 +1103,6 @@ def chart_halving():
     plt.savefig(buf,format='png',dpi=130,facecolor='#0d1117',bbox_inches='tight')
     plt.close(); buf.seek(0)
     return buf
-
 @bot.message_handler(commands=["halvingbtc"])
 def cmd_halvingbtc(msg):
     if not is_premium(msg.from_user.id):
@@ -2169,7 +2168,7 @@ BROADCAST_CRYPTO = {
 BROADCAST_STOCKS = {
     "Apple": "AAPL", "Microsoft": "MSFT", "Nvidia": "NVDA", "Amazon": "AMZN",
     "Google": "GOOGL", "Meta": "META", "Tesla": "TSLA", "JPMorgan": "JPM",
-    "Netflix": "NFLX", "Uber": "UBER",
+    "Netflix": "NFLX", "SpaceX": "SPCX",
 }
 BROADCAST_INDICES = {
     "S&P 500": "^GSPC", "Nasdaq": "^IXIC", "IBEX 35": "^IBEX", "DAX": "^GDAXI", "CAC 40": "^FCHI",
@@ -2194,7 +2193,7 @@ def calcular_broadcast():
 
 def chart_broadcast(resultados):
     n = len(resultados)
-    fig, ax = plt.subplots(figsize=(11, max(6, n*0.42)))
+    fig, ax = plt.subplots(figsize=(13, max(7, n*0.5)))
     fig.patch.set_facecolor('#0d1117')
     ax.set_facecolor('#0d1117')
 
@@ -2203,20 +2202,25 @@ def chart_broadcast(resultados):
     colores = ['#00CC44' if v >= 0 else '#FF3333' for v in valores]
     y_pos = list(range(n))
 
-    ax.barh(y_pos, valores, color=colores, height=0.55, zorder=3)
-    ax.axvline(0, color='#666666', linewidth=1, zorder=2)
-    max_abs = max(abs(v) for v in valores) or 1
+    # FIX: antes las barras salían "hacia fuera" desde el cero (positivas a
+    # la derecha, negativas a la izquierda), así que el % quedaba en un
+    # lado distinto según el signo. Ahora TODAS las barras arrancan desde
+    # la izquierda (junto al nombre) y crecen hacia la derecha según el
+    # valor absoluto — así el orden de lectura es siempre el mismo:
+    # nombre -> barra -> %, sea subida o bajada.
+    abs_valores = [abs(v) for v in valores]
+    ax.barh(y_pos, abs_valores, color=colores, height=0.55, zorder=3)
+
+    max_abs = max(abs_valores) or 1
     for i, v in enumerate(valores):
         flecha = "▲" if v >= 0 else "▼"
-        offset = max_abs * 0.04
-        ax.text(v + (offset if v >= 0 else -offset), i, f"{flecha} {v:+.2f}%",
-                va='center', ha='left' if v >= 0 else 'right',
-                color=colores[i], fontweight='bold', fontsize=10.5)
+        ax.text(abs(v) + max_abs*0.04, i, f"{flecha} {v:+.2f}%",
+                va='center', ha='left', color=colores[i], fontweight='bold', fontsize=13)
 
     ax.set_yticks(y_pos)
-    ax.set_yticklabels(nombres, color='white', fontsize=11, fontweight='bold')
+    ax.set_yticklabels(nombres, color='white', fontsize=13, fontweight='bold')
     ax.invert_yaxis()
-    ax.set_xlim(-max_abs*1.4, max_abs*1.4)
+    ax.set_xlim(0, max_abs*1.55)
     ax.set_xticks([])
     for spine in ax.spines.values(): spine.set_visible(False)
     ax.tick_params(left=False)
@@ -2230,8 +2234,8 @@ def chart_broadcast(resultados):
             grupo_actual = r["grupo"]
 
     fecha_txt = datetime.now(MADRID).strftime('%d/%m %H:%M')
-    ax.set_title(f'RESUMEN DE MERCADOS — {fecha_txt}', color='white', fontsize=15,
-                 fontweight='bold', loc='left', pad=15)
+    ax.set_title(f'RESUMEN DE MERCADOS — {fecha_txt}', color='white', fontsize=17,
+                 fontweight='bold', loc='left', pad=18)
 
     plt.tight_layout()
     buf = io.BytesIO()
@@ -2405,3 +2409,4 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
