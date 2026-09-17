@@ -2439,33 +2439,52 @@ def calcular_ciclo_btc():
     rsi = d["rsi"]
     dist_ath = (d["price"] - d["hi52"]) / d["hi52"] * 100 if d["hi52"] > 0 else 0
 
-    # Fracción base (0.0-1.0) a lo largo de la curva según meses desde el
-    # halving — mismos cortes que ya usa /halvingbtc, con la línea temporal
-    # traducida a una posición en el ciclo Pico->Contracción->Suelo->
-    # Expansión->Recuperación->Prosperidad->(próximo Pico).
+    # Cada bloque tiene un rango de x en la curva y si pertenece a la mitad
+    # DESCENDENTE (Pico->Suelo, donde "más distress técnico" = más avanzado
+    # en el bloque = x más alto) o ASCENDENTE (Suelo->próximo Pico, donde
+    # "menos distress" = más avanzado en el bloque = x más alto). Sin este
+    # matiz, la misma fórmula técnica apunta en direcciones opuestas según
+    # en qué mitad del ciclo estemos.
     if meses < 6:
-        base, rango, fase = 0.55, (0.55, 0.65), "Expansión"
+        m_ini, m_fin, rango, fase, descendente = 0, 6, (0.55, 0.65), "Expansión", False
     elif meses < 18:
-        base, rango, fase = 0.65, (0.65, 0.85), "Expansión / Recuperación"
+        m_ini, m_fin, rango, fase, descendente = 6, 18, (0.65, 0.85), "Expansión / Recuperación", False
     elif meses < 22:
-        base, rango, fase = 0.90, (0.85, 1.00), "Prosperidad (cerca del pico)"
+        m_ini, m_fin, rango, fase, descendente = 18, 22, (0.85, 1.00), "Prosperidad (cerca del pico)", False
     elif meses < 32:
-        base, rango, fase = 0.05, (0.05, 0.45), "Contracción"
+        m_ini, m_fin, rango, fase, descendente = 22, 32, (0.05, 0.45), "Contracción", True
     elif meses < 40:
-        base, rango, fase = 0.50, (0.45, 0.55), "Suelo (oportunidad)"
+        m_ini, m_fin, rango, fase, descendente = 32, 40, (0.45, 0.55), "Suelo (oportunidad)", True
     else:
-        base, rango, fase = 0.60, (0.55, 0.65), "Expansión (post-suelo)"
+        m_ini, m_fin, rango, fase, descendente = 40, 52, (0.55, 0.65), "Expansión (post-suelo)", False
+    month_frac = max(0.0, min(1.0, (meses - m_ini) / (m_fin - m_ini)))
 
-    # Ajuste fino dentro de esa fase con RSI y distancia al máximo: más
-    # sobrevendido / más lejos del ATH -> empuja hacia el extremo bajo del
-    # rango (más cerca del Suelo); más sobrecomprado / más cerca del ATH ->
-    # empuja hacia el extremo alto (más cerca del Pico/Prosperidad).
-    señal = 0.5
-    if rsi <= 100:
-        señal = (rsi - 30) / 40  # ~0 en RSI 30 (sobreventa), ~1 en RSI 70 (sobrecompra)
-    señal = max(0.0, min(1.0, señal))
-    dist_señal = max(0.0, min(1.0, 1 - abs(dist_ath) / 40))  # más cerca del ATH -> más alto
-    ajuste = (señal * 0.5 + dist_señal * 0.5)
+    # "Distress" técnico: 0 = eufórico/cerca de máximos, 1 = máxima
+    # sobreventa + máxima caída. FIX de signo: antes RSI y distancia al ATH
+    # se usaban en su orientación "cruda" (alto = sobrecomprado/cerca del
+    # ATH) directamente como si fuera "cerca del Pico" en TODOS los
+    # bloques — lo cual empujaba el punto hacia el Pico precisamente
+    # cuando había más sobreventa y más caída, justo al revés de lo
+    # correcto. Ahora se calcula un "distress" con sentido único, y solo
+    # después se decide hacia qué lado empuja según si el bloque es
+    # descendente o ascendente.
+    rsi_distress = max(0.0, min(1.0, (70 - rsi) / 40))       # alto = sobreventa
+    # Recalibrado: los drawdowns históricos de BTC han sido cada vez menos
+    # profundos ciclo tras ciclo (2013-15: ~-86%, 2017-18: ~-84%, 2021-22:
+    # ~-77%), coherente con un mercado cada vez más maduro. Comparar la
+    # caída actual contra esos -70/-80% históricos infravalora lo profunda
+    # que es EN ESTE ciclo — usamos -50% como referencia de "suelo
+    # esperado" para este ciclo en concreto.
+    SUELO_ESPERADO_CICLO = 50.0
+    drawdown_distress = max(0.0, min(1.0, abs(dist_ath) / SUELO_ESPERADO_CICLO))
+    distress = rsi_distress * 0.4 + drawdown_distress * 0.6
+
+    # En la mitad descendente (Contracción/Suelo), más distress = más
+    # avanzado hacia el Suelo = x más alto dentro del bloque. En la mitad
+    # ascendente, es al revés: MENOS distress (más sobrecompra, más cerca
+    # de máximos) = más avanzado hacia el próximo Pico = x más alto.
+    señal_tecnica = distress if descendente else (1 - distress)
+    ajuste = month_frac * 0.5 + señal_tecnica * 0.5
     x_frac = rango[0] + (rango[1] - rango[0]) * ajuste
 
     return {"x_frac": x_frac, "fase": fase, "meses": meses, "rsi": round(rsi, 1),
