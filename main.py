@@ -1176,6 +1176,8 @@ def cmd_start(msg):
             "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n"
             "/ticker — Resumen de mercados al momento (bajo demanda)\n"
             "/ciclo — Fase actual de BTC en el ciclo de mercado\n\n"
+            "Además, cada 2h (9-21h) recibes un resumen automático de mercados, "
+            "y cada mañana a las 8h un resumen diario con Fear & Greed y noticias destacadas.\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
@@ -2355,8 +2357,9 @@ def cmd_scheduler_estado(msg):
     en_ventana = _debe_emitir_ahora(ahora)
     safe_send(msg.chat.id,
         f"Hora actual (Madrid): {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"¿Dentro de ventana de emisión (9-22h, min<15)?: {'Sí' if en_ventana else 'No'}\n"
+        f"¿Dentro de ventana de emisión (9-22h, cada 2h, min<15)?: {'Sí' if en_ventana else 'No'}\n"
         f"Última clave de difusión emitida: {_ultimo_broadcast_key or 'ninguna todavía'}\n"
+        f"Último resumen diario: {_ultimo_resumen_diario_key or 'ninguno todavía'}\n"
         f"Suscriptores activos: {len(_lista_suscriptores_activos())}")
 
 def ejecutar_broadcast_hora():
@@ -2393,16 +2396,73 @@ def ejecutar_broadcast_hora():
 
 _ultimo_broadcast_key = None
 
+# ── Resumen diario matutino ──
+# A diferencia del resumen cada 2 horas (que es un vistazo rápido de
+# precios), esto es un mensaje una vez al día pensado como "primer
+# vistazo de la mañana": Fear & Greed, BTC y los titulares más
+# destacados — para generar el hábito de abrir el bot cada mañana.
+_ultimo_resumen_diario_key = None
+RESUMEN_DIARIO_HORA = 8
+
+def calcular_resumen_diario():
+    btc = get_quote("BTC-USD")
+    fg_series = fetch_feargreed_history()
+    fg_actual = fg_series[-1] if fg_series else None
+    noticias = fetch_todas_noticias()
+    return {"btc": btc, "fg": fg_actual, "noticias": noticias}
+
+def texto_resumen_diario(datos):
+    lines = ["☀️ BUENOS DÍAS — Resumen diario\n"]
+    b = datos.get("btc")
+    if b:
+        flecha = "▲" if b["d1"] >= 0 else "▼"
+        lines.append(f"🪙 Bitcoin: ${b['price']:,.0f} ({flecha} {b['d1']:+.2f}% en 24h)")
+    fg = datos.get("fg")
+    if fg:
+        lines.append(f"😨 Fear & Greed: {fg['value']}/100 ({fg['clase']})")
+    noticias = datos.get("noticias") or {}
+    if noticias:
+        lines.append("\n📰 Titulares destacados:")
+        contador = 0
+        for fuente, items in noticias.items():
+            if items and contador < 5:
+                lines.append(f"• {items[0]['title'][:100]}")
+                contador += 1
+    lines.append("\nUsa /noticias, /macro, /ciclo o /ticker para profundizar.")
+    return "\n".join(lines)
+
+def ejecutar_resumen_diario():
+    destinatarios = _lista_suscriptores_activos()
+    if not destinatarios:
+        log.info("ejecutar_resumen_diario: sin suscriptores activos, nada que enviar")
+        return
+    try:
+        datos = calcular_resumen_diario()
+        texto = texto_resumen_diario(datos)
+        for cid in destinatarios:
+            try:
+                safe_send(cid, texto)
+            except Exception as e:
+                log.warning(f"resumen diario -> {cid}: {e}")
+            time.sleep(0.05)
+    except Exception as e:
+        log.error(f"ejecutar_resumen_diario: {e}")
+
+def _debe_emitir_resumen_diario(ahora):
+    return ahora.hour == RESUMEN_DIARIO_HORA and ahora.minute < 15
+
 def _debe_emitir_ahora(ahora):
-    # Franja horaria: en punto, de 9:00 a 22:00 (Madrid) — "9 a 22:30" del
-    # encargo original, redondeado a horas en punto ya que los envíos son
-    # siempre a hora exacta.
+    # Franja horaria: de 9:00 a 22:00 (Madrid), cada 2 horas en punto
+    # (9, 11, 13, 15, 17, 19, 21) — antes era cada hora, se cambió a
+    # petición del usuario.
     if not (9 <= ahora.hour <= 22):
+        return False
+    if (ahora.hour - 9) % 2 != 0:
         return False
     return ahora.minute < 15  # margen amplio por si hay un redeploy justo entonces
 
 def _scheduler_loop():
-    global _ultimo_broadcast_key
+    global _ultimo_broadcast_key, _ultimo_resumen_diario_key
     log.info("Scheduler de difusión automática arrancado")
     _n_check = 0
     while True:
@@ -2411,13 +2471,19 @@ def _scheduler_loop():
             _n_check += 1
             if _n_check % 10 == 0:  # latido cada ~10 min, para poder verificar en logs que sigue vivo
                 log.info(f"Scheduler vivo — hora actual Madrid: {ahora.strftime('%Y-%m-%d %H:%M')}, "
-                        f"última difusión: {_ultimo_broadcast_key}")
+                        f"última difusión: {_ultimo_broadcast_key}, último resumen diario: {_ultimo_resumen_diario_key}")
             if _debe_emitir_ahora(ahora):
                 clave = ahora.strftime("%Y-%m-%d %H")
                 if clave != _ultimo_broadcast_key:
                     _ultimo_broadcast_key = clave
                     log.info(f"Ejecutando broadcast automático ({clave})")
                     ejecutar_broadcast_hora()
+            if _debe_emitir_resumen_diario(ahora):
+                clave_dia = ahora.strftime("%Y-%m-%d")
+                if clave_dia != _ultimo_resumen_diario_key:
+                    _ultimo_resumen_diario_key = clave_dia
+                    log.info(f"Ejecutando resumen diario ({clave_dia})")
+                    ejecutar_resumen_diario()
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
