@@ -243,7 +243,7 @@ BINANCE_MAP = {
 STOOQ_MAP = {
     "^GSPC":"^spx","^IXIC":"^ndx","^GDAXI":"^dax","^IBEX":"^ibex",
     "^FCHI":"^cac","^FTSE":"^ukx","^VIX":"^vix","^TNX":"^tnx",
-    "DX-Y.NYB":"usdidx","GC=F":"xauusd","CL=F":"cl.f",
+    "DX-Y.NYB":"usdidx","GC=F":"xauusd","CL=F":"cl.f","SI=F":"xagusd","HG=F":"hg.f",
     "AAPL":"aapl.us","MSFT":"msft.us","NVDA":"nvda.us","TSLA":"tsla.us",
     "AMZN":"amzn.us","GOOGL":"googl.us","META":"meta.us","AMD":"amd.us",
     "INTC":"intc.us","IONQ":"ionq.us","PLTR":"pltr.us","COIN":"coin.us",
@@ -328,7 +328,7 @@ def normalize_ticker(ticker):
 TWELVEDATA_SYMBOL_MAP = {
     "^GSPC":"SPX","^IXIC":"IXIC","^GDAXI":"DAX","^IBEX":"IBEX",
     "^FCHI":"CAC","^FTSE":"UKX","^VIX":"VIX","^TNX":"TNX",
-    "DX-Y.NYB":"DXY","GC=F":"XAU/USD","CL=F":"WTI/USD",
+    "DX-Y.NYB":"DXY","GC=F":"XAU/USD","CL=F":"WTI/USD","SI=F":"XAG/USD",
 }
 
 # Límite real de Twelve Data en el plan gratuito: 8 peticiones/minuto. Si
@@ -2193,23 +2193,50 @@ BROADCAST_CRYPTO = {
     "XRP": "XRP-USD", "Cardano": "ADA-USD", "Dogecoin": "DOGE-USD", "Avalanche": "AVAX-USD",
     "Chainlink": "LINK-USD", "Polkadot": "DOT-USD",
 }
+# HYPE y PURR NO están en el mercado spot de Binance global (solo en
+# Binance.US, una plataforma distinta con otra API, o en el propio DEX de
+# Hyperliquid) — así que no se pueden traer con fetch_binance como el
+# resto. Usamos CoinGecko (gratis, sin API key) solo para estos dos.
+BROADCAST_CRYPTO_COINGECKO = {
+    "Hyperliquid": "hyperliquid", "PURR": "purr-2",
+}
 BROADCAST_STOCKS = {
     "Apple": "AAPL", "Microsoft": "MSFT", "Nvidia": "NVDA", "Amazon": "AMZN",
     "Google": "GOOGL", "Meta": "META", "Tesla": "TSLA", "JPMorgan": "JPM",
-    "Netflix": "NFLX", "SpaceX": "SPCX",
+    "Netflix": "NFLX", "SpaceX": "SPCX", "Strategy (Saylor)": "MSTR",
 }
 BROADCAST_INDICES = {
     "S&P 500": "^GSPC", "Nasdaq": "^IXIC", "IBEX 35": "^IBEX", "DAX": "^GDAXI", "CAC 40": "^FCHI",
 }
+BROADCAST_COMMODITIES = {
+    "Oro": "GC=F", "Plata": "SI=F", "Cobre": "HG=F",
+}
 BROADCAST_FALLBACK = {"^IXIC": "QQQ", "^GSPC": "SPY"}  # mismo fix que ya vimos con /mercados
 
+def fetch_coingecko_simple(coin_id):
+    """Fuente alternativa solo para cripto que no está en Binance spot
+    (HYPE, PURR). Gratis, sin API key. Rate limit generoso para el poco
+    uso que le damos aquí (2 monedas, una vez cada 2h)."""
+    ck = f"cg:{coin_id}"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
+        r = requests.get("https://api.coingecko.com/api/v3/simple/price",
+                        params={"ids": coin_id, "vs_currencies": "usd",
+                                "include_24hr_change": "true"}, timeout=10)
+        j = r.json()
+        if coin_id not in j:
+            raise RuntimeError(f"CoinGecko: sin datos para {coin_id}")
+        return {"price": j[coin_id]["usd"], "d1": j[coin_id].get("usd_24h_change", 0)}
+    return with_retry(_do, tries=2, base_delay=2, what=f"fetch_coingecko_simple {coin_id}")
+
 def calcular_broadcast():
-    """Recorre los ~25 activos con una pequeña pausa entre cada uno —
+    """Recorre los ~30 activos con una pequeña pausa entre cada uno —
     lección aprendida de cuando /mercados reventaba el límite de Twelve
     Data al pedir muchos tickers en ráfaga."""
     resultados = []
     for grupo, tickers in [("🪙 Cripto", BROADCAST_CRYPTO), ("📈 Acciones", BROADCAST_STOCKS),
-                            ("🌍 Índices", BROADCAST_INDICES)]:
+                            ("🌍 Índices", BROADCAST_INDICES), ("🥇 Materias primas", BROADCAST_COMMODITIES)]:
         for nombre, ticker in tickers.items():
             d = get_quote(ticker)
             if not d and ticker in BROADCAST_FALLBACK:
@@ -2217,6 +2244,17 @@ def calcular_broadcast():
             if d:
                 resultados.append({"grupo": grupo, "nombre": nombre, "d1": d["d1"]})
             time.sleep(0.3)
+    for nombre, coin_id in BROADCAST_CRYPTO_COINGECKO.items():
+        d = fetch_coingecko_simple(coin_id)
+        if d:
+            # Insertamos justo después de los resultados de cripto que ya
+            # tengamos (no en una posición fija: si algún cripto de
+            # Binance ha fallado esta vez, len(BROADCAST_CRYPTO) ya no
+            # coincidiría con dónde termina el grupo de verdad).
+            pos_insercion = sum(1 for r in resultados if r["grupo"] == "🪙 Cripto")
+            resultados.insert(pos_insercion,
+                              {"grupo": "🪙 Cripto", "nombre": nombre, "d1": d["d1"]})
+        time.sleep(0.3)
     return resultados
 
 def chart_broadcast(resultados):
