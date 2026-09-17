@@ -2435,57 +2435,61 @@ def calcular_ciclo_btc():
     if not d:
         return None
     import datetime as dt
-    meses = (dt.date.today() - dt.date(2024, 4, 19)).days // 30
+
+    # FIX de raíz: antes "distancia al máximo" se calculaba con solo 220
+    # días de histórico (d["hi52"]), lo que en septiembre de 2026 ni
+    # siquiera alcanza a ver el máximo histórico real de octubre de 2025
+    # ($126,080) — así que comparaba el precio actual contra un "máximo"
+    # equivocado, mucho más bajo que el real, y nunca llegaba a ver el
+    # suelo real del ciclo (~$58,120, 25 junio 2026) tampoco. Ahora se usa
+    # el histórico completo real (mismo mecanismo que ya usa /dominancia)
+    # para encontrar el máximo y el mínimo de verdad.
+    hist = fetch_btc_price_history_long(days=500)
     rsi = d["rsi"]
-    dist_ath = (d["price"] - d["hi52"]) / d["hi52"] * 100 if d["hi52"] > 0 else 0
+    price_now = d["price"]
 
-    # Cada bloque tiene un rango de x en la curva y si pertenece a la mitad
-    # DESCENDENTE (Pico->Suelo, donde "más distress técnico" = más avanzado
-    # en el bloque = x más alto) o ASCENDENTE (Suelo->próximo Pico, donde
-    # "menos distress" = más avanzado en el bloque = x más alto). Sin este
-    # matiz, la misma fórmula técnica apunta en direcciones opuestas según
-    # en qué mitad del ciclo estemos.
-    if meses < 6:
-        m_ini, m_fin, rango, fase, descendente = 0, 6, (0.55, 0.65), "Expansión", False
-    elif meses < 18:
-        m_ini, m_fin, rango, fase, descendente = 6, 18, (0.65, 0.85), "Expansión / Recuperación", False
-    elif meses < 22:
-        m_ini, m_fin, rango, fase, descendente = 18, 22, (0.85, 1.00), "Prosperidad (cerca del pico)", False
-    elif meses < 32:
-        m_ini, m_fin, rango, fase, descendente = 22, 32, (0.05, 0.45), "Contracción", True
-    elif meses < 40:
-        m_ini, m_fin, rango, fase, descendente = 32, 40, (0.45, 0.55), "Suelo (oportunidad)", True
+    if hist and len(hist["closes"]) > 30:
+        closes = hist["closes"]
+        idx_ath = closes.idxmax()
+        ath = float(closes.iloc[idx_ath])
+        # Mínimo realizado DESPUÉS del máximo (el suelo real de este ciclo
+        # bajista, si ya ha ocurrido) — no un mínimo hipotético.
+        post_ath = closes.iloc[idx_ath:]
+        low_after_ath = float(post_ath.min()) if len(post_ath) > 0 else ath
+        dist_ath = (price_now - ath) / ath * 100
+        # Posición de recuperación: 0 = justo en el mínimo realizado,
+        # 1 = de vuelta en el máximo histórico. Si el precio actual ES el
+        # mínimo (todavía cayendo), recovery_frac = 0.
+        rango_total = ath - low_after_ath
+        recovery_frac = ((price_now - low_after_ath) / rango_total) if rango_total > 0 else 0.5
+        recovery_frac = max(0.0, min(1.0, recovery_frac))
     else:
-        m_ini, m_fin, rango, fase, descendente = 40, 52, (0.55, 0.65), "Expansión (post-suelo)", False
-    month_frac = max(0.0, min(1.0, (meses - m_ini) / (m_fin - m_ini)))
+        # Sin histórico largo disponible: fallback conservador con lo que
+        # ya teníamos (peor, pero mejor que fallar del todo).
+        ath = d["hi52"]
+        dist_ath = (price_now - ath) / ath * 100 if ath > 0 else 0
+        recovery_frac = 0.5
+        low_after_ath = None
 
-    # "Distress" técnico: 0 = eufórico/cerca de máximos, 1 = máxima
-    # sobreventa + máxima caída. FIX de signo: antes RSI y distancia al ATH
-    # se usaban en su orientación "cruda" (alto = sobrecomprado/cerca del
-    # ATH) directamente como si fuera "cerca del Pico" en TODOS los
-    # bloques — lo cual empujaba el punto hacia el Pico precisamente
-    # cuando había más sobreventa y más caída, justo al revés de lo
-    # correcto. Ahora se calcula un "distress" con sentido único, y solo
-    # después se decide hacia qué lado empuja según si el bloque es
-    # descendente o ascendente.
-    rsi_distress = max(0.0, min(1.0, (70 - rsi) / 40))       # alto = sobreventa
-    # Recalibrado: los drawdowns históricos de BTC han sido cada vez menos
-    # profundos ciclo tras ciclo (2013-15: ~-86%, 2017-18: ~-84%, 2021-22:
-    # ~-77%), coherente con un mercado cada vez más maduro. Comparar la
-    # caída actual contra esos -70/-80% históricos infravalora lo profunda
-    # que es EN ESTE ciclo — usamos -50% como referencia de "suelo
-    # esperado" para este ciclo en concreto.
-    SUELO_ESPERADO_CICLO = 50.0
-    drawdown_distress = max(0.0, min(1.0, abs(dist_ath) / SUELO_ESPERADO_CICLO))
-    distress = rsi_distress * 0.4 + drawdown_distress * 0.6
+    # El suelo real ya ha pasado (recovery_frac > 0 y el mínimo no es el
+    # precio de ahora mismo) -> estamos en la mitad ASCENDENTE del ciclo
+    # (Suelo -> Expansión -> Recuperación -> Prosperidad), avanzando en
+    # proporción a cuánto llevamos recuperado desde ese mínimo real hacia
+    # el máximo anterior. RSI ajusta un poco dentro de ese tramo.
+    rsi_ajuste = max(0.0, min(1.0, (rsi - 30) / 40))  # alto = sobrecompra = empuja más adelante
+    avance = recovery_frac * 0.8 + rsi_ajuste * 0.2
+    x_frac = 0.5 + avance * 0.5  # 0.5 = justo en el Suelo, 1.0 = de vuelta al Pico
 
-    # En la mitad descendente (Contracción/Suelo), más distress = más
-    # avanzado hacia el Suelo = x más alto dentro del bloque. En la mitad
-    # ascendente, es al revés: MENOS distress (más sobrecompra, más cerca
-    # de máximos) = más avanzado hacia el próximo Pico = x más alto.
-    señal_tecnica = distress if descendente else (1 - distress)
-    ajuste = month_frac * 0.5 + señal_tecnica * 0.5
-    x_frac = rango[0] + (rango[1] - rango[0]) * ajuste
+    if recovery_frac < 0.15:
+        fase = "Suelo (saliendo de mínimos)"
+    elif recovery_frac < 0.45:
+        fase = "Expansión temprana"
+    elif recovery_frac < 0.75:
+        fase = "Expansión / Recuperación"
+    else:
+        fase = "Recuperación avanzada (cerca de máximos previos)"
+
+    meses = (dt.date.today() - dt.date(2024, 4, 19)).days // 30
 
     return {"x_frac": x_frac, "fase": fase, "meses": meses, "rsi": round(rsi, 1),
             "dist_ath": round(dist_ath, 1), "price": d["price"]}
