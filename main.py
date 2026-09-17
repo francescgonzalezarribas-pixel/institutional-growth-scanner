@@ -1174,7 +1174,8 @@ def cmd_start(msg):
             "/ballenas BTC — Muros de órdenes grandes (order book)\n"
             "/noticias — Noticias de bolsa, economía y cripto de varias fuentes\n"
             "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n"
-            "/ticker — Resumen de mercados al momento (bajo demanda)\n\n"
+            "/ticker — Resumen de mercados al momento (bajo demanda)\n"
+            "/ciclo — Fase actual de BTC en el ciclo de mercado\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
@@ -2420,6 +2421,146 @@ def _scheduler_loop():
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
+
+
+# ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
+# Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
+# Reutiliza la misma lógica de "meses desde el halving" que ya usa
+# /halvingbtc (ahí ya está verificada) como señal principal, y la afina con
+# RSI y distancia al máximo histórico para situar el punto con más
+# precisión dentro de esa fase.
+
+def calcular_ciclo_btc():
+    d = get_quote("BTC-USD")
+    if not d:
+        return None
+    import datetime as dt
+    meses = (dt.date.today() - dt.date(2024, 4, 19)).days // 30
+    rsi = d["rsi"]
+    dist_ath = (d["price"] - d["hi52"]) / d["hi52"] * 100 if d["hi52"] > 0 else 0
+
+    # Fracción base (0.0-1.0) a lo largo de la curva según meses desde el
+    # halving — mismos cortes que ya usa /halvingbtc, con la línea temporal
+    # traducida a una posición en el ciclo Pico->Contracción->Suelo->
+    # Expansión->Recuperación->Prosperidad->(próximo Pico).
+    if meses < 6:
+        base, rango, fase = 0.55, (0.55, 0.65), "Expansión"
+    elif meses < 18:
+        base, rango, fase = 0.65, (0.65, 0.85), "Expansión / Recuperación"
+    elif meses < 22:
+        base, rango, fase = 0.90, (0.85, 1.00), "Prosperidad (cerca del pico)"
+    elif meses < 32:
+        base, rango, fase = 0.05, (0.05, 0.45), "Contracción"
+    elif meses < 40:
+        base, rango, fase = 0.50, (0.45, 0.55), "Suelo (oportunidad)"
+    else:
+        base, rango, fase = 0.60, (0.55, 0.65), "Expansión (post-suelo)"
+
+    # Ajuste fino dentro de esa fase con RSI y distancia al máximo: más
+    # sobrevendido / más lejos del ATH -> empuja hacia el extremo bajo del
+    # rango (más cerca del Suelo); más sobrecomprado / más cerca del ATH ->
+    # empuja hacia el extremo alto (más cerca del Pico/Prosperidad).
+    señal = 0.5
+    if rsi <= 100:
+        señal = (rsi - 30) / 40  # ~0 en RSI 30 (sobreventa), ~1 en RSI 70 (sobrecompra)
+    señal = max(0.0, min(1.0, señal))
+    dist_señal = max(0.0, min(1.0, 1 - abs(dist_ath) / 40))  # más cerca del ATH -> más alto
+    ajuste = (señal * 0.5 + dist_señal * 0.5)
+    x_frac = rango[0] + (rango[1] - rango[0]) * ajuste
+
+    return {"x_frac": x_frac, "fase": fase, "meses": meses, "rsi": round(rsi, 1),
+            "dist_ath": round(dist_ath, 1), "price": d["price"]}
+
+def chart_ciclo_mercado(res):
+    fig, ax = plt.subplots(figsize=(13, 8))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    xs = np.linspace(0, 1, 400)
+    ys = np.cos(2*np.pi*xs)
+
+    # Degradado de color siguiendo la curva: rojo/naranja en el pico
+    # (riesgo máximo), pasando por amarillo, hasta verde/azul en el suelo
+    # (oportunidad máxima) — mismo código de colores que el resto del bot.
+    for i in range(len(xs)-1):
+        frac = (ys[i] + 1) / 2  # 1 en el pico, 0 en el suelo
+        if frac > 0.8:   c = '#FF3333'
+        elif frac > 0.55:c = '#FF9900'
+        elif frac > 0.45:c = '#FFCC00'
+        elif frac > 0.2: c = '#66CC66'
+        else:             c = '#3388FF'
+        ax.plot(xs[i:i+2], ys[i:i+2], color=c, linewidth=6, solid_capstyle='round', zorder=3)
+
+    ax.fill_between(xs, ys, -1.3, color='#0d1117', zorder=1)
+    ax.axhline(-1.15, color='#333333', linewidth=1, zorder=2)
+
+    # Etiquetas de las fases
+    def marcar(x, y, texto, sub, dy=0.22, ha='center'):
+        ax.plot(x, y, 'o', color='white', markersize=8, zorder=5)
+        ax.text(x, y+dy, texto, color='white', fontsize=13, fontweight='bold',
+                ha=ha, va='bottom', zorder=6)
+        if sub:
+            ax.text(x, y+dy-0.11, sub, color='#999999', fontsize=9.5, ha=ha, va='bottom', zorder=6)
+
+    marcar(0.0, 1.0, "PICO", "Riesgo financiero máximo", dy=0.18, ha='left')
+    marcar(0.5, -1.0, "SUELO", "Oportunidad financiera máxima", dy=0.30)
+    ax.text(0.78, -0.75, "Recuperación", color='#AAAAAA', fontsize=11, fontweight='bold', ha='center')
+    ax.text(0.93, -0.35, "Prosperidad", color='#AAAAAA', fontsize=11, fontweight='bold', ha='center')
+    ax.text(0.22, 0.0, "Contracción", color='#AAAAAA', fontsize=12, fontweight='bold', ha='center')
+    ax.text(0.68, 0.0, "Expansión", color='#AAAAAA', fontsize=12, fontweight='bold', ha='center')
+
+    # Marcador de BTC en su posición actual
+    xf = res["x_frac"]
+    yf = np.cos(2*np.pi*xf)
+    ax.plot(xf, yf, 'o', color='#F7931A', markersize=22, zorder=10,
+            markeredgecolor='white', markeredgewidth=2.5)
+    ax.annotate(f"BTC AHORA\n${res['price']:,.0f}", xy=(xf, yf), xytext=(xf, yf+0.35),
+                fontsize=11, color='#F7931A', fontweight='bold', ha='center', zorder=11,
+                bbox=dict(boxstyle='round,pad=0.35', facecolor='#0d1117', edgecolor='#F7931A',
+                          linewidth=2, alpha=0.95),
+                arrowprops=dict(arrowstyle='->', color='#F7931A', lw=1.8))
+
+    ax.set_xlim(-0.03, 1.03)
+    ax.set_ylim(-1.35, 1.45)
+    ax.axis('off')
+    ax.set_title('CICLO DE MERCADO SIMPLIFICADO — BITCOIN', color='white', fontsize=16,
+                 fontweight='bold', pad=10)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+@bot.message_handler(commands=["ciclo"])
+def cmd_ciclo(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Calculando posición de BTC en el ciclo... (10-15s)")
+    res = calcular_ciclo_btc()
+    if not res:
+        safe_send(msg.chat.id, "Sin datos de BTC ahora mismo. Reintenta en un momento.",
+                  message_id=m.message_id)
+        return
+    try:
+        chart = chart_ciclo_mercado(res)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, chart)
+    except Exception as e:
+        log.warning(f"chart_ciclo_mercado: {e}")
+        safe_send(msg.chat.id, f"BTC está en fase: {res['fase']}", message_id=m.message_id)
+
+    prompt = (f"Bitcoin cotiza a ${res['price']:,.0f}. Lleva {res['meses']} meses desde el último "
+              f"halving (19 abril 2024). RSI 14d: {res['rsi']}. Distancia al máximo histórico: "
+              f"{res['dist_ath']:+.1f}%. Según este contexto, ahora mismo se sitúa en la fase de "
+              f"'{res['fase']}' dentro del ciclo de mercado clásico (Pico -> Contracción -> Suelo -> "
+              f"Expansión -> Recuperación -> Prosperidad).\n\n"
+              "1. ¿Qué implica estar en esta fase concreta del ciclo?\n"
+              "2. ¿Qué señales confirmarían el paso a la siguiente fase?\n"
+              "3. Estrategia razonable dado este punto del ciclo")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
 if __name__ == "__main__":
