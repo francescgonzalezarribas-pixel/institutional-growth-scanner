@@ -2200,7 +2200,7 @@ def cmd_macro(msg):
 BROADCAST_CRYPTO = {
     "Bitcoin": "BTC-USD", "Ethereum": "ETH-USD", "Solana": "SOL-USD", "BNB": "BNB-USD",
     "XRP": "XRP-USD", "Cardano": "ADA-USD", "Dogecoin": "DOGE-USD", "Avalanche": "AVAX-USD",
-    "Chainlink": "LINK-USD", "Polkadot": "DOT-USD",
+    "Chainlink": "LINK-USD", "Polkadot": "DOT-USD", "Hedera": "HBAR-USD",
 }
 # HYPE y PURR NO están en el mercado spot de Binance global (solo en
 # Binance.US, una plataforma distinta con otra API, o en el propio DEX de
@@ -2213,12 +2213,19 @@ BROADCAST_STOCKS = {
     "Apple": "AAPL", "Microsoft": "MSFT", "Nvidia": "NVDA", "Amazon": "AMZN",
     "Google": "GOOGL", "Meta": "META", "Tesla": "TSLA", "JPMorgan": "JPM",
     "Netflix": "NFLX", "SpaceX": "SPCX", "Strategy (Saylor)": "MSTR",
+    "Walmart": "WMT", "Coca-Cola": "KO",
 }
 BROADCAST_INDICES = {
     "S&P 500": "^GSPC", "Nasdaq": "^IXIC", "IBEX 35": "^IBEX", "DAX": "^GDAXI", "CAC 40": "^FCHI",
 }
+# VWCE (Vanguard FTSE All-World UCITS ETF) cotiza en Xetra como VWCE.DE —
+# el sufijo ".DE" ya lo reconoce fetch_stooq automáticamente, sin necesitar
+# ningún mapeo especial.
+BROADCAST_ETF = {
+    "VWCE (All-World)": "VWCE.DE",
+}
 BROADCAST_COMMODITIES = {
-    "Oro": "GC=F", "Plata": "SI=F", "Cobre": "HG=F",
+    "Oro": "GC=F",
 }
 BROADCAST_FALLBACK = {"^IXIC": "QQQ", "^GSPC": "SPY"}  # mismo fix que ya vimos con /mercados
 
@@ -2245,7 +2252,8 @@ def calcular_broadcast():
     Data al pedir muchos tickers en ráfaga."""
     resultados = []
     for grupo, tickers in [("🪙 Cripto", BROADCAST_CRYPTO), ("📈 Acciones", BROADCAST_STOCKS),
-                            ("🌍 Índices", BROADCAST_INDICES), ("🥇 Materias primas", BROADCAST_COMMODITIES)]:
+                            ("🌍 Índices", BROADCAST_INDICES), ("📦 ETF", BROADCAST_ETF),
+                            ("🥇 Materias primas", BROADCAST_COMMODITIES)]:
         for nombre, ticker in tickers.items():
             d = get_quote(ticker)
             if not d and ticker in BROADCAST_FALLBACK:
