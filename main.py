@@ -459,6 +459,15 @@ def get_quote(ticker):
         base = t[:-4]
         dyn = fetch_binance(f"{base}USDT")
         if dyn: return dyn
+    if t == "SI=F":
+        # Plata en concreto: XAG/USD es un par "tipo forex" muy estándar y
+        # fiable en Twelve Data — más fiable ahí que el formato de futuros
+        # que usa Stooq para este símbolo, que venía fallando. El oro
+        # (GC=F) NO se toca aquí: ya funcionaba bien por Stooq, y meterlo
+        # en esta prioridad solo le quitaría cuota de Twelve Data a otros
+        # tickers sin necesidad.
+        td = fetch_twelvedata(t)
+        if td: return td
     res = fetch_stooq(t)
     if res is None and "-" not in t and "." not in t and "^" not in t and "=" not in t and len(t) <= 10:
         # Último recurso: si no parece encontrarse como acción, probamos si
