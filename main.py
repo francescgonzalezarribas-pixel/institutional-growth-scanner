@@ -2220,9 +2220,11 @@ BROADCAST_INDICES = {
 }
 # VWCE (Vanguard FTSE All-World UCITS ETF) cotiza en Xetra como VWCE.DE —
 # el sufijo ".DE" ya lo reconoce fetch_stooq automáticamente, sin necesitar
-# ningún mapeo especial.
+# ningún mapeo especial. VGLA (FTSE Global All-Cap, lanzado 20 agosto
+# 2026) igual, mismo patrón.
 BROADCAST_ETF = {
     "VWCE (All-World)": "VWCE.DE",
+    "VGLA (Global All-Cap)": "VGLA.DE",
 }
 BROADCAST_COMMODITIES = {
     "Oro": "GC=F",
