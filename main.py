@@ -2865,6 +2865,58 @@ def calcular_suelo_mercado():
     return {"componentes": componentes, "veredicto": veredicto, "n_extremos": n_extremos,
             "faltantes": faltantes, "aaii_fecha": aaii["fecha"] if aaii else None}
 
+def chart_suelo_gauge(res):
+    """Velocímetro estilo /valor: traduce los 4 indicadores de pánico a un
+    único 0-100 de 'oportunidad de compra' (lógica contraria: más pánico
+    en los indicadores = más cerca de comprar; menos pánico/más euforia =
+    más cerca de tener cautela)."""
+    scores = [c["score"] for c in res["componentes"].values()]
+    score = sum(scores) / len(scores) * 10 if scores else 50  # 0-10 -> 0-100
+
+    fig = plt.figure(figsize=(10, 6.5))
+    fig.patch.set_facecolor('#0d1117')
+    ax = fig.add_axes([0.05, 0.12, 0.90, 0.72], projection='polar')
+    ax.set_facecolor('#0d1117')
+    theta = np.linspace(np.pi, 0, 101)
+    for i in range(100):
+        if i < 30:    c = '#FF3333'
+        elif i < 45:  c = '#FF7700'
+        elif i < 65:  c = '#FFCC00'
+        elif i < 80:  c = '#99DD00'
+        else:         c = '#00CC44'
+        ax.barh(1, theta[i]-theta[i+1], left=theta[i+1], height=0.45, color=c, edgecolor='none')
+    angle = np.pi - (score/100*np.pi)
+    ax.plot([angle, angle], [0, 1.10], color='white', linewidth=6, zorder=5)
+    ax.plot(angle, 0, 'o', color='white', markersize=22, zorder=6)
+    ax.plot(angle, 0, 'o', color='#0d1117', markersize=11, zorder=7)
+    ax.set_ylim(0, 1.35); ax.set_theta_zero_location('E'); ax.set_theta_direction(1)
+    ax.set_thetamin(0); ax.set_thetamax(180)
+    ax.set_xticks([np.pi, 3*np.pi/4, np.pi/2, np.pi/4, 0])
+    ax.set_xticklabels(['0\nCAUTELA', '25', '50\nNEUTRAL', '75', '100\nOPORTUNIDAD'],
+                       color='white', fontsize=9, fontweight='bold')
+    ax.set_yticks([]); ax.spines['polar'].set_visible(False); ax.grid(False)
+
+    if score >= 80:   zona, zc = "PÁNICO GENERALIZADO — zona de oportunidad histórica", '#00CC44'
+    elif score >= 65: zona, zc = "PÁNICO ELEVADO — buena zona para mirar entradas", '#99DD00'
+    elif score >= 45: zona, zc = "NEUTRAL — sin señal clara", '#FFCC00'
+    elif score >= 30: zona, zc = "POCO PÁNICO — precaución, mercado tranquilo", '#FF7700'
+    else:             zona, zc = "SIN PÁNICO / EUFORIA — cuidado con sobrecompra", '#FF3333'
+
+    fig.text(0.5, 0.19, f"{score:.0f}/100", ha='center', va='center', fontsize=32,
+             color='white', fontweight='bold')
+    fig.text(0.5, 0.135, zona, ha='center', va='center', fontsize=11, color=zc, fontweight='bold')
+    fig.text(0.5, 0.97, "MEDIDOR — ¿MOMENTO DE COMPRAR O DE CAUTELA?",
+             ha='center', fontsize=14, color='white', fontweight='bold')
+    fig.text(0.5, 0.02,
+             "Lógica contraria: a más pánico en VIX/AAII/COT/Fear&Greed, más cerca del extremo "
+             "'oportunidad' — no al revés.", ha='center', fontsize=8, color='#888888')
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
 def chart_suelo_mercado(res):
     comp = res["componentes"]; n = len(comp)
     fig = plt.figure(figsize=(11, 3 + n*1.3))
@@ -2908,13 +2960,26 @@ def cmd_suelo(msg):
                   message_id=m.message_id)
         return
     try:
+        gauge = chart_suelo_gauge(res)
+        try:
+            bot.delete_message(msg.chat.id, m.message_id)
+        except Exception:
+            pass
+        bot.send_photo(msg.chat.id, gauge)
+    except Exception as e:
+        log.warning(f"chart_suelo_gauge: {e}")
+        try:
+            bot.delete_message(msg.chat.id, m.message_id)
+        except Exception:
+            pass
+
+    try:
         chart = chart_suelo_mercado(res)
-        bot.delete_message(msg.chat.id, m.message_id)
         bot.send_photo(msg.chat.id, chart)
     except Exception as e:
         log.warning(f"chart_suelo_mercado: {e}")
         lines = [f"{k}: {v['score']}/10 ({v['valor']})" for k, v in res["componentes"].items()]
-        safe_send(msg.chat.id, "\n".join(lines) + f"\n\n{res['veredicto']}", message_id=m.message_id)
+        safe_send(msg.chat.id, "\n".join(lines) + f"\n\n{res['veredicto']}")
 
     # Explicación en texto plano de qué mide cada cosa y qué implica el
     # veredicto — las barras solas no dejan claro el "por qué".
