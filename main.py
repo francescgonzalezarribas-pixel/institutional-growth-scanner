@@ -1165,7 +1165,6 @@ def cmd_halvingbtc(msg):
     except Exception as e:
         log.error(f"halvingbtc: {e}")
         safe_send(msg.chat.id,f"Error: {e}",message_id=m.message_id)
-
 @bot.message_handler(commands=["start","ayuda"])
 def cmd_start(msg):
     chat_id = msg.from_user.id
@@ -1188,8 +1187,9 @@ def cmd_start(msg):
             "/suelo — Triple Suelo de Sentimiento (VIX + AAII + Fear&Greed)\n"
             "/curva — Curva de tipos EEUU (10 años vs 2 años)\n"
             "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
-            "/correlacion — Correlación BTC vs Nasdaq (risk-on/risk-off)\n"
-            "/putcall — Ratio Put/Call del CBOE (miedo/complacencia en opciones)\n\n"
+            "/correlacion — Correlación BTC vs Nasdaq (risk-on/risk-off)\n\n"
+            "/guia — Explicación completa de cada comando\n"
+            "/dyor — Aviso legal (léelo antes de usar el bot para decidir)\n\n"
             "Además, cada 2h (9-21h) recibes un resumen automático de mercados, "
             "y cada mañana a las 8h un resumen diario con Fear & Greed y noticias destacadas.\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
@@ -3505,101 +3505,103 @@ def cmd_correlacion(msg):
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
-# ═══ /PUTCALL — Ratio Put/Call del CBOE ══════════════════════════
-# Mide si los inversores compran más puts (protección/apuesta bajista) o
-# calls (apuesta alcista). Indicador contrario: ratio alto = miedo
-# (históricamente cerca de suelos), ratio bajo = complacencia (cerca de
-# techos). NOTA DE FIABILIDAD: el archivo histórico gratuito de la CBOE
-# (equitypc.csv) dejó de actualizarse en algún momento — para el dato de
-# HOY hace falta scrapear su página de estadísticas en vivo, más frágil
-# que una API estable. Es el más especulativo de los indicadores del bot.
+# ═══ /GUIA — Explicación de cada comando ════════════════════════
+GUIA_PARTES = [
+"""📖 GUÍA DE COMANDOS (1/3) — Análisis de precio y ciclos
 
-def fetch_putcall_cboe():
-    ck = "putcall_cboe"
-    cached = cache_get(ck)
-    if cached is not None: return cached
-    def _do():
-        r = requests.get("https://res.cboe.com/us/options/market_statistics",
-                        headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        if r.status_code != 200:
-            raise RuntimeError(f"CBOE put/call: HTTP {r.status_code}")
-        # FIX: la primera versión buscaba texto con barras "|" entre
-        # columnas — eso era solo cómo una herramienta externa me mostró
-        # la página al inspeccionarla, no el HTML real que descarga el
-        # bot. El HTML de verdad usa <table><tr><td> normales.
-        soup = BeautifulSoup(r.text, "html.parser")
-        idx_equity = r.text.find("Equity Options")
-        if idx_equity == -1:
-            raise RuntimeError("CBOE put/call: no se encontró la sección Equity Options")
-        # Buscamos, entre TODAS las tablas de la página, la primera cuya
-        # posición en el HTML esté después del título "Equity Options"
-        # (así no cogemos por error la tabla "Total" que va antes).
-        mejor_tabla = None
-        for table in soup.find_all("table"):
-            pos = r.text.find(str(table))
-            if pos != -1 and pos > idx_equity:
-                mejor_tabla = table
-                break
-        if mejor_tabla is None:
-            raise RuntimeError("CBOE put/call: no se encontró la tabla de Equity Options")
-        filas_validas = []
-        for fila in mejor_tabla.find_all("tr"):
-            celdas = [td.get_text(strip=True) for td in fila.find_all("td")]
-            if len(celdas) == 4:  # CALLS, PUTS, TOTAL, RATIO (la hora suele ir en <th>)
-                celdas_th = fila.find_all("th")
-                hora = celdas_th[0].get_text(strip=True) if celdas_th else ""
-                filas_validas.append((hora,) + tuple(celdas))
-            elif len(celdas) == 5:  # hora incluida como <td>
-                filas_validas.append(tuple(celdas))
-        if not filas_validas:
-            raise RuntimeError(f"CBOE put/call: sin filas parseables en la tabla encontrada")
-        hora, calls, puts, total, ratio = filas_validas[-1]
-        return {"hora": hora, "calls": int(calls.replace(",", "")),
-                "puts": int(puts.replace(",", "")), "ratio": float(ratio)}
-    res = with_retry(_do, tries=2, base_delay=2, what="fetch_putcall_cboe")
-    if res: cache_set(ck, res)
-    return res
+━━━ /valor TICKER ━━━
+Velocímetro 0-100 de "barato/caro" para un activo concreto. Combina EMA200, RSI, distancia al máximo/mínimo y, en cripto, Fear & Greed, funding, DXY, Google Trends y ciclo del halving.
+Ejemplo: /valor BTC-USD, /valor TSLA
 
-@bot.message_handler(commands=["putcall"])
-def cmd_putcall(msg):
+━━━ /fundamental TICKER ━━━
+Velocímetro 0-100 de calidad fundamental de una empresa (solo acciones). 5 categorías: Valoración, Salud Financiera, Rentabilidad, Crecimiento, Potencial LP.
+Ejemplo: /fundamental NVDA
+
+━━━ /halvingbtc ━━━
+Gráfico del ciclo de 4 años de BTC (halvings históricos + proyección).
+
+━━━ /ciclo ━━━
+BTC situado sobre la curva Pico→Contracción→Suelo→Expansión→Recuperación→Prosperidad. Usa el máximo y mínimo REALES de este ciclo, no supuestos.""",
+
+"""📖 GUÍA DE COMANDOS (2/3) — Sentimiento y datos en vivo
+
+━━━ /dominancia ━━━
+Fear & Greed Index de BTC con histórico desde 2018, zonas de compra/venta.
+
+━━━ /suelo ━━━
+El más completo: VIX + AAII (retail) + COT (institucional real, CFTC) + Fear & Greed, combinados en un medidor 0-100. Mide el ánimo del MERCADO EN GENERAL, no una acción concreta.
+
+━━━ /ballenas TICKER ━━━
+Muros de compra/venta grandes en el order book (solo cripto).
+
+━━━ /cartera NOMBRE ━━━
+Cartera trimestral (13F) de grandes inversores — Buffett, Ackman, Burry y 15 más. Datos oficiales SEC.
+
+━━━ /insiders TICKER ━━━
+Compras/ventas de directivos en mercado abierto (SEC Form 4). Avisa si hay compra agrupada (3+ insiders a la vez).
+
+━━━ /macro ━━━
+Tipos Fed, inflación, paro, bonos (FRED) + derivados cripto (Binance).
+
+━━━ /curva ━━━
+Curva de tipos EEUU (10 años vs 2 años) — indicador de recesión más vigilado históricamente.
+
+━━━ /correlacion ━━━
+Correlación BTC vs Nasdaq — mide si cripto se mueve pegado a las tech (risk-on/risk-off).""",
+
+"""📖 GUÍA DE COMANDOS (3/3) — Noticias y automatizaciones
+
+━━━ /noticias ━━━
+Titulares de bolsa/economía/cripto de varias fuentes, con análisis de IA basado solo en los titulares reales.
+
+━━━ /ticker ━━━
+Resumen visual al momento de ~30 activos (cripto, acciones, ETFs, índices, oro).
+
+━━━ Automatizaciones (sin comando) ━━━
+• Cada 2h (9-21h): mismo resumen visual de /ticker, automático
+• Cada mañana 8h: resumen diario (BTC, Fear&Greed, titulares)
+• Alertas de noticias muy relevantes, cuando la IA las detecta
+
+━━━ Suscripción ━━━
+/trial — 7 días gratis
+/premium — 5€/mes
+/verificar HASH — confirmar pago manual
+/mistatus — ver tu suscripción
+
+━━━ Importante ━━━
+Usa /dyor para leer el aviso legal antes de tomar decisiones con lo que veas aquí."""
+]
+
+@bot.message_handler(commands=["guia"])
+def cmd_guia(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
         return
-    m = bot.send_message(msg.chat.id, "Consultando ratio Put/Call de la CBOE... (10-15s)")
-    res = fetch_putcall_cboe()
-    if not res:
-        safe_send(msg.chat.id,
-            "No he podido obtener el ratio Put/Call ahora mismo — es el indicador más frágil del "
-            "bot (depende de una página en vivo de la CBOE, no de una API estable). Reintenta en "
-            "un momento.", message_id=m.message_id)
-        return
+    for parte in GUIA_PARTES:
+        safe_send(msg.chat.id, parte)
+        time.sleep(0.3)
 
-    if res["ratio"] >= 1.0:
-        lectura = "MIEDO — más puts que calls, señal contraria alcista históricamente"
-    elif res["ratio"] >= 0.7:
-        lectura = "NEUTRAL / ALGO DE CAUTELA"
-    else:
-        lectura = "COMPLACENCIA — más calls que puts, señal contraria de cautela"
 
-    safe_send(msg.chat.id,
-        f"📖 RATIO PUT/CALL — CBOE (opciones sobre acciones, {res['hora']})\n\n"
-        f"Ratio: {res['ratio']:.2f}\n"
-        f"Puts: {res['puts']:,} | Calls: {res['calls']:,}\n\n"
-        f"Lectura: {lectura}\n\n"
-        "Escala orientativa: >1.0 = más protección/apuesta bajista que alcista (miedo); "
-        "~0.6-0.7 = zona típica/neutral; <0.5 = mucha euforia compradora (calls). "
-        "Es un indicador CONTRARIO: un ratio muy alto (mucho miedo) suele preceder rebotes, "
-        "y uno muy bajo (mucha complacencia) suele preceder correcciones — aunque, como todo "
-        "en este bot, no es una certeza, es una pieza más del puzle.",
-        message_id=m.message_id)
+# ═══ /DYOR — Aviso legal / descargo de responsabilidad ══════════
+TEXTO_DYOR = """⚠️ AVISO IMPORTANTE — LÉEME
 
-    prompt = (f"Ratio Put/Call del CBOE (opciones sobre acciones) ahora mismo: {res['ratio']:.2f} "
-              f"({res['puts']:,} puts vs {res['calls']:,} calls, {res['hora']}).\n\n"
-              "1. ¿Qué implica este nivel concreto del ratio?\n"
-              "2. ¿Cómo se compara normalmente esta métrica según esté cerca de máximos o de mínimos "
-              "del mercado?\n"
-              "3. Limitaciones de usar el ratio put/call como señal aislada")
-    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+Este bot es una herramienta de ANÁLISIS INFORMATIVO, no un servicio de asesoramiento financiero. Antes de usarlo, ten esto claro:
+
+📊 No es una recomendación de inversión. Ningún comando (/valor, /suelo, /ciclo, análisis de IA...) te dice qué comprar, vender, o cuándo. Son indicadores y datos para que TÚ decidas con tu propio criterio.
+
+🤖 La IA puede equivocarse. Los análisis generados son orientativos, no verdad absoluta.
+
+📡 Los datos pueden fallar o tener errores. Este bot depende de fuentes gratuitas de terceros (Binance, Stooq, SEC, CFTC, FRED, AAII...). A veces fallan, se retrasan, o cambian sin avisar. Verifica cifras importantes antes de actuar.
+
+💸 Invertir conlleva riesgo real de pérdida. Rendimientos pasados no garantizan resultados futuros. Nunca inviertas dinero que no puedas permitirte perder.
+
+🧑‍💼 No somos asesores financieros regulados. Para decisiones importantes, consulta con un profesional cualificado.
+
+En resumen: DYOR — Do Your Own Research. Usa este bot como una herramienta más en tu proceso de análisis, nunca como la única fuente de tu decisión."""
+
+@bot.message_handler(commands=["dyor"])
+def cmd_dyor(msg):
+    safe_send(msg.chat.id, TEXTO_DYOR)
 
 
 if __name__ == "__main__":
@@ -3614,3 +3616,4 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
