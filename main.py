@@ -3044,9 +3044,14 @@ def fetch_fred_series_range(series_id, limit=500):
     if not FRED_API_KEY:
         return None
     try:
+        # FIX: pedíamos sort_order="asc" con un límite — eso trae los N
+        # datos MÁS ANTIGUOS de la serie (que arranca en los años 60-70),
+        # no los más recientes. Con "desc" sí traemos los últimos N datos
+        # (el orden dentro del diccionario no importa, solo qué fechas
+        # capturamos).
         r = requests.get("https://api.stlouisfed.org/fred/series/observations",
                         params={"series_id": series_id, "api_key": FRED_API_KEY,
-                                "file_type": "json", "sort_order": "asc", "limit": limit},
+                                "file_type": "json", "sort_order": "desc", "limit": limit},
                         timeout=15)
         if r.status_code != 200:
             log.warning(f"fetch_fred_series_range {series_id}: HTTP {r.status_code}")
