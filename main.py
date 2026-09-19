@@ -1165,6 +1165,7 @@ def cmd_halvingbtc(msg):
     except Exception as e:
         log.error(f"halvingbtc: {e}")
         safe_send(msg.chat.id,f"Error: {e}",message_id=m.message_id)
+
 @bot.message_handler(commands=["start","ayuda"])
 def cmd_start(msg):
     chat_id = msg.from_user.id
@@ -3350,13 +3351,17 @@ def cmd_insiders(msg):
 def fetch_precio_fechas_stooq(ticker, dias=220):
     """Versión de fetch_stooq que conserva las fechas (fetch_stooq normal
     solo devuelve la serie de precios, sin fechas accesibles) — necesario
-    aquí para poder cruzar por fecha real con el histórico de BTC."""
+    aquí para poder cruzar por fecha real con el histórico de BTC.
+    FIX: la primera versión solo tenía Stooq, sin ningún respaldo si
+    fallaba — a diferencia del resto del bot, que siempre encadena
+    Stooq -> Twelve Data -> yfinance. Le añadimos el mismo respaldo con
+    Twelve Data (que también trae fecha por cada dato)."""
     import datetime as dt
     st = STOOQ_MAP.get(ticker, f"{ticker.lower()}.us")
     ck = f"stooq_fechas:{ticker}"
     cached = cache_get(ck)
     if cached is not None: return cached
-    def _do():
+    def _do_stooq():
         d1 = (dt.date.today()-dt.timedelta(days=dias+30)).strftime("%Y%m%d")
         d2 = dt.date.today().strftime("%Y%m%d")
         url = f"https://stooq.com/q/d/l/?s={st}&d1={d1}&d2={d2}&i=d"
@@ -3366,10 +3371,26 @@ def fetch_precio_fechas_stooq(ticker, dias=220):
         from io import StringIO
         df = pd.read_csv(StringIO(r.text))
         if df.empty or len(df) < 10:
-            raise RuntimeError("pocos datos")
+            raise RuntimeError("Stooq: pocos datos")
         df = df.sort_values("Date")
         return {"fechas": list(df["Date"]), "closes": df["Close"].astype(float).tolist()}
-    res = with_retry(_do, tries=2, base_delay=2, what=f"fetch_precio_fechas_stooq {ticker}")
+    res = with_retry(_do_stooq, tries=2, base_delay=2, what=f"fetch_precio_fechas_stooq {ticker}")
+    if res is None and TWELVEDATA_API_KEY:
+        def _do_td():
+            sym = TWELVEDATA_SYMBOL_MAP.get(ticker, ticker)
+            _throttle_twelvedata()
+            r = requests.get("https://api.twelvedata.com/time_series",
+                            params={"symbol": sym, "interval": "1day", "outputsize": dias,
+                                    "apikey": TWELVEDATA_API_KEY}, timeout=10)
+            j = r.json()
+            if j.get("status") == "error" or "values" not in j:
+                raise RuntimeError(f"Twelve Data: {j.get('message', 'sin datos')}")
+            vals = list(reversed(j["values"]))
+            if len(vals) < 10:
+                raise RuntimeError("Twelve Data: pocos datos")
+            return {"fechas": [v["datetime"] for v in vals],
+                    "closes": [float(v["close"]) for v in vals]}
+        res = with_retry(_do_td, tries=2, base_delay=2, what=f"fetch_precio_fechas_stooq(TD) {ticker}")
     if res: cache_set(ck, res)
     return res
 
@@ -3616,4 +3637,3 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
