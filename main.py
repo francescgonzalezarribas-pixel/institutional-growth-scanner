@@ -2780,7 +2780,15 @@ def calcular_suelo_mercado():
                                                               "valor": f"{fg['valor']}/100 ({fg['texto']})"}
 
     n_extremos = sum(1 for c in componentes.values() if c["score"] >= 7)
-    if n_extremos == len(componentes) and len(componentes) == 3:
+    faltantes = []
+    if vix is None: faltantes.append("VIX")
+    if aaii is None: faltantes.append("AAII")
+    if fg is None: faltantes.append("Fear & Greed")
+
+    if faltantes:
+        veredicto = (f"INCOMPLETO — falta {', '.join(faltantes)} esta vez (fallo puntual de la fuente); "
+                     f"veredicto calculado solo con {len(componentes)}/3 indicadores")
+    elif n_extremos == 3:
         veredicto = "ALINEACIÓN COMPLETA — triple suelo de sentimiento"
     elif n_extremos >= 2:
         veredicto = "ALINEACIÓN PARCIAL — algunos indicadores en pánico, no todos"
@@ -2788,7 +2796,7 @@ def calcular_suelo_mercado():
         veredicto = "SIN ALINEACIÓN — no hay pánico generalizado ahora mismo"
 
     return {"componentes": componentes, "veredicto": veredicto, "n_extremos": n_extremos,
-            "aaii_fecha": aaii["fecha"] if aaii else None}
+            "faltantes": faltantes, "aaii_fecha": aaii["fecha"] if aaii else None}
 
 def chart_suelo_mercado(res):
     comp = res["componentes"]; n = len(comp)
@@ -2810,7 +2818,10 @@ def chart_suelo_mercado(res):
     ax.axis('off')
     fig.text(0.5, 0.96, "TRIPLE SUELO DE SENTIMIENTO", ha='center', color='white',
              fontsize=15, fontweight='bold')
-    vc = '#00CC44' if res["n_extremos"] < 2 else '#FFCC00' if res["n_extremos"] < 3 else '#FF3333'
+    if res.get("faltantes"):
+        vc = '#999999'
+    else:
+        vc = '#00CC44' if res["n_extremos"] < 2 else '#FFCC00' if res["n_extremos"] < 3 else '#FF3333'
     fig.text(0.5, 0.04, res["veredicto"], ha='center', color=vc, fontsize=11, fontweight='bold')
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
@@ -2841,6 +2852,11 @@ def cmd_suelo(msg):
     # Explicación en texto plano de qué mide cada cosa y qué implica el
     # veredicto — las barras solas no dejan claro el "por qué".
     explicacion = ["📖 QUÉ SIGNIFICA CADA INDICADOR\n"]
+    if res.get("faltantes"):
+        explicacion.append(
+            f"⚠️ Esta vez ha fallado la consulta de: {', '.join(res['faltantes'])} — el veredicto de "
+            f"abajo se ha calculado solo con {len(res['componentes'])} de los 3 indicadores. "
+            "Prueba /suelo de nuevo en un momento para tener la lectura completa.\n")
     explicacion.append(
         "• VIX: mide el miedo a través de la compra de opciones de protección. "
         "Por encima de 30 suele coincidir con ventas de pánico.")
