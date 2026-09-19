@@ -2759,6 +2759,55 @@ def fetch_aaii_sentiment():
     if res: cache_set(ck, res)
     return res
 
+def fetch_cot_sp500(semanas=156):
+    """Commitment of Traders (CFTC), API pública Socrata, sin key, sin
+    registro — dato oficial del gobierno de EEUU. Mide el posicionamiento
+    neto de los grandes especuladores (non-commercial) en futuros del
+    E-mini S&P 500, como proxy institucional real (mejor que Fear & Greed,
+    que solo mide sentimiento agregado del mercado, no posicionamiento)."""
+    ck = f"cot_sp500:{semanas}"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
+        r = requests.get("https://publicreporting.cftc.gov/resource/jun7-fc8e.json",
+                        params={
+                            "$where": "market_and_exchange_names like '%E-MINI S%26P 500%'",
+                            "$order": "report_date_as_yyyy_mm_dd DESC",
+                            "$limit": str(semanas),
+                        }, timeout=15)
+        if r.status_code != 200:
+            raise RuntimeError(f"CFTC COT: HTTP {r.status_code}")
+        data = r.json()
+        if not data:
+            raise RuntimeError("CFTC COT: sin datos para E-mini S&P 500")
+        filas = []
+        for d in data:
+            try:
+                largo = float(d["noncomm_positions_long_all"])
+                corto = float(d["noncomm_positions_short_all"])
+                filas.append({"fecha": d["report_date_as_yyyy_mm_dd"][:10], "net": largo - corto})
+            except (KeyError, ValueError):
+                continue
+        if not filas:
+            raise RuntimeError(f"CFTC COT: no se pudo parsear ninguna fila de {len(data)} recibidas")
+        return filas
+    res = with_retry(_do, tries=2, base_delay=2, what="fetch_cot_sp500")
+    if res: cache_set(ck, res)
+    return res
+
+def calcular_cot_score():
+    filas = fetch_cot_sp500()
+    if not filas:
+        return None
+    actual = filas[0]
+    valores = [f["net"] for f in filas]
+    percentil = sum(1 for v in valores if v <= actual["net"]) / len(valores) * 100
+    # Cuanto más bajo el percentil (posicionamiento neto más bajista de lo
+    # habitual en los últimos ~3 años), más "pánico institucional real".
+    score = max(0.0, min(10.0, (30 - percentil) / 30 * 10))
+    return {"fecha": actual["fecha"], "net": actual["net"], "percentil": round(percentil, 1),
+            "score": round(score, 1), "n_semanas": len(filas)}
+
 def calcular_suelo_mercado():
     vix = None
     vix_d = get_quote("^VIX")
@@ -2773,7 +2822,8 @@ def calcular_suelo_mercado():
                 vix = round(float(rets.tail(window).std() * (252**0.5) * 100), 1)
     aaii = fetch_aaii_sentiment()
     fg = get_fear_greed()
-    if vix is None and aaii is None and fg is None:
+    cot = calcular_cot_score()
+    if vix is None and aaii is None and fg is None and cot is None:
         return None
 
     componentes = {}
@@ -2785,22 +2835,28 @@ def calcular_suelo_mercado():
         score = max(0, min(10, spread / 50 * 10))
         componentes["AAII (retail)"] = {"score": round(score, 1),
                                         "valor": f"Bull {aaii['bullish']:.1f}% / Bear {aaii['bearish']:.1f}%"}
+    if cot is not None:
+        componentes["COT (posicionamiento institucional)"] = {
+            "score": cot["score"],
+            "valor": f"Percentil {cot['percentil']}% ({cot['n_semanas']} sem., {cot['fecha']})"}
     if fg is not None:
         score = max(0, min(10, (50 - fg["valor"]) / 50 * 10))
-        componentes["Fear & Greed (proxy institucional)"] = {"score": round(score, 1),
+        componentes["Fear & Greed (sentimiento general)"] = {"score": round(score, 1),
                                                               "valor": f"{fg['valor']}/100 ({fg['texto']})"}
 
+    TOTAL_INDICADORES = 4
     n_extremos = sum(1 for c in componentes.values() if c["score"] >= 7)
     faltantes = []
     if vix is None: faltantes.append("VIX")
     if aaii is None: faltantes.append("AAII")
+    if cot is None: faltantes.append("COT")
     if fg is None: faltantes.append("Fear & Greed")
 
     if faltantes:
         veredicto = (f"INCOMPLETO — falta {', '.join(faltantes)} esta vez (fallo puntual de la fuente); "
-                     f"veredicto calculado solo con {len(componentes)}/3 indicadores")
-    elif n_extremos == 3:
-        veredicto = "ALINEACIÓN COMPLETA — triple suelo de sentimiento"
+                     f"veredicto calculado solo con {len(componentes)}/{TOTAL_INDICADORES} indicadores")
+    elif n_extremos == TOTAL_INDICADORES:
+        veredicto = "ALINEACIÓN COMPLETA — suelo de sentimiento en los 4 indicadores"
     elif n_extremos >= 2:
         veredicto = "ALINEACIÓN PARCIAL — algunos indicadores en pánico, no todos"
     else:
@@ -2820,7 +2876,7 @@ def chart_suelo_mercado(res):
         y = idx; score = datos["score"]
         ax.barh(y, 10, height=0.5, color='#1a1a2e', zorder=1)
         c = '#00CC44' if score < 4 else '#FFCC00' if score < 7 else '#FF3333'
-        ax.barh(y, score, height=0.5, color=c, zorder=2)
+        ax.barh(y, max(score, 0.25), height=0.5, color=c, zorder=2)  # mínimo visible, aunque el score real sea 0
         ax.text(-0.3, y, nombre, va='center', ha='right', color='white',
                 fontsize=11, fontweight='bold', transform=ax.transData)
         ax.text(10.3, y, f"{score}/10", va='center', ha='left', color=c,
@@ -2845,10 +2901,10 @@ def cmd_suelo(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
         return
-    m = bot.send_message(msg.chat.id, "Consultando VIX, AAII y Fear & Greed... (10-15s)")
+    m = bot.send_message(msg.chat.id, "Consultando VIX, AAII, COT y Fear & Greed... (10-15s)")
     res = calcular_suelo_mercado()
     if not res:
-        safe_send(msg.chat.id, "No he podido obtener ninguno de los tres indicadores ahora mismo.",
+        safe_send(msg.chat.id, "No he podido obtener ninguno de los cuatro indicadores ahora mismo.",
                   message_id=m.message_id)
         return
     try:
@@ -2866,7 +2922,7 @@ def cmd_suelo(msg):
     if res.get("faltantes"):
         explicacion.append(
             f"⚠️ Esta vez ha fallado la consulta de: {', '.join(res['faltantes'])} — el veredicto de "
-            f"abajo se ha calculado solo con {len(res['componentes'])} de los 3 indicadores. "
+            f"abajo se ha calculado solo con {len(res['componentes'])} de los 4 indicadores. "
             "Prueba /suelo de nuevo en un momento para tener la lectura completa.\n")
     explicacion.append(
         "• VIX: mide el miedo a través de la compra de opciones de protección. "
@@ -2876,13 +2932,17 @@ def cmd_suelo(msg):
         "bajistas superan el 50% y los alcistas caen por debajo del 20%, es señal "
         "clásica de pánico minorista (indicador contrario: suele ser tardío en la caída).")
     explicacion.append(
-        "• Fear & Greed: sustituye al NAAIM (exposición real de gestores activos, "
-        "ahora de pago) — mide sentimiento agregado del mercado, no es exactamente "
-        "lo mismo pero apunta en la misma dirección.")
+        "• COT: informe semanal oficial de la CFTC (gobierno de EEUU). Mide el "
+        "posicionamiento neto real de los grandes especuladores en futuros del S&P 500 "
+        "— el ángulo institucional de verdad (el NAAIM hacía algo parecido, pero pasó "
+        "a ser de pago desde agosto de 2026).")
+    explicacion.append(
+        "• Fear & Greed: sentimiento agregado del mercado en general, como complemento "
+        "a los otros tres.")
     explicacion.append(f"\n{res['veredicto']}")
     if res["n_extremos"] >= 2:
         explicacion.append(
-            "\nCuando al menos 2 de los 3 indicadores llegan a extremos a la vez, "
+            "\nCuando varios de estos indicadores llegan a extremos a la vez, "
             "históricamente es la zona donde suelen formarse suelos de mercado — "
             "no es una garantía, pero sí una señal a vigilar de cerca.")
     else:
@@ -2894,10 +2954,10 @@ def cmd_suelo(msg):
     comp_txt = "\n".join(f"{k}: {v['score']}/10 — {v['valor']}" for k, v in res["componentes"].items())
     prompt = (f"Indicadores de pánico de mercado ahora mismo:\n{comp_txt}\n\n"
               f"Veredicto del modelo: {res['veredicto']}\n\n"
-              "Nota: el NAAIM (exposición de gestores activos) no está incluido por ser de pago "
-              "desde agosto 2026 — se sustituye por Fear & Greed como proxy institucional, que no "
-              "es exactamente lo mismo.\n\n"
-              "1. ¿Qué tan fiable es esta lectura sin el NAAIM real?\n"
+              "Nota: el COT es el informe oficial de la CFTC (gobierno de EEUU) sobre posicionamiento "
+              "real de grandes especuladores en futuros del S&P 500 — el ángulo institucional real "
+              "(sustituye al NAAIM, que pasó a ser de pago desde agosto 2026).\n\n"
+              "1. ¿Qué tan fiable es esta combinación de 4 indicadores para detectar un suelo real?\n"
               "2. Si hay alineación parcial o completa, ¿qué habría que vigilar para confirmarlo?\n"
               "3. Riesgo de actuar solo con esta señal")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
