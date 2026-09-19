@@ -2722,28 +2722,39 @@ from bs4 import BeautifulSoup
 
 def fetch_aaii_sentiment():
     """Página pública de verdad, sin login — confirmado a mano. Tabla con
-    Bullish/Neutral/Bearish semanales, la fila más reciente primero."""
+    Bullish/Neutral/Bearish semanales, la fila más reciente primero.
+    FIX: antes solo miraba la PRIMERA tabla de la página (soup.find), que
+    puede no ser la de datos si hay otras tablas antes en el HTML (menús,
+    layout...) — ahora recorre todas las tablas hasta encontrar filas con
+    el formato esperado. También manda cabeceras más completas de
+    navegador, por si la web sirve algo distinto a peticiones muy básicas."""
     ck = "aaii_sentiment"
     cached = cache_get(ck)
     if cached is not None: return cached
     def _do():
         r = requests.get("https://www.aaii.com/sentimentsurvey/sent_results",
-                        headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "Accept-Language": "en-US,en;q=0.9",
+                        }, timeout=15)
+        if r.status_code != 200:
+            raise RuntimeError(f"AAII: HTTP {r.status_code}")
         soup = BeautifulSoup(r.text, "html.parser")
-        table = soup.find("table")
-        if not table:
-            raise RuntimeError("AAII: no se encontró la tabla de resultados")
-        for fila in table.find_all("tr"):
-            celdas = [td.get_text(strip=True) for td in fila.find_all("td")]
-            if len(celdas) == 4:
-                try:
-                    return {"fecha": celdas[0],
-                            "bullish": float(celdas[1].replace("%", "")),
-                            "neutral": float(celdas[2].replace("%", "")),
-                            "bearish": float(celdas[3].replace("%", ""))}
-                except ValueError:
-                    continue
-        raise RuntimeError("AAII: no se pudo parsear ninguna fila de datos")
+        tablas = soup.find_all("table")
+        for table in tablas:
+            for fila in table.find_all("tr"):
+                celdas = [td.get_text(strip=True) for td in fila.find_all("td")]
+                if len(celdas) == 4:
+                    try:
+                        return {"fecha": celdas[0],
+                                "bullish": float(celdas[1].replace("%", "")),
+                                "neutral": float(celdas[2].replace("%", "")),
+                                "bearish": float(celdas[3].replace("%", ""))}
+                    except ValueError:
+                        continue
+        raise RuntimeError(f"AAII: sin fila válida en {len(tablas)} tablas ({len(r.text)} bytes de HTML)")
     res = with_retry(_do, tries=2, base_delay=2, what="fetch_aaii_sentiment")
     if res: cache_set(ck, res)
     return res
