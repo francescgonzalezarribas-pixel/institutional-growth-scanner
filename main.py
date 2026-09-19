@@ -1165,7 +1165,6 @@ def cmd_halvingbtc(msg):
     except Exception as e:
         log.error(f"halvingbtc: {e}")
         safe_send(msg.chat.id,f"Error: {e}",message_id=m.message_id)
-
 @bot.message_handler(commands=["start","ayuda"])
 def cmd_start(msg):
     chat_id = msg.from_user.id
@@ -1185,7 +1184,11 @@ def cmd_start(msg):
             "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n"
             "/ticker — Resumen de mercados al momento (bajo demanda)\n"
             "/ciclo — Fase actual de BTC en el ciclo de mercado\n"
-            "/suelo — Triple Suelo de Sentimiento (VIX + AAII + Fear&Greed)\n\n"
+            "/suelo — Triple Suelo de Sentimiento (VIX + AAII + Fear&Greed)\n"
+            "/curva — Curva de tipos EEUU (10 años vs 2 años)\n"
+            "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
+            "/correlacion — Correlación BTC vs Nasdaq (risk-on/risk-off)\n"
+            "/putcall — Ratio Put/Call del CBOE (miedo/complacencia en opciones)\n\n"
             "Además, cada 2h (9-21h) recibes un resumen automático de mercados, "
             "y cada mañana a las 8h un resumen diario con Fear & Greed y noticias destacadas.\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
@@ -2384,7 +2387,6 @@ def revisar_noticias_relevantes():
     if not respuesta or "NINGUNA" in respuesta.upper()[:30]:
         return None
     return respuesta
-
 @bot.message_handler(commands=["ticker"])
 def cmd_ticker(msg):
     """Versión bajo demanda del resumen automático — para probarlo cuando
@@ -3028,6 +3030,559 @@ def cmd_suelo(msg):
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
+# ═══ /CURVA — Curva de tipos EEUU (10 años vs 2 años) ═══════════
+# El indicador de recesión más vigilado históricamente: cuando el bono a
+# 2 años paga más que el de 10, el mercado espera que la Fed tenga que
+# bajar tipos por debilidad económica futura — la curva se "invierte".
+# Reutiliza FRED (ya en /macro), pidiendo la serie completa en vez de solo
+# el último dato, para poder marcar desde cuándo está invertida (o no).
+
+def fetch_fred_series_range(series_id, limit=500):
+    if not FRED_API_KEY:
+        return None
+    try:
+        r = requests.get("https://api.stlouisfed.org/fred/series/observations",
+                        params={"series_id": series_id, "api_key": FRED_API_KEY,
+                                "file_type": "json", "sort_order": "asc", "limit": limit},
+                        timeout=15)
+        if r.status_code != 200:
+            log.warning(f"fetch_fred_series_range {series_id}: HTTP {r.status_code}")
+            return None
+        obs = [o for o in r.json().get("observations", []) if o.get("value") not in (".", None, "")]
+        return {o["date"]: float(o["value"]) for o in obs}
+    except Exception as e:
+        log.warning(f"fetch_fred_series_range {series_id}: {e}")
+        return None
+
+def calcular_curva_tipos():
+    dgs10 = fetch_fred_series_range("DGS10", limit=500)
+    dgs2 = fetch_fred_series_range("DGS2", limit=500)
+    if not dgs10 or not dgs2:
+        return None
+    fechas_comunes = sorted(set(dgs10.keys()) & set(dgs2.keys()))
+    if not fechas_comunes:
+        return None
+    spread = [{"fecha": f, "valor": round(dgs10[f] - dgs2[f], 3)} for f in fechas_comunes]
+
+    actual = spread[-1]
+    invertida_ahora = actual["valor"] < 0
+
+    # Buscar desde cuándo lleva en el estado actual (invertida o no)
+    desde = actual["fecha"]
+    for punto in reversed(spread):
+        if (punto["valor"] < 0) != invertida_ahora:
+            break
+        desde = punto["fecha"]
+    import datetime as dt
+    dias_en_estado = (dt.date.fromisoformat(actual["fecha"]) - dt.date.fromisoformat(desde)).days
+
+    return {"spread": spread, "actual": actual["valor"], "fecha": actual["fecha"],
+            "invertida": invertida_ahora, "desde": desde, "dias_en_estado": dias_en_estado}
+
+def chart_curva_tipos(res):
+    puntos = res["spread"][-260:]  # ~1 año de sesiones
+    fechas = [datetime.strptime(p["fecha"], "%Y-%m-%d") for p in puntos]
+    valores = [p["valor"] for p in puntos]
+
+    fig, ax = plt.subplots(figsize=(12, 6.5))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    ax.axhline(0, color='#666666', linewidth=1, zorder=2)
+    ax.fill_between(fechas, valores, 0, where=[v < 0 for v in valores],
+                    color='#FF3333', alpha=0.35, zorder=1, interpolate=True)
+    ax.fill_between(fechas, valores, 0, where=[v >= 0 for v in valores],
+                    color='#00CC44', alpha=0.25, zorder=1, interpolate=True)
+    ax.plot(fechas, valores, color='white', linewidth=1.6, zorder=3)
+
+    ultimo_color = '#FF3333' if res["invertida"] else '#00CC44'
+    ax.plot(fechas[-1], valores[-1], 'o', color=ultimo_color, markersize=12, zorder=5,
+           markeredgecolor='white', markeredgewidth=2)
+    ax.annotate(f"{res['actual']:+.2f} pp", xy=(fechas[-1], valores[-1]),
+               xytext=(fechas[-1], valores[-1] + (0.15 if valores[-1] >= 0 else -0.15)),
+               fontsize=12, color=ultimo_color, fontweight='bold', ha='right',
+               bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117', edgecolor=ultimo_color, alpha=0.95))
+
+    ax.set_title('CURVA DE TIPOS EEUU — Bono 10 años menos Bono 2 años', color='white',
+                fontsize=14, fontweight='bold', loc='left', pad=12)
+    ax.set_ylabel('Diferencia (puntos porcentuales)', color='#AAAAAA')
+    ax.tick_params(colors='#AAAAAA')
+    for spine in ax.spines.values(): spine.set_color('#333333')
+    ax.grid(color='#222222', linestyle='--', alpha=0.3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+    fig.autofmt_xdate()
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+@bot.message_handler(commands=["curva"])
+def cmd_curva(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    if not FRED_API_KEY:
+        safe_send(msg.chat.id,
+            "Falta configurar FRED_API_KEY en el servidor.\n\n"
+            "Clave gratis en: https://fred.stlouisfed.org/docs/api/api_key.html")
+        return
+    m = bot.send_message(msg.chat.id, "Consultando curva de tipos (FRED)... (10-15s)")
+    res = calcular_curva_tipos()
+    if not res:
+        safe_send(msg.chat.id, "No he podido obtener la curva de tipos ahora mismo.",
+                  message_id=m.message_id)
+        return
+    try:
+        chart = chart_curva_tipos(res)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, chart)
+    except Exception as e:
+        log.warning(f"chart_curva_tipos: {e}")
+        safe_send(msg.chat.id, f"Spread 10a-2a: {res['actual']:+.2f} pp ({res['fecha']})",
+                  message_id=m.message_id)
+
+    estado_txt = "INVERTIDA" if res["invertida"] else "NORMAL (no invertida)"
+    safe_send(msg.chat.id,
+        f"📖 CURVA DE TIPOS — {estado_txt}\n\n"
+        f"Bono 10 años menos bono 2 años: {res['actual']:+.2f} puntos porcentuales ({res['fecha']})\n"
+        f"En este estado desde: {res['desde']} ({res['dias_en_estado']} días)\n\n"
+        "Cuando el bono a 2 años paga MÁS que el de 10 (spread negativo = invertida), "
+        "el mercado espera que la Fed tenga que bajar tipos por debilidad económica futura. "
+        "Es el indicador de recesión más vigilado de la historia — ha precedido a todas las "
+        "recesiones de EEUU desde los años 50, aunque con un desfase que puede ir de meses "
+        "a más de un año, y no siempre acierta (algún falso positivo).")
+
+    prompt = (f"La curva de tipos EEUU (10 años menos 2 años) está en {res['actual']:+.2f} puntos "
+              f"porcentuales a fecha {res['fecha']}, {'invertida' if res['invertida'] else 'no invertida'} "
+              f"desde hace {res['dias_en_estado']} días.\n\n"
+              "1. ¿Qué implica este estado concreto de la curva ahora mismo?\n"
+              "2. Contexto histórico: ¿cuánto suele tardar en materializarse una recesión tras "
+              "una inversión de este tipo?\n"
+              "3. Qué otras señales conviene vigilar junto a esta")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+
+# ═══ /INSIDERS TICKER — Compras de directivos (SEC Form 4) ══════
+# Cuando varios directivos/consejeros compran acciones de su propia
+# empresa (no venden, compran) a la vez, suele ser señal alcista fuerte —
+# tienen información que el mercado no tiene. Datos oficiales de la SEC,
+# misma infraestructura que ya usamos para /cartera (13F).
+
+TICKER_CIK_MAP_FILE = os.environ.get("TICKER_CIK_MAP_FILE", "ticker_cik_map.json")
+_TICKER_CIK_MAP = None
+
+def _cargar_ticker_cik_map():
+    """Mapeo oficial ticker->CIK que publica la propia SEC (un solo fichero
+    para las ~10.000 empresas cotizadas), cacheado en disco para no volver
+    a descargarlo en cada consulta."""
+    global _TICKER_CIK_MAP
+    if _TICKER_CIK_MAP is not None:
+        return _TICKER_CIK_MAP
+    try:
+        with open(TICKER_CIK_MAP_FILE, "r") as f:
+            _TICKER_CIK_MAP = json.load(f)
+            return _TICKER_CIK_MAP
+    except Exception:
+        pass
+    try:
+        r = requests.get("https://www.sec.gov/files/company_tickers.json",
+                        headers=SEC_HEADERS, timeout=15)
+        data = r.json()
+        mapa = {v["ticker"].upper(): str(v["cik_str"]).zfill(10) for v in data.values()}
+        _TICKER_CIK_MAP = mapa
+        try:
+            with open(TICKER_CIK_MAP_FILE, "w") as f:
+                json.dump(mapa, f)
+        except Exception as e:
+            log.warning(f"_cargar_ticker_cik_map: no se pudo guardar en disco: {e}")
+        return mapa
+    except Exception as e:
+        log.warning(f"_cargar_ticker_cik_map: {e}")
+        return {}
+
+def fetch_form4_recientes(ticker, limite=20):
+    cik = _cargar_ticker_cik_map().get(ticker.upper())
+    if not cik:
+        return None
+    try:
+        r = requests.get("https://www.sec.gov/cgi-bin/browse-edgar",
+                        params={"action": "getcompany", "CIK": cik, "type": "4",
+                                "dateb": "", "owner": "include", "count": str(limite),
+                                "output": "atom"},
+                        headers=SEC_HEADERS, timeout=15)
+        entradas = re.findall(r"<entry>.*?</entry>", r.text, re.DOTALL)
+        filings = []
+        for e in entradas:
+            m_acc = re.search(r"accession-number>([\d\-]+)<", e)
+            m_fecha = re.search(r"filing-date>([\d\-]+)<", e)
+            if m_acc and m_fecha:
+                filings.append({"accession": m_acc.group(1), "fecha": m_fecha.group(1)})
+        return {"cik": cik, "filings": filings}
+    except Exception as e:
+        log.warning(f"fetch_form4_recientes {ticker}: {e}")
+        return None
+
+def _parsear_form4_xml(cik, accession):
+    """Cada Form 4 es su propio documento XML con las transacciones. Solo
+    nos interesan P (compra en mercado abierto) y S (venta en mercado
+    abierto) — descartamos A (awards/grants, no son decisión del insider),
+    opciones y ajustes fiscales, que son ruido para esta señal."""
+    accn_nodash = accession.replace("-", "")
+    try:
+        idx = requests.get(
+            f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn_nodash}/index.json",
+            headers=SEC_HEADERS, timeout=10).json()
+        items = idx.get("directory", {}).get("item", [])
+        for it in items:
+            name = it.get("name", "")
+            if not name.lower().endswith(".xml"):
+                continue
+            url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn_nodash}/{name}"
+            xr = requests.get(url, headers=SEC_HEADERS, timeout=10)
+            xml = xr.text
+            if "<rptOwnerName>" not in xml:
+                continue  # no es el documento de propiedad (puede haber otros XML auxiliares)
+            nombre_m = re.search(r"<rptOwnerName>(.*?)</rptOwnerName>", xml)
+            nombre = nombre_m.group(1) if nombre_m else "Desconocido"
+            transacciones = []
+            for bloque in re.findall(r"<nonDerivativeTransaction>.*?</nonDerivativeTransaction>", xml, re.DOTALL):
+                codigo_m = re.search(r"<transactionCode>(.*?)</transactionCode>", bloque)
+                shares_m = re.search(r"<transactionShares>\s*<value>([\d.]+)</value>", bloque)
+                precio_m = re.search(r"<transactionPricePerShare>\s*<value>([\d.]+)</value>", bloque)
+                if codigo_m and codigo_m.group(1) in ("P", "S") and shares_m:
+                    transacciones.append({
+                        "codigo": codigo_m.group(1),
+                        "shares": float(shares_m.group(1)),
+                        "precio": float(precio_m.group(1)) if precio_m else 0,
+                    })
+            if transacciones:
+                return {"nombre": nombre, "transacciones": transacciones}
+    except Exception as e:
+        log.warning(f"_parsear_form4_xml {cik}/{accession}: {e}")
+    return None
+
+def calcular_insiders(ticker):
+    base = fetch_form4_recientes(ticker, limite=20)
+    if not base or not base["filings"]:
+        return None
+    resultados = []
+    for f in base["filings"][:15]:  # limitamos para no encadenar demasiadas peticiones
+        parsed = _parsear_form4_xml(base["cik"], f["accession"])
+        if parsed:
+            for t in parsed["transacciones"]:
+                resultados.append({"insider": parsed["nombre"], "fecha": f["fecha"],
+                                    "codigo": t["codigo"], "shares": t["shares"], "precio": t["precio"]})
+        time.sleep(0.2)
+    if not resultados:
+        return {"ticker": ticker.upper(), "compras": [], "ventas": [], "insiders_compradores": 0}
+    compras = [r for r in resultados if r["codigo"] == "P"]
+    ventas = [r for r in resultados if r["codigo"] == "S"]
+    insiders_compradores = len(set(r["insider"] for r in compras))
+    return {"ticker": ticker.upper(), "compras": compras, "ventas": ventas,
+            "insiders_compradores": insiders_compradores}
+
+@bot.message_handler(commands=["insiders"])
+def cmd_insiders(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    parts = msg.text.split()
+    if len(parts) < 2:
+        safe_send(msg.chat.id, "Uso: /insiders TICKER\n\nEjemplo: /insiders AAPL\n\n"
+                                "Solo funciona con tickers de EEUU (los que reportan a la SEC).")
+        return
+    ticker = parts[1].upper()
+    m = bot.send_message(msg.chat.id, f"Consultando Form 4 de {ticker} en la SEC... (15-25s)")
+    res = calcular_insiders(ticker)
+    if res is None:
+        safe_send(msg.chat.id, f"No he encontrado \"{ticker}\" en el registro de la SEC. "
+                                "Comprueba que sea un ticker de EEUU.", message_id=m.message_id)
+        return
+
+    lines = [f"👔 INSIDERS — {res['ticker']}",
+             f"Últimas transacciones en mercado abierto (Form 4, últimas ~15 presentaciones)\n"]
+    if res["compras"]:
+        valor_total = sum(c["shares"]*c["precio"] for c in res["compras"])
+        lines.append(f"🟢 COMPRAS: {len(res['compras'])} operaciones, "
+                     f"{res['insiders_compradores']} insiders distintos, ~${valor_total/1e6:.2f}M")
+        for c in res["compras"][:8]:
+            lines.append(f"  • {c['insider']} — {c['shares']:,.0f} acc. a ${c['precio']:.2f} ({c['fecha']})")
+    else:
+        lines.append("🟢 COMPRAS: ninguna en este periodo")
+    if res["ventas"]:
+        valor_total = sum(v["shares"]*v["precio"] for v in res["ventas"])
+        lines.append(f"\n🔴 VENTAS: {len(res['ventas'])} operaciones, ~${valor_total/1e6:.2f}M")
+    else:
+        lines.append("\n🔴 VENTAS: ninguna en este periodo")
+
+    if res["insiders_compradores"] >= 3:
+        lines.append(f"\n⚡ {res['insiders_compradores']} insiders distintos comprando en el mismo "
+                     "periodo — señal de compra agrupada, más fuerte que una compra aislada.")
+    safe_send(msg.chat.id, "\n".join(lines)[:4096], message_id=m.message_id)
+
+    if not res["compras"] and not res["ventas"]:
+        return  # sin transacciones reales que analizar, no llamamos a la IA con nada
+    resumen = (f"{res['ticker']}: {len(res['compras'])} compras ({res['insiders_compradores']} insiders "
+              f"distintos), {len(res['ventas'])} ventas, en las últimas ~15 presentaciones Form 4.")
+    prompt = (f"Actividad de insiders (directivos/consejeros) en {res['ticker']}: {resumen}\n\n"
+              "No inventes nombres ni cifras que no estén aquí.\n\n"
+              "1. ¿Qué interpretación razonable tiene este patrón de compras/ventas?\n"
+              "2. ¿Compra agrupada de varios insiders a la vez es más significativa que una compra "
+              "aislada? ¿Por qué?\n"
+              "3. Limitaciones de usar esto como señal (insiders también venden por motivos ajenos "
+              "a la empresa: impuestos, diversificación, planes 10b5-1 automáticos...)")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+
+# ═══ /CORRELACION — BTC vs Nasdaq (risk-on / risk-off) ══════════
+# Mide si BTC se mueve pegado a las tech (mercado tratando a cripto como
+# "activo de riesgo más") o si se ha desacoplado. FIX de fondo necesario:
+# BTC cotiza 7 días/semana y Nasdaq solo entre semana, así que comparar
+# "los últimos N valores" de cada serie sin más desalinea las fechas — hay
+# que cruzar por fecha real y quedarnos solo con los días que Nasdaq
+# cotizó de verdad.
+
+def fetch_precio_fechas_stooq(ticker, dias=220):
+    """Versión de fetch_stooq que conserva las fechas (fetch_stooq normal
+    solo devuelve la serie de precios, sin fechas accesibles) — necesario
+    aquí para poder cruzar por fecha real con el histórico de BTC."""
+    import datetime as dt
+    st = STOOQ_MAP.get(ticker, f"{ticker.lower()}.us")
+    ck = f"stooq_fechas:{ticker}"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
+        d1 = (dt.date.today()-dt.timedelta(days=dias+30)).strftime("%Y%m%d")
+        d2 = dt.date.today().strftime("%Y%m%d")
+        url = f"https://stooq.com/q/d/l/?s={st}&d1={d1}&d2={d2}&i=d"
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200 or "No data" in r.text or len(r.text) < 50:
+            raise RuntimeError("sin datos en Stooq")
+        from io import StringIO
+        df = pd.read_csv(StringIO(r.text))
+        if df.empty or len(df) < 10:
+            raise RuntimeError("pocos datos")
+        df = df.sort_values("Date")
+        return {"fechas": list(df["Date"]), "closes": df["Close"].astype(float).tolist()}
+    res = with_retry(_do, tries=2, base_delay=2, what=f"fetch_precio_fechas_stooq {ticker}")
+    if res: cache_set(ck, res)
+    return res
+
+def calcular_correlacion_btc_nasdaq(ventana=30):
+    btc_hist = fetch_btc_price_history_long(days=200)
+    nasdaq = fetch_precio_fechas_stooq("^IXIC", dias=200)
+    if not nasdaq:
+        nasdaq = fetch_precio_fechas_stooq("QQQ", dias=200)  # mismo fallback que ya usamos en /ticker
+    if not btc_hist or not nasdaq:
+        return None
+
+    btc_por_fecha = {f.strftime("%Y-%m-%d"): float(c) for f, c in
+                     zip(btc_hist["fechas"], btc_hist["closes"])}
+    nasdaq_por_fecha = dict(zip(nasdaq["fechas"], nasdaq["closes"]))
+
+    # Solo días donde AMBOS cotizaron de verdad — evita el desajuste de
+    # fin de semana que tendría comparar "los últimos N valores" sin más.
+    fechas_comunes = sorted(set(btc_por_fecha) & set(nasdaq_por_fecha))
+    if len(fechas_comunes) < ventana + 5:
+        return None
+
+    btc_serie = pd.Series([btc_por_fecha[f] for f in fechas_comunes])
+    nasdaq_serie = pd.Series([nasdaq_por_fecha[f] for f in fechas_comunes])
+    btc_ret = btc_serie.pct_change().dropna()
+    nasdaq_ret = nasdaq_serie.pct_change().dropna()
+
+    corr_actual = round(float(btc_ret.tail(ventana).corr(nasdaq_ret.tail(ventana))), 2)
+    corr_larga = round(float(btc_ret.tail(90).corr(nasdaq_ret.tail(90))), 2) if len(btc_ret) >= 90 else None
+
+    # Serie de correlación rodante, para el gráfico de tendencia
+    rodante = []
+    for i in range(ventana, len(btc_ret)):
+        c = btc_ret.iloc[i-ventana:i].corr(nasdaq_ret.iloc[i-ventana:i])
+        rodante.append({"fecha": fechas_comunes[i+1], "valor": round(float(c), 3)})
+
+    return {"corr_actual": corr_actual, "corr_larga": corr_larga, "ventana": ventana,
+            "rodante": rodante, "n_dias": len(fechas_comunes)}
+
+def chart_correlacion(res):
+    puntos = res["rodante"][-180:]
+    fechas = [datetime.strptime(p["fecha"], "%Y-%m-%d") for p in puntos]
+    valores = [p["valor"] for p in puntos]
+
+    fig, ax = plt.subplots(figsize=(12, 6.5))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    ax.axhline(0, color='#666666', linewidth=1, zorder=2)
+    ax.axhline(0.5, color='#333333', linewidth=1, linestyle='--', zorder=2)
+    ax.axhline(-0.5, color='#333333', linewidth=1, linestyle='--', zorder=2)
+    ax.fill_between(fechas, valores, 0, where=[v >= 0 for v in valores],
+                    color='#FF9900', alpha=0.30, zorder=1, interpolate=True)
+    ax.fill_between(fechas, valores, 0, where=[v < 0 for v in valores],
+                    color='#3388FF', alpha=0.30, zorder=1, interpolate=True)
+    ax.plot(fechas, valores, color='white', linewidth=1.6, zorder=3)
+
+    ax.plot(fechas[-1], valores[-1], 'o', color='#F7931A', markersize=12, zorder=5,
+           markeredgecolor='white', markeredgewidth=2)
+    ax.annotate(f"{res['corr_actual']:+.2f}", xy=(fechas[-1], valores[-1]),
+               xytext=(fechas[-1], valores[-1] + (0.08 if valores[-1] >= 0 else -0.08)),
+               fontsize=12, color='#F7931A', fontweight='bold', ha='right',
+               bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117', edgecolor='#F7931A', alpha=0.95))
+
+    ax.set_ylim(-1.05, 1.05)
+    ax.set_title(f'BTC vs NASDAQ — Correlación rodante ({res["ventana"]} días)', color='white',
+                fontsize=14, fontweight='bold', loc='left', pad=12)
+    ax.set_ylabel('Coeficiente de correlación', color='#AAAAAA')
+    ax.tick_params(colors='#AAAAAA')
+    for spine in ax.spines.values(): spine.set_color('#333333')
+    ax.grid(color='#222222', linestyle='--', alpha=0.3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+    fig.autofmt_xdate()
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+@bot.message_handler(commands=["correlacion"])
+def cmd_correlacion(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Calculando correlación BTC-Nasdaq... (10-15s)")
+    res = calcular_correlacion_btc_nasdaq()
+    if not res:
+        safe_send(msg.chat.id, "No he podido calcular la correlación ahora mismo (datos insuficientes).",
+                  message_id=m.message_id)
+        return
+    try:
+        chart = chart_correlacion(res)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, chart)
+    except Exception as e:
+        log.warning(f"chart_correlacion: {e}")
+        safe_send(msg.chat.id, f"Correlación BTC-Nasdaq ({res['ventana']}d): {res['corr_actual']:+.2f}",
+                  message_id=m.message_id)
+
+    if res["corr_actual"] >= 0.6:
+        lectura = "ALTA — BTC se mueve muy pegado al Nasdaq (mercado tratando a cripto como activo de riesgo más)"
+    elif res["corr_actual"] >= 0.3:
+        lectura = "MODERADA — cierta relación con las tech, pero con movimiento propio"
+    elif res["corr_actual"] >= -0.3:
+        lectura = "BAJA / SIN RELACIÓN CLARA — BTC se está moviendo bastante por su cuenta"
+    else:
+        lectura = "NEGATIVA — BTC moviéndose en dirección contraria al Nasdaq (poco habitual)"
+
+    comparacion = ""
+    if res["corr_larga"] is not None:
+        diff = res["corr_actual"] - res["corr_larga"]
+        if abs(diff) >= 0.15:
+            comparacion = (f"\n\nHa cambiado bastante frente a los últimos 90 días "
+                          f"({res['corr_larga']:+.2f}) — {'subiendo' if diff>0 else 'bajando'} la correlación.")
+
+    linea_90d = f"Últimos 90 días: {res['corr_larga']:+.2f}\n" if res["corr_larga"] is not None else ""
+    safe_send(msg.chat.id,
+        f"📖 CORRELACIÓN BTC vs NASDAQ\n\n"
+        f"Últimos {res['ventana']} días: {res['corr_actual']:+.2f}\n"
+        f"{linea_90d}\n"
+        f"Lectura: {lectura}{comparacion}\n\n"
+        "Escala: +1 = se mueven exactamente igual, 0 = sin relación, -1 = se mueven exactamente al "
+        "revés. Cuando la correlación sube mucho, suele ser señal de que el mercado está en modo "
+        "'risk-on/risk-off' generalizado (todo sube o baja junto por sentimiento, no por fundamentales "
+        "propios de cada activo).")
+
+    prompt = (f"Correlación entre BTC y Nasdaq en los últimos {res['ventana']} días: {res['corr_actual']:+.2f} "
+              f"(últimos 90 días: {res['corr_larga']})\n\n"
+              "1. ¿Qué implica este nivel de correlación para un inversor con exposición a ambos?\n"
+              "2. Si la correlación ha subido o bajado mucho recientemente, ¿qué podría explicarlo?\n"
+              "3. ¿Cómo se debería interpretar esto junto al resto de indicadores del bot (Fear&Greed, VIX)?")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+
+# ═══ /PUTCALL — Ratio Put/Call del CBOE ══════════════════════════
+# Mide si los inversores compran más puts (protección/apuesta bajista) o
+# calls (apuesta alcista). Indicador contrario: ratio alto = miedo
+# (históricamente cerca de suelos), ratio bajo = complacencia (cerca de
+# techos). NOTA DE FIABILIDAD: el archivo histórico gratuito de la CBOE
+# (equitypc.csv) dejó de actualizarse en algún momento — para el dato de
+# HOY hace falta scrapear su página de estadísticas en vivo, más frágil
+# que una API estable. Es el más especulativo de los indicadores del bot.
+
+def fetch_putcall_cboe():
+    ck = "putcall_cboe"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
+        r = requests.get("https://res.cboe.com/us/options/market_statistics",
+                        headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        if r.status_code != 200:
+            raise RuntimeError(f"CBOE put/call: HTTP {r.status_code}")
+        texto = r.text
+        # Buscamos la sección "Equity Options" y, dentro de ella, la última
+        # fila de la tabla (el cierre de la sesión) — formato de fila:
+        # HH:MM AM/PM | CALLS | PUTS | TOTAL | RATIO
+        idx_equity = texto.find("Equity Options")
+        if idx_equity == -1:
+            raise RuntimeError("CBOE put/call: no se encontró la sección Equity Options")
+        seccion = texto[idx_equity:idx_equity+4000]
+        filas = re.findall(
+            r"(\d{1,2}:\d{2}\s*[AP]M)\s*\|\s*([\d,]+)\s*\|\s*([\d,]+)\s*\|\s*([\d,]+)\s*\|\s*([\d.]+)",
+            seccion)
+        if not filas:
+            raise RuntimeError(f"CBOE put/call: sin filas parseables ({len(seccion)} bytes de sección)")
+        hora, calls, puts, total, ratio = filas[-1]
+        return {"hora": hora, "calls": int(calls.replace(",", "")),
+                "puts": int(puts.replace(",", "")), "ratio": float(ratio)}
+    res = with_retry(_do, tries=2, base_delay=2, what="fetch_putcall_cboe")
+    if res: cache_set(ck, res)
+    return res
+
+@bot.message_handler(commands=["putcall"])
+def cmd_putcall(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Consultando ratio Put/Call de la CBOE... (10-15s)")
+    res = fetch_putcall_cboe()
+    if not res:
+        safe_send(msg.chat.id,
+            "No he podido obtener el ratio Put/Call ahora mismo — es el indicador más frágil del "
+            "bot (depende de una página en vivo de la CBOE, no de una API estable). Reintenta en "
+            "un momento.", message_id=m.message_id)
+        return
+
+    if res["ratio"] >= 1.0:
+        lectura = "MIEDO — más puts que calls, señal contraria alcista históricamente"
+    elif res["ratio"] >= 0.7:
+        lectura = "NEUTRAL / ALGO DE CAUTELA"
+    else:
+        lectura = "COMPLACENCIA — más calls que puts, señal contraria de cautela"
+
+    safe_send(msg.chat.id,
+        f"📖 RATIO PUT/CALL — CBOE (opciones sobre acciones, {res['hora']})\n\n"
+        f"Ratio: {res['ratio']:.2f}\n"
+        f"Puts: {res['puts']:,} | Calls: {res['calls']:,}\n\n"
+        f"Lectura: {lectura}\n\n"
+        "Escala orientativa: >1.0 = más protección/apuesta bajista que alcista (miedo); "
+        "~0.6-0.7 = zona típica/neutral; <0.5 = mucha euforia compradora (calls). "
+        "Es un indicador CONTRARIO: un ratio muy alto (mucho miedo) suele preceder rebotes, "
+        "y uno muy bajo (mucha complacencia) suele preceder correcciones — aunque, como todo "
+        "en este bot, no es una certeza, es una pieza más del puzle.",
+        message_id=m.message_id)
+
+    prompt = (f"Ratio Put/Call del CBOE (opciones sobre acciones) ahora mismo: {res['ratio']:.2f} "
+              f"({res['puts']:,} puts vs {res['calls']:,} calls, {res['hora']}).\n\n"
+              "1. ¿Qué implica este nivel concreto del ratio?\n"
+              "2. ¿Cómo se compara normalmente esta métrica según esté cerca de máximos o de mínimos "
+              "del mercado?\n"
+              "3. Limitaciones de usar el ratio put/call como señal aislada")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+
 if __name__ == "__main__":
     # FIX 409: si el contenedor anterior no llegó a cerrar su getUpdates a
     # tiempo, esto libera el "lock" de Telegram antes de empezar a hacer
@@ -3040,3 +3595,5 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
+
