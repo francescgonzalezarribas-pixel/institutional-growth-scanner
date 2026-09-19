@@ -1184,7 +1184,8 @@ def cmd_start(msg):
             "/noticias — Noticias de bolsa, economía y cripto de varias fuentes\n"
             "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n"
             "/ticker — Resumen de mercados al momento (bajo demanda)\n"
-            "/ciclo — Fase actual de BTC en el ciclo de mercado\n\n"
+            "/ciclo — Fase actual de BTC en el ciclo de mercado\n"
+            "/suelo — Triple Suelo de Sentimiento (VIX + AAII + Fear&Greed)\n\n"
             "Además, cada 2h (9-21h) recibes un resumen automático de mercados, "
             "y cada mañana a las 8h un resumen diario con Fear & Greed y noticias destacadas.\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
@@ -2706,6 +2707,172 @@ def cmd_ciclo(msg):
               "1. ¿Qué implica estar en esta fase concreta del ciclo?\n"
               "2. ¿Qué señales confirmarían el paso a la siguiente fase?\n"
               "3. Estrategia razonable dado este punto del ciclo")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+
+# ═══ /SUELO — Triple Suelo de Sentimiento (VIX + AAII + Fear & Greed) ═
+# Metodología: alineación de tres métricas de pánico desde ángulos
+# distintos. El NAAIM (gestores activos) hubiera sido el tercer ángulo
+# "institucional puro", pero pasó a ser de pago desde el 1 de agosto de
+# 2026 ($1.500/año para acceso API) — usamos Fear & Greed como sustituto
+# razonable de esa pata institucional, con la limitación honesta de que
+# no es lo mismo (mide sentimiento agregado del mercado, no exposición
+# real de gestores).
+from bs4 import BeautifulSoup
+
+def fetch_aaii_sentiment():
+    """Página pública de verdad, sin login — confirmado a mano. Tabla con
+    Bullish/Neutral/Bearish semanales, la fila más reciente primero."""
+    ck = "aaii_sentiment"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
+        r = requests.get("https://www.aaii.com/sentimentsurvey/sent_results",
+                        headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        table = soup.find("table")
+        if not table:
+            raise RuntimeError("AAII: no se encontró la tabla de resultados")
+        for fila in table.find_all("tr"):
+            celdas = [td.get_text(strip=True) for td in fila.find_all("td")]
+            if len(celdas) == 4:
+                try:
+                    return {"fecha": celdas[0],
+                            "bullish": float(celdas[1].replace("%", "")),
+                            "neutral": float(celdas[2].replace("%", "")),
+                            "bearish": float(celdas[3].replace("%", ""))}
+                except ValueError:
+                    continue
+        raise RuntimeError("AAII: no se pudo parsear ninguna fila de datos")
+    res = with_retry(_do, tries=2, base_delay=2, what="fetch_aaii_sentiment")
+    if res: cache_set(ck, res)
+    return res
+
+def calcular_suelo_mercado():
+    vix = None
+    vix_d = get_quote("^VIX")
+    if vix_d:
+        vix = vix_d["price"]
+    else:
+        spy_d = get_quote("SPY")
+        if spy_d:
+            rets = spy_d["closes"].pct_change().dropna()
+            window = min(20, len(rets))
+            if window >= 5:
+                vix = round(float(rets.tail(window).std() * (252**0.5) * 100), 1)
+    aaii = fetch_aaii_sentiment()
+    fg = get_fear_greed()
+    if vix is None and aaii is None and fg is None:
+        return None
+
+    componentes = {}
+    if vix is not None:
+        score = max(0, min(10, (vix - 15) / 20 * 10))
+        componentes["VIX (volatilidad)"] = {"score": round(score, 1), "valor": f"{vix:.1f}"}
+    if aaii is not None:
+        spread = aaii["bearish"] - aaii["bullish"]
+        score = max(0, min(10, spread / 50 * 10))
+        componentes["AAII (retail)"] = {"score": round(score, 1),
+                                        "valor": f"Bull {aaii['bullish']:.1f}% / Bear {aaii['bearish']:.1f}%"}
+    if fg is not None:
+        score = max(0, min(10, (50 - fg["valor"]) / 50 * 10))
+        componentes["Fear & Greed (proxy institucional)"] = {"score": round(score, 1),
+                                                              "valor": f"{fg['valor']}/100 ({fg['texto']})"}
+
+    n_extremos = sum(1 for c in componentes.values() if c["score"] >= 7)
+    if n_extremos == len(componentes) and len(componentes) == 3:
+        veredicto = "ALINEACIÓN COMPLETA — triple suelo de sentimiento"
+    elif n_extremos >= 2:
+        veredicto = "ALINEACIÓN PARCIAL — algunos indicadores en pánico, no todos"
+    else:
+        veredicto = "SIN ALINEACIÓN — no hay pánico generalizado ahora mismo"
+
+    return {"componentes": componentes, "veredicto": veredicto, "n_extremos": n_extremos,
+            "aaii_fecha": aaii["fecha"] if aaii else None}
+
+def chart_suelo_mercado(res):
+    comp = res["componentes"]; n = len(comp)
+    fig = plt.figure(figsize=(11, 3 + n*1.3))
+    fig.patch.set_facecolor('#0d1117')
+    ax = fig.add_axes([0.32, 0.12, 0.6, 0.72])
+    ax.set_facecolor('#0d1117')
+    ax.set_xlim(0, 10); ax.set_ylim(-0.5, n-0.5)
+    for idx, (nombre, datos) in enumerate(reversed(list(comp.items()))):
+        y = idx; score = datos["score"]
+        ax.barh(y, 10, height=0.5, color='#1a1a2e', zorder=1)
+        c = '#00CC44' if score < 4 else '#FFCC00' if score < 7 else '#FF3333'
+        ax.barh(y, score, height=0.5, color=c, zorder=2)
+        ax.text(-0.3, y, nombre, va='center', ha='right', color='white',
+                fontsize=11, fontweight='bold', transform=ax.transData)
+        ax.text(10.3, y, f"{score}/10", va='center', ha='left', color=c,
+                fontsize=11, fontweight='bold')
+        ax.text(0.15, y-0.32, datos["valor"], va='top', ha='left', color='#999999', fontsize=8.5)
+    ax.axis('off')
+    fig.text(0.5, 0.96, "TRIPLE SUELO DE SENTIMIENTO", ha='center', color='white',
+             fontsize=15, fontweight='bold')
+    vc = '#00CC44' if res["n_extremos"] < 2 else '#FFCC00' if res["n_extremos"] < 3 else '#FF3333'
+    fig.text(0.5, 0.04, res["veredicto"], ha='center', color=vc, fontsize=11, fontweight='bold')
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+@bot.message_handler(commands=["suelo"])
+def cmd_suelo(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Consultando VIX, AAII y Fear & Greed... (10-15s)")
+    res = calcular_suelo_mercado()
+    if not res:
+        safe_send(msg.chat.id, "No he podido obtener ninguno de los tres indicadores ahora mismo.",
+                  message_id=m.message_id)
+        return
+    try:
+        chart = chart_suelo_mercado(res)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, chart)
+    except Exception as e:
+        log.warning(f"chart_suelo_mercado: {e}")
+        lines = [f"{k}: {v['score']}/10 ({v['valor']})" for k, v in res["componentes"].items()]
+        safe_send(msg.chat.id, "\n".join(lines) + f"\n\n{res['veredicto']}", message_id=m.message_id)
+
+    # Explicación en texto plano de qué mide cada cosa y qué implica el
+    # veredicto — las barras solas no dejan claro el "por qué".
+    explicacion = ["📖 QUÉ SIGNIFICA CADA INDICADOR\n"]
+    explicacion.append(
+        "• VIX: mide el miedo a través de la compra de opciones de protección. "
+        "Por encima de 30 suele coincidir con ventas de pánico.")
+    explicacion.append(
+        "• AAII: encuesta semanal a inversores particulares de EEUU. Cuando los "
+        "bajistas superan el 50% y los alcistas caen por debajo del 20%, es señal "
+        "clásica de pánico minorista (indicador contrario: suele ser tardío en la caída).")
+    explicacion.append(
+        "• Fear & Greed: sustituye al NAAIM (exposición real de gestores activos, "
+        "ahora de pago) — mide sentimiento agregado del mercado, no es exactamente "
+        "lo mismo pero apunta en la misma dirección.")
+    explicacion.append(f"\n{res['veredicto']}")
+    if res["n_extremos"] >= 2:
+        explicacion.append(
+            "\nCuando al menos 2 de los 3 indicadores llegan a extremos a la vez, "
+            "históricamente es la zona donde suelen formarse suelos de mercado — "
+            "no es una garantía, pero sí una señal a vigilar de cerca.")
+    else:
+        explicacion.append(
+            "\nTodavía no hay suficiente pánico acumulado en estos indicadores como "
+            "para hablar de una señal de suelo clásica.")
+    safe_send(msg.chat.id, "\n".join(explicacion))
+
+    comp_txt = "\n".join(f"{k}: {v['score']}/10 — {v['valor']}" for k, v in res["componentes"].items())
+    prompt = (f"Indicadores de pánico de mercado ahora mismo:\n{comp_txt}\n\n"
+              f"Veredicto del modelo: {res['veredicto']}\n\n"
+              "Nota: el NAAIM (exposición de gestores activos) no está incluido por ser de pago "
+              "desde agosto 2026 — se sustituye por Fear & Greed como proxy institucional, que no "
+              "es exactamente lo mismo.\n\n"
+              "1. ¿Qué tan fiable es esta lectura sin el NAAIM real?\n"
+              "2. Si hay alineación parcial o completa, ¿qué habría que vigilar para confirmarlo?\n"
+              "3. Riesgo de actuar solo con esta señal")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
