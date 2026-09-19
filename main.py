@@ -2771,7 +2771,7 @@ def fetch_cot_sp500(semanas=156):
     def _do():
         r = requests.get("https://publicreporting.cftc.gov/resource/jun7-fc8e.json",
                         params={
-                            "$where": "market_and_exchange_names like '%E-MINI S%26P 500%'",
+                            "$where": "upper(market_and_exchange_names) like '%E-MINI S&P 500%'",
                             "$order": "report_date_as_yyyy_mm_dd DESC",
                             "$limit": str(semanas),
                         }, timeout=15)
