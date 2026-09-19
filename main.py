@@ -1165,6 +1165,7 @@ def cmd_halvingbtc(msg):
     except Exception as e:
         log.error(f"halvingbtc: {e}")
         safe_send(msg.chat.id,f"Error: {e}",message_id=m.message_id)
+
 @bot.message_handler(commands=["start","ayuda"])
 def cmd_start(msg):
     chat_id = msg.from_user.id
@@ -2387,6 +2388,7 @@ def revisar_noticias_relevantes():
     if not respuesta or "NINGUNA" in respuesta.upper()[:30]:
         return None
     return respuesta
+
 @bot.message_handler(commands=["ticker"])
 def cmd_ticker(msg):
     """Versión bajo demanda del resumen automático — para probarlo cuando
@@ -3521,20 +3523,37 @@ def fetch_putcall_cboe():
                         headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         if r.status_code != 200:
             raise RuntimeError(f"CBOE put/call: HTTP {r.status_code}")
-        texto = r.text
-        # Buscamos la sección "Equity Options" y, dentro de ella, la última
-        # fila de la tabla (el cierre de la sesión) — formato de fila:
-        # HH:MM AM/PM | CALLS | PUTS | TOTAL | RATIO
-        idx_equity = texto.find("Equity Options")
+        # FIX: la primera versión buscaba texto con barras "|" entre
+        # columnas — eso era solo cómo una herramienta externa me mostró
+        # la página al inspeccionarla, no el HTML real que descarga el
+        # bot. El HTML de verdad usa <table><tr><td> normales.
+        soup = BeautifulSoup(r.text, "html.parser")
+        idx_equity = r.text.find("Equity Options")
         if idx_equity == -1:
             raise RuntimeError("CBOE put/call: no se encontró la sección Equity Options")
-        seccion = texto[idx_equity:idx_equity+4000]
-        filas = re.findall(
-            r"(\d{1,2}:\d{2}\s*[AP]M)\s*\|\s*([\d,]+)\s*\|\s*([\d,]+)\s*\|\s*([\d,]+)\s*\|\s*([\d.]+)",
-            seccion)
-        if not filas:
-            raise RuntimeError(f"CBOE put/call: sin filas parseables ({len(seccion)} bytes de sección)")
-        hora, calls, puts, total, ratio = filas[-1]
+        # Buscamos, entre TODAS las tablas de la página, la primera cuya
+        # posición en el HTML esté después del título "Equity Options"
+        # (así no cogemos por error la tabla "Total" que va antes).
+        mejor_tabla = None
+        for table in soup.find_all("table"):
+            pos = r.text.find(str(table))
+            if pos != -1 and pos > idx_equity:
+                mejor_tabla = table
+                break
+        if mejor_tabla is None:
+            raise RuntimeError("CBOE put/call: no se encontró la tabla de Equity Options")
+        filas_validas = []
+        for fila in mejor_tabla.find_all("tr"):
+            celdas = [td.get_text(strip=True) for td in fila.find_all("td")]
+            if len(celdas) == 4:  # CALLS, PUTS, TOTAL, RATIO (la hora suele ir en <th>)
+                celdas_th = fila.find_all("th")
+                hora = celdas_th[0].get_text(strip=True) if celdas_th else ""
+                filas_validas.append((hora,) + tuple(celdas))
+            elif len(celdas) == 5:  # hora incluida como <td>
+                filas_validas.append(tuple(celdas))
+        if not filas_validas:
+            raise RuntimeError(f"CBOE put/call: sin filas parseables en la tabla encontrada")
+        hora, calls, puts, total, ratio = filas_validas[-1]
         return {"hora": hora, "calls": int(calls.replace(",", "")),
                 "puts": int(puts.replace(",", "")), "ratio": float(ratio)}
     res = with_retry(_do, tries=2, base_delay=2, what="fetch_putcall_cboe")
@@ -3595,5 +3614,3 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
-
