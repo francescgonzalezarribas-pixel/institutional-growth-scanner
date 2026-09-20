@@ -2237,6 +2237,25 @@ BROADCAST_COMMODITIES = {
 }
 BROADCAST_FALLBACK = {"^IXIC": "QQQ", "^GSPC": "SPY"}  # mismo fix que ya vimos con /mercados
 
+# Límite compartido para TODAS las llamadas a CoinGecko (HYPE/PURR en el
+# resumen automático + /fuerza pidiendo 100 monedas) — sin esto se pisan
+# entre sí y revientan el rate-limit gratuito de CoinGecko (mismo problema
+# que ya vimos con Twelve Data, mismo tipo de arreglo).
+_CG_CALL_TIMES = []
+_CG_MAX_PER_MIN = 8
+
+def _throttle_coingecko():
+    global _CG_CALL_TIMES
+    now = time.time()
+    _CG_CALL_TIMES = [t for t in _CG_CALL_TIMES if now - t < 60]
+    if len(_CG_CALL_TIMES) >= _CG_MAX_PER_MIN:
+        wait = 60 - (now - _CG_CALL_TIMES[0]) + 0.5
+        if wait > 0:
+            time.sleep(wait)
+        now = time.time()
+        _CG_CALL_TIMES = [t for t in _CG_CALL_TIMES if now - t < 60]
+    _CG_CALL_TIMES.append(time.time())
+
 def fetch_coingecko_simple(coin_id):
     """Fuente alternativa solo para cripto que no está en Binance spot
     (HYPE, PURR). Gratis, sin API key. Rate limit generoso para el poco
@@ -2245,6 +2264,7 @@ def fetch_coingecko_simple(coin_id):
     cached = cache_get(ck)
     if cached is not None: return cached
     def _do():
+        _throttle_coingecko()
         r = requests.get("https://api.coingecko.com/api/v3/simple/price",
                         params={"ids": coin_id, "vs_currencies": "usd",
                                 "include_24hr_change": "true"}, timeout=10)
@@ -2252,7 +2272,7 @@ def fetch_coingecko_simple(coin_id):
         if coin_id not in j:
             raise RuntimeError(f"CoinGecko: sin datos para {coin_id}")
         return {"price": j[coin_id]["usd"], "d1": j[coin_id].get("usd_24h_change", 0)}
-    return with_retry(_do, tries=2, base_delay=2, what=f"fetch_coingecko_simple {coin_id}")
+    return with_retry(_do, tries=3, base_delay=5, what=f"fetch_coingecko_simple {coin_id}")
 
 def calcular_broadcast():
     """Recorre los ~30 activos con una pequeña pausa entre cada uno —
@@ -3665,6 +3685,7 @@ def fetch_top_cryptos_cambios(n=100):
     cached = cache_get(ck)
     if cached is not None: return cached
     def _do():
+        _throttle_coingecko()
         r = requests.get("https://api.coingecko.com/api/v3/coins/markets",
                         params={"vs_currency": "usd", "order": "market_cap_desc",
                                 "per_page": str(n), "page": "1",
@@ -3676,7 +3697,7 @@ def fetch_top_cryptos_cambios(n=100):
         if not data:
             raise RuntimeError("CoinGecko markets: sin datos")
         return data
-    res = with_retry(_do, tries=2, base_delay=3, what="fetch_top_cryptos_cambios")
+    res = with_retry(_do, tries=3, base_delay=5, what="fetch_top_cryptos_cambios")
     if res: cache_set(ck, res)
     return res
 
