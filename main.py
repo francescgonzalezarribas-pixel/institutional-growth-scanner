@@ -182,6 +182,22 @@ def safe_send(chat_id, text, message_id=None, **kwargs):
     except Exception as e:
         log.warning(f"safe_send: {e}")
 
+AVISO_DYOR = "⚠️ Información, no asesoramiento financiero. Lee /dyor antes de decidir."
+
+def con_dyor(fn):
+    """Tras un comando de análisis, envía en silencio un recordatorio de /dyor.
+    No lo envía a quien no tiene acceso (esos reciben solo el aviso de suscripción)."""
+    import functools
+    @functools.wraps(fn)
+    def wrapper(msg):
+        fn(msg)
+        try:
+            if is_premium(msg.from_user.id):
+                safe_send(msg.chat.id, AVISO_DYOR, disable_notification=True)
+        except Exception as e:
+            log.warning(f"aviso dyor: {e}")
+    return wrapper
+
 def ask_ai(prompt, max_chars=2500):
     try:
         r = ai.chat.completions.create(
@@ -737,6 +753,7 @@ def chart_valor(res):
     return buf
 
 @bot.message_handler(commands=["valor"])
+@con_dyor
 def cmd_valor(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -1007,6 +1024,7 @@ def chart_fundamental(res):
     return buf
 
 @bot.message_handler(commands=["fundamental"])
+@con_dyor
 def cmd_fundamental(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -1157,6 +1175,7 @@ def chart_halving():
     return buf
 
 @bot.message_handler(commands=["halvingbtc"])
+@con_dyor
 def cmd_halvingbtc(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -1192,6 +1211,7 @@ def cmd_start(msg):
     if is_premium(chat_id):
         safe_send(chat_id,
             f"Bienvenido {nombre}! 👋\n\n"
+            "⚠️ Antes de empezar, lee /dyor: esto es información, no asesoramiento financiero.\n\n"
             "/valor BTC-USD — Índice barato/caro 0-100 para crypto\n"
             "/valor TSLA — Índice para acciones US\n"
             "/valor SAN.MC — Acciones españolas\n\n"
@@ -1221,6 +1241,7 @@ def cmd_start(msg):
     safe_send(chat_id,
         f"Hola {nombre}! 👋\n\n"
         "AnalisisPro — Bot de análisis financiero con IA\n\n"
+        "⚠️ Antes de empezar, lee /dyor: esto es información, no asesoramiento financiero.\n\n"
         "📊 Índice barato/caro con velocímetro\n"
         "🔍 Análisis fundamental 0-100\n"
         "📈 Ciclo Bitcoin con halvings y proyección\n\n"
@@ -1671,6 +1692,7 @@ def calcular_cartera(query):
             "reducidas": reducidas, "cerradas": cerradas}
 
 @bot.message_handler(commands=["cartera"])
+@con_dyor
 def cmd_cartera(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -1876,6 +1898,7 @@ def chart_feargreed(series, btc_data):
     return buf
 
 @bot.message_handler(commands=["dominancia"])
+@con_dyor
 def cmd_dominancia(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -2106,6 +2129,7 @@ def resolve_binance_symbol(ticker):
     return f"{t}USDT"
 
 @bot.message_handler(commands=["ballenas"])
+@con_dyor
 def cmd_ballenas(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -2204,6 +2228,7 @@ def fetch_todas_noticias():
     return resultado
 
 @bot.message_handler(commands=["noticias"])
+@con_dyor
 def cmd_noticias(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -2302,6 +2327,7 @@ def fetch_derivados_cripto(symbol):
         return None
 
 @bot.message_handler(commands=["macro"])
+@con_dyor
 def cmd_macro(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -2578,6 +2604,7 @@ def revisar_noticias_relevantes():
     return respuesta
 
 @bot.message_handler(commands=["ticker"])
+@con_dyor
 def cmd_ticker(msg):
     """Versión bajo demanda del resumen automático — para probarlo cuando
     quieras sin esperar a que llegue la hora en punto, o simplemente para
@@ -2679,6 +2706,7 @@ def texto_resumen_diario(datos):
                 lines.append(f"• {items[0]['title'][:100]}")
                 contador += 1
     lines.append("\nUsa /noticias, /macro, /ciclo o /ticker para profundizar.")
+    lines.append("⚠️ Información, no asesoramiento financiero. Lee /dyor.")
     return "\n".join(lines)
 
 def ejecutar_resumen_diario():
@@ -2737,6 +2765,7 @@ def _scheduler_loop():
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
+
 
 # ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
 # Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
@@ -2872,6 +2901,7 @@ def chart_ciclo_mercado(res):
     return buf
 
 @bot.message_handler(commands=["ciclo"])
+@con_dyor
 def cmd_ciclo(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -3140,6 +3170,7 @@ def chart_suelo_mercado(res):
     return buf
 
 @bot.message_handler(commands=["suelo"])
+@con_dyor
 def cmd_suelo(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -3329,6 +3360,7 @@ def chart_curva_tipos(res):
     return buf
 
 @bot.message_handler(commands=["curva"])
+@con_dyor
 def cmd_curva(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -3494,6 +3526,7 @@ def calcular_insiders(ticker):
             "insiders_compradores": insiders_compradores}
 
 @bot.message_handler(commands=["insiders"])
+@con_dyor
 def cmd_insiders(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -3678,6 +3711,7 @@ def chart_correlacion(res):
     return buf
 
 @bot.message_handler(commands=["correlacion"])
+@con_dyor
 def cmd_correlacion(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -4010,6 +4044,7 @@ def chart_fuerza_relativa(top, campo, titulo, btc_valor):
     return buf
 
 @bot.message_handler(commands=["fuerza"])
+@con_dyor
 def cmd_fuerza(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
@@ -4152,4 +4187,3 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
