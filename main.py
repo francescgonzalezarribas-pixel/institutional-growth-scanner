@@ -3777,7 +3777,7 @@ Curva de tipos EEUU (10 años vs 2 años) — indicador de recesión más vigila
 Correlación BTC vs Nasdaq — mide si cripto se mueve pegado a las tech (risk-on/risk-off).
 
 ━━━ /fuerza ━━━
-Compara 100 criptos contra BTC a corto plazo (7 días) Y a largo plazo (~200 días) — detecta cuáles aguantan/lideran solo esta semana vs cuáles llevan meses haciéndolo (señal más sólida). No predice el futuro, describe divergencias ya en marcha.""",
+Compara 100 criptos contra BTC en 3 plazos: 24 horas, 7 días y ~200 días — detecta cuáles lideran solo hoy o esta semana vs cuáles llevan meses haciéndolo (señal más sólida). No predice el futuro, describe divergencias ya en marcha.""",
 
 """📖 GUÍA DE COMANDOS (3/3) — Noticias y automatizaciones
 
@@ -3877,6 +3877,7 @@ def calcular_fuerza_relativa():
     btc_7d = btc.get("price_change_percentage_7d_in_currency") or 0
     btc_30d = btc.get("price_change_percentage_30d_in_currency") or 0
     btc_200d = btc.get("price_change_percentage_200d_in_currency") or 0
+    btc_24h = btc.get("price_change_percentage_24h_in_currency") or 0
 
     # FIX: valores como "+528pp a 7 días" o "+38.000pp a 200 días" no son
     # una señal real — son casi siempre microcaps con tan poca liquidez
@@ -3884,6 +3885,7 @@ def calcular_fuerza_relativa():
     # signifique nada útil), o directamente un error de datos puntual de
     # CoinGecko para esa moneda. Sin filtrarlos, aplastan la escala del
     # gráfico y esconden la señal de verdad del resto.
+    LIMITE_24H = 100
     LIMITE_7D = 200
     LIMITE_200D = 2000
 
@@ -3901,11 +3903,16 @@ def calcular_fuerza_relativa():
             continue
         fuerza_7d = cambio_7d - btc_7d
         fuerza_200d = (cambio_200d - btc_200d) if cambio_200d is not None else None
-        if abs(fuerza_7d) > LIMITE_7D or (fuerza_200d is not None and abs(fuerza_200d) > LIMITE_200D):
+        cambio_24h = c.get("price_change_percentage_24h_in_currency")
+        fuerza_24h = (cambio_24h - btc_24h) if cambio_24h is not None else None
+        if (abs(fuerza_7d) > LIMITE_7D or (fuerza_200d is not None and abs(fuerza_200d) > LIMITE_200D)
+                or (fuerza_24h is not None and abs(fuerza_24h) > LIMITE_24H)):
             anomalos.append(c["symbol"].upper())
             continue
         filas.append({
             "nombre": c["name"], "simbolo": c["symbol"].upper(),
+            "cambio_24h": cambio_24h,
+            "fuerza_24h": fuerza_24h,
             "cambio_7d": cambio_7d,
             "cambio_30d": c.get("price_change_percentage_30d_in_currency"),
             "cambio_200d": cambio_200d,
@@ -3918,6 +3925,10 @@ def calcular_fuerza_relativa():
         })
     filas.sort(key=lambda x: x["fuerza_7d"], reverse=True)
     top_corto = filas[:15]
+
+    filas_24h = [f for f in filas if f["fuerza_24h"] is not None]
+    filas_24h.sort(key=lambda x: x["fuerza_24h"], reverse=True)
+    top_24h = filas_24h[:15]
 
     filas_200d = [f for f in filas if f["fuerza_200d"] is not None]
     filas_200d.sort(key=lambda x: x["fuerza_200d"], reverse=True)
@@ -3936,8 +3947,8 @@ def calcular_fuerza_relativa():
 
     simbolos_en_top100 = {c["symbol"].upper() for c in data}
 
-    return {"btc_7d": btc_7d, "btc_30d": btc_30d, "btc_200d": btc_200d,
-            "top_corto": top_corto, "top_largo": top_largo, "doble_fuerza": doble_fuerza,
+    return {"btc_24h": btc_24h, "btc_7d": btc_7d, "btc_30d": btc_30d, "btc_200d": btc_200d,
+            "top_24h": top_24h, "top_corto": top_corto, "top_largo": top_largo, "doble_fuerza": doble_fuerza,
             "demasiado_nuevas": demasiado_nuevas, "anomalos": anomalos, "todas": filas,
             "sin_dato": sin_dato, "simbolos_en_top100": simbolos_en_top100}
 
@@ -4003,7 +4014,7 @@ def cmd_fuerza(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
         return
-    m = bot.send_message(msg.chat.id, "Comparando 100 criptos contra BTC (corto y largo plazo)... (10-15s)")
+    m = bot.send_message(msg.chat.id, "Comparando 100 criptos contra BTC (24h, 7 días y 200 días)... (10-15s)")
     res = calcular_fuerza_relativa()
     if not res:
         safe_send(msg.chat.id, "No he podido calcular la fuerza relativa ahora mismo.",
@@ -4011,9 +4022,20 @@ def cmd_fuerza(msg):
         return
 
     try:
+        bot.delete_message(msg.chat.id, m.message_id)
+    except Exception:
+        pass
+
+    try:
+        chart_24h = chart_fuerza_relativa(res["top_24h"], "fuerza_24h",
+                                          "FUERZA RELATIVA vs BTC — últimas 24 horas", res["btc_24h"])
+        bot.send_photo(msg.chat.id, chart_24h)
+    except Exception as e:
+        log.warning(f"chart_fuerza_relativa (24h): {e}")
+
+    try:
         chart_corto = chart_fuerza_relativa(res["top_corto"], "fuerza_7d",
                                             "FUERZA RELATIVA vs BTC — últimos 7 días", res["btc_7d"])
-        bot.delete_message(msg.chat.id, m.message_id)
         bot.send_photo(msg.chat.id, chart_corto)
     except Exception as e:
         log.warning(f"chart_fuerza_relativa (7d): {e}")
@@ -4027,8 +4049,9 @@ def cmd_fuerza(msg):
         log.warning(f"chart_fuerza_relativa (200d): {e}")
 
     lines = [f"📖 FUERZA RELATIVA — top 100 por capitalización\n",
-             f"BTC: 7d {res['btc_7d']:+.1f}% | 30d {res['btc_30d']:+.1f}% | ~200d {res['btc_200d']:+.1f}%\n",
-             "Dos plazos, dos preguntas distintas:\n"
+             f"BTC: 24h {res['btc_24h']:+.1f}% | 7d {res['btc_7d']:+.1f}% | 30d {res['btc_30d']:+.1f}% | ~200d {res['btc_200d']:+.1f}%\n",
+             "Tres plazos, tres preguntas distintas:\n"
+             "• 24 horas = ¿quién se mueve mejor HOY? (lo más ruidoso, cambia de un día a otro)\n"
              "• 7 días = ¿quién está fuerte ESTA semana? (puede ser ruido)\n"
              "• ~200 días = ¿quién lleva MESES aguantando o liderando? (señal mucho más sólida — "
              "esto es lo que suele distinguir a una futura 'reina del bullrun' de un simple pico "
@@ -4042,7 +4065,11 @@ def cmd_fuerza(msg):
     else:
         lines.append("⚡ Ninguna moneda está en el top 15 de AMBOS plazos a la vez ahora mismo.\n")
 
-    lines.append("🏆 Top 8 — últimos 7 días:")
+    lines.append("🏆 Top 8 — últimas 24 horas:")
+    for f in res["top_24h"][:8]:
+        lines.append(f"  {f['simbolo']}: {f['cambio_24h']:+.1f}% (vs BTC: {f['fuerza_24h']:+.1f}pp) — rank #{f['rank']}")
+
+    lines.append("\n🏆 Top 8 — últimos 7 días:")
     for f in res["top_corto"][:8]:
         lines.append(f"  {f['simbolo']}: {f['cambio_7d']:+.1f}% (vs BTC: {f['fuerza_7d']:+.1f}pp) — rank #{f['rank']}")
 
@@ -4064,10 +4091,12 @@ def cmd_fuerza(msg):
 
     safe_send(msg.chat.id, "\n".join(lines)[:4096])
 
+    dia_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_24h']:+.1f}pp)" for f in res["top_24h"][:6])
     corto_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_7d']:+.1f}pp)" for f in res["top_corto"][:6])
     largo_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_200d']:+.1f}pp)" for f in res["top_largo"][:6])
     doble_txt = ", ".join(f["simbolo"] for f in res["doble_fuerza"]) or "ninguna"
     prompt = (f"Fuerza relativa cripto vs BTC:\n"
+              f"Top 24 horas: {dia_txt}\n"
               f"Top 7 días: {corto_txt}\n"
               f"Top ~200 días (6-7 meses): {largo_txt}\n"
               f"Fuertes en AMBOS plazos a la vez: {doble_txt}\n\n"
@@ -4080,6 +4109,33 @@ def cmd_fuerza(msg):
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
+# ═══ Menú de comandos de Telegram (lo que sale al pulsar "/") ═══
+# El orden de esta lista es el orden del menú: /dyor va el primero.
+MENU_COMANDOS = [
+    ("dyor", "⚠️ Aviso legal — léelo antes de usar el bot"),
+    ("start", "Inicio y lista de comandos"),
+    ("guia", "Explicación completa de cada comando"),
+    ("trial", "Prueba gratuita de 7 días"),
+    ("premium", "Suscripción premium"),
+    ("verificar", "Confirmar tu pago con el hash de la transacción"),
+    ("mistatus", "Ver el estado de tu suscripción"),
+    ("valor", "Índice barato/caro 0-100 de un activo"),
+    ("fundamental", "Análisis fundamental 0-100 de una acción"),
+    ("halvingbtc", "Ciclo de 4 años de Bitcoin"),
+    ("ciclo", "Fase actual de BTC en el ciclo de mercado"),
+    ("dominancia", "Zonas de compra/venta de BTC (Fear & Greed)"),
+    ("suelo", "Triple suelo de sentimiento (VIX, AAII, COT, F&G)"),
+    ("ballenas", "Muros de órdenes grandes en Binance"),
+    ("cartera", "Carteras 13F de grandes inversores"),
+    ("insiders", "Compras/ventas de directivos (SEC Form 4)"),
+    ("macro", "Tipos, inflación, paro y derivados cripto"),
+    ("curva", "Curva de tipos EEUU (10 años vs 2 años)"),
+    ("correlacion", "Correlación BTC vs Nasdaq"),
+    ("fuerza", "Fuerza relativa de 100 criptos vs BTC (24h, 7d, 200d)"),
+    ("noticias", "Noticias de bolsa, economía y cripto"),
+    ("ticker", "Resumen de mercados al momento"),
+]
+
 if __name__ == "__main__":
     # FIX 409: si el contenedor anterior no llegó a cerrar su getUpdates a
     # tiempo, esto libera el "lock" de Telegram antes de empezar a hacer
@@ -4089,6 +4145,10 @@ if __name__ == "__main__":
         time.sleep(1)
     except Exception as e:
         log.warning(f"remove_webhook al arrancar: {e}")
+    try:
+        bot.set_my_commands([telebot.types.BotCommand(c, d) for c, d in MENU_COMANDOS])
+    except Exception as e:
+        log.warning(f"set_my_commands: {e}")
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
