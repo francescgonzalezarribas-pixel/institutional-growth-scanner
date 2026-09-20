@@ -1165,7 +1165,6 @@ def cmd_halvingbtc(msg):
     except Exception as e:
         log.error(f"halvingbtc: {e}")
         safe_send(msg.chat.id,f"Error: {e}",message_id=m.message_id)
-
 @bot.message_handler(commands=["start","ayuda"])
 def cmd_start(msg):
     chat_id = msg.from_user.id
@@ -3021,8 +3020,23 @@ def cmd_suelo(msg):
             "para hablar de una señal de suelo clásica.")
     safe_send(msg.chat.id, "\n".join(explicacion))
 
-    comp_txt = "\n".join(f"{k}: {v['score']}/10 — {v['valor']}" for k, v in res["componentes"].items())
-    prompt = (f"Indicadores de pánico de mercado ahora mismo:\n{comp_txt}\n\n"
+    # FIX: el prompt anterior mandaba "VIX (volatilidad): 0/10 — 9.2",
+    # formato ambiguo que llevó a la IA a interpretar mal la dirección de
+    # la escala (dijo "VIX alto indica miedo" cuando 9.2 es un valor muy
+    # BAJO, sin pánico) — probablemente por apoyarse en su conocimiento
+    # general de "VIX alto = miedo" sin parsear bien nuestros números.
+    # Ahora se lo damos ya interpretado en texto plano, sin dejarle nada
+    # a la inferencia.
+    def _interpretar(score):
+        if score < 3: return "TRANQUILO, sin señales de pánico"
+        if score < 7: return "MODERADO"
+        return "EN PÁNICO / ESTRÉS ALTO"
+    comp_txt = "\n".join(
+        f"{k}: valor real = {v['valor']} → {_interpretar(v['score'])} "
+        f"(score interno {v['score']}/10, donde 0=sin pánico y 10=pánico máximo)"
+        for k, v in res["componentes"].items())
+    prompt = (f"Indicadores de pánico de mercado ahora mismo, YA INTERPRETADOS — usa estas "
+              f"interpretaciones tal cual, no las reinterpretes ni las contradigas:\n{comp_txt}\n\n"
               f"Veredicto del modelo: {res['veredicto']}\n\n"
               "Nota: el COT es el informe oficial de la CFTC (gobierno de EEUU) sobre posicionamiento "
               "real de grandes especuladores en futuros del S&P 500 — el ángulo institucional real "
@@ -3642,3 +3656,4 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
