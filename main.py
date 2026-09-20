@@ -1165,6 +1165,7 @@ def cmd_halvingbtc(msg):
     except Exception as e:
         log.error(f"halvingbtc: {e}")
         safe_send(msg.chat.id,f"Error: {e}",message_id=m.message_id)
+
 @bot.message_handler(commands=["start","ayuda"])
 def cmd_start(msg):
     chat_id = msg.from_user.id
@@ -3591,7 +3592,7 @@ Curva de tipos EEUU (10 años vs 2 años) — indicador de recesión más vigila
 Correlación BTC vs Nasdaq — mide si cripto se mueve pegado a las tech (risk-on/risk-off).
 
 ━━━ /fuerza ━━━
-Compara 100 criptos contra BTC en los últimos 7/30 días — detecta cuáles aguantan o suben más que el mercado general ahora mismo (no predice el futuro, describe divergencias ya en marcha).""",
+Compara 100 criptos contra BTC a corto plazo (7 días) Y a largo plazo (~200 días) — detecta cuáles aguantan/lideran solo esta semana vs cuáles llevan meses haciéndolo (señal más sólida). No predice el futuro, describe divergencias ya en marcha.""",
 
 """📖 GUÍA DE COMANDOS (3/3) — Noticias y automatizaciones
 
@@ -3668,7 +3669,7 @@ def fetch_top_cryptos_cambios(n=100):
         r = requests.get("https://api.coingecko.com/api/v3/coins/markets",
                         params={"vs_currency": "usd", "order": "market_cap_desc",
                                 "per_page": str(n), "page": "1",
-                                "price_change_percentage": "24h,7d,30d"},
+                                "price_change_percentage": "24h,7d,30d,200d"},
                         timeout=15)
         if r.status_code != 200:
             raise RuntimeError(f"CoinGecko markets: HTTP {r.status_code}")
@@ -3689,33 +3690,82 @@ def calcular_fuerza_relativa():
         return None
     btc_7d = btc.get("price_change_percentage_7d_in_currency") or 0
     btc_30d = btc.get("price_change_percentage_30d_in_currency") or 0
+    btc_200d = btc.get("price_change_percentage_200d_in_currency") or 0
 
     filas = []
+    sin_dato = []
     for c in data:
         sym = c["symbol"].lower()
         if sym in STABLECOINS_EXCLUIR or sym == "btc":
             continue
         cambio_7d = c.get("price_change_percentage_7d_in_currency")
+        cambio_200d = c.get("price_change_percentage_200d_in_currency")
         if cambio_7d is None:
+            sin_dato.append(c["symbol"].upper())
             continue
         filas.append({
             "nombre": c["name"], "simbolo": c["symbol"].upper(),
             "cambio_7d": cambio_7d,
             "cambio_30d": c.get("price_change_percentage_30d_in_currency"),
+            "cambio_200d": cambio_200d,
             "fuerza_7d": cambio_7d - btc_7d,
+            # Si no hay dato de 200d (moneda muy nueva, p.ej. HYPE/PURR que
+            # llevan menos de 200 días cotizando), no inventamos un cero —
+            # lo dejamos en None y lo tratamos aparte.
+            "fuerza_200d": (cambio_200d - btc_200d) if cambio_200d is not None else None,
             "rank": c.get("market_cap_rank"),
         })
     filas.sort(key=lambda x: x["fuerza_7d"], reverse=True)
-    return {"btc_7d": btc_7d, "btc_30d": btc_30d, "top": filas[:15], "cola": filas[-5:]}
+    top_corto = filas[:15]
 
-def chart_fuerza_relativa(res):
-    top = res["top"]
+    filas_200d = [f for f in filas if f["fuerza_200d"] is not None]
+    filas_200d.sort(key=lambda x: x["fuerza_200d"], reverse=True)
+    top_largo = filas_200d[:15]
+
+    # La señal más sólida: fuerte en AMBOS plazos a la vez, no solo esta
+    # semana — esto es justo lo que distingue "ruido de una semana" de
+    # "liderazgo sostenido" (lo que preguntabas: la próxima reina del
+    # bullrun suele llevar así varios meses, no solo unos días).
+    simbolos_top_corto = {f["simbolo"] for f in top_corto}
+    doble_fuerza = [f for f in top_largo if f["simbolo"] in simbolos_top_corto]
+
+    # Sin dato de 200d (monedas demasiado nuevas para tener ese histórico,
+    # como HYPE o PURR) — no las escondemos, las señalamos aparte.
+    demasiado_nuevas = [f["simbolo"] for f in filas if f["fuerza_200d"] is None]
+
+    simbolos_en_top100 = {c["symbol"].upper() for c in data}
+
+    return {"btc_7d": btc_7d, "btc_30d": btc_30d, "btc_200d": btc_200d,
+            "top_corto": top_corto, "top_largo": top_largo, "doble_fuerza": doble_fuerza,
+            "demasiado_nuevas": demasiado_nuevas, "todas": filas,
+            "sin_dato": sin_dato, "simbolos_en_top100": simbolos_en_top100}
+
+def buscar_moneda_en_fuerza(res, simbolo):
+    simbolo = simbolo.upper()
+    for f in res["todas"]:
+        if f["simbolo"] == simbolo:
+            pos_corto = res["todas"].index(f) + 1
+            if f["fuerza_200d"] is not None:
+                orden_largo = sorted([x for x in res["todas"] if x["fuerza_200d"] is not None],
+                                     key=lambda x: x["fuerza_200d"], reverse=True)
+                pos_largo = orden_largo.index(f) + 1
+                return (f"{simbolo}: fuerza 7d {f['fuerza_7d']:+.1f}pp (puesto #{pos_corto}) | "
+                       f"fuerza 200d {f['fuerza_200d']:+.1f}pp (puesto #{pos_largo})")
+            return (f"{simbolo}: fuerza 7d {f['fuerza_7d']:+.1f}pp (puesto #{pos_corto}) | "
+                   f"sin dato de 200 días (moneda demasiado nueva para ese histórico)")
+    if simbolo in res["sin_dato"]:
+        return f"{simbolo}: está en el top 100 por capitalización, pero CoinGecko no tiene su dato de 7 días ahora mismo"
+    if simbolo not in res["simbolos_en_top100"]:
+        return f"{simbolo}: no está en el top 100 por capitalización ahora mismo"
+    return f"{simbolo}: no encontrado (motivo desconocido)"
+
+def chart_fuerza_relativa(top, campo, titulo, btc_valor):
     fig, ax = plt.subplots(figsize=(12, 8))
     fig.patch.set_facecolor('#0d1117')
     ax.set_facecolor('#0d1117')
 
-    nombres = [f"{f['simbolo']}" for f in top]
-    valores = [f["fuerza_7d"] for f in top]
+    nombres = [f["simbolo"] for f in top]
+    valores = [f[campo] for f in top]
     colores = ['#00CC44' if v >= 0 else '#FF3333' for v in valores]
     y_pos = list(range(len(top)))
 
@@ -3723,7 +3773,7 @@ def chart_fuerza_relativa(res):
     ax.axvline(0, color='#666666', linewidth=1, zorder=2)
     max_abs = max(abs(v) for v in valores) or 1
     for i, f in enumerate(top):
-        v = f["fuerza_7d"]
+        v = f[campo]
         offset = max_abs * 0.03
         ax.text(v + (offset if v >= 0 else -offset), i, f"{v:+.1f}pp",
                 va='center', ha='left' if v >= 0 else 'right',
@@ -3737,7 +3787,7 @@ def chart_fuerza_relativa(res):
     for spine in ax.spines.values(): spine.set_visible(False)
     ax.tick_params(left=False)
 
-    ax.set_title(f'FUERZA RELATIVA vs BTC — últimos 7 días (BTC: {res["btc_7d"]:+.1f}%)',
+    ax.set_title(f'{titulo} (BTC: {btc_valor:+.1f}%)',
                 color='white', fontsize=14, fontweight='bold', loc='left', pad=15)
 
     plt.tight_layout()
@@ -3752,42 +3802,75 @@ def cmd_fuerza(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
         return
-    m = bot.send_message(msg.chat.id, "Comparando 100 criptos contra BTC... (10-15s)")
+    m = bot.send_message(msg.chat.id, "Comparando 100 criptos contra BTC (corto y largo plazo)... (10-15s)")
     res = calcular_fuerza_relativa()
     if not res:
         safe_send(msg.chat.id, "No he podido calcular la fuerza relativa ahora mismo.",
                   message_id=m.message_id)
         return
+
     try:
-        chart = chart_fuerza_relativa(res)
+        chart_corto = chart_fuerza_relativa(res["top_corto"], "fuerza_7d",
+                                            "FUERZA RELATIVA vs BTC — últimos 7 días", res["btc_7d"])
         bot.delete_message(msg.chat.id, m.message_id)
-        bot.send_photo(msg.chat.id, chart)
+        bot.send_photo(msg.chat.id, chart_corto)
     except Exception as e:
-        log.warning(f"chart_fuerza_relativa: {e}")
-        lines = [f"{f['simbolo']}: {f['fuerza_7d']:+.1f}pp vs BTC" for f in res["top"]]
-        safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
+        log.warning(f"chart_fuerza_relativa (7d): {e}")
+
+    try:
+        chart_largo = chart_fuerza_relativa(res["top_largo"], "fuerza_200d",
+                                            "FUERZA RELATIVA vs BTC — últimos ~200 días (~6-7 meses)",
+                                            res["btc_200d"])
+        bot.send_photo(msg.chat.id, chart_largo)
+    except Exception as e:
+        log.warning(f"chart_fuerza_relativa (200d): {e}")
 
     lines = [f"📖 FUERZA RELATIVA — top 100 por capitalización\n",
-             f"BTC en 7 días: {res['btc_7d']:+.1f}% | en 30 días: {res['btc_30d']:+.1f}%\n",
-             "Qué es \"fuerza relativa\": cuánto ha subido/bajado cada moneda POR ENCIMA o "
-             "POR DEBAJO de BTC en el mismo periodo. Positivo = aguanta o sube más que el "
-             "mercado general (el patrón que describías con HYPE/PURR). No predice el "
-             "futuro — describe qué está pasando YA, que suele ser la señal temprana antes "
-             "de que se note del todo en el precio.\n",
-             "🏆 Más fuertes vs BTC (7 días):"]
-    for f in res["top"][:10]:
-        lines.append(f"  {f['simbolo']}: {f['cambio_7d']:+.1f}% (vs BTC: {f['fuerza_7d']:+.1f}pp)"
-                     f" — rank #{f['rank']}")
+             f"BTC: 7d {res['btc_7d']:+.1f}% | 30d {res['btc_30d']:+.1f}% | ~200d {res['btc_200d']:+.1f}%\n",
+             "Dos plazos, dos preguntas distintas:\n"
+             "• 7 días = ¿quién está fuerte ESTA semana? (puede ser ruido)\n"
+             "• ~200 días = ¿quién lleva MESES aguantando o liderando? (señal mucho más sólida — "
+             "esto es lo que suele distinguir a una futura 'reina del bullrun' de un simple pico "
+             "de una semana)\n"]
+
+    if res["doble_fuerza"]:
+        lines.append("⚡ FUERZA EN AMBOS PLAZOS A LA VEZ (la señal más fuerte):")
+        for f in res["doble_fuerza"]:
+            lines.append(f"  {f['simbolo']}: 7d {f['fuerza_7d']:+.1f}pp | 200d {f['fuerza_200d']:+.1f}pp")
+        lines.append("")
+    else:
+        lines.append("⚡ Ninguna moneda está en el top 15 de AMBOS plazos a la vez ahora mismo.\n")
+
+    lines.append("🏆 Top 8 — últimos 7 días:")
+    for f in res["top_corto"][:8]:
+        lines.append(f"  {f['simbolo']}: {f['cambio_7d']:+.1f}% (vs BTC: {f['fuerza_7d']:+.1f}pp) — rank #{f['rank']}")
+
+    lines.append("\n🏆 Top 8 — últimos ~200 días:")
+    for f in res["top_largo"][:8]:
+        lines.append(f"  {f['simbolo']}: {f['cambio_200d']:+.1f}% (vs BTC: {f['fuerza_200d']:+.1f}pp) — rank #{f['rank']}")
+
+    if res["demasiado_nuevas"]:
+        nuevas_top = [s for s in res["demasiado_nuevas"] if s in {f["simbolo"] for f in res["todas"][:30]}]
+        if nuevas_top:
+            lines.append(f"\n📌 Sin dato de 200 días por ser muy recientes (no llevan tanto cotizando): "
+                        f"{', '.join(nuevas_top[:10])} — no significa que no sean fuertes, solo que no "
+                        "podemos medir su plazo largo todavía.")
+
     safe_send(msg.chat.id, "\n".join(lines)[:4096])
 
-    top_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_7d']:+.1f}pp)" for f in res["top"][:8])
-    prompt = (f"Ranking de fuerza relativa cripto vs BTC (últimos 7 días, BTC: {res['btc_7d']:+.1f}%): "
-              f"{top_txt}\n\n"
+    corto_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_7d']:+.1f}pp)" for f in res["top_corto"][:6])
+    largo_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_200d']:+.1f}pp)" for f in res["top_largo"][:6])
+    doble_txt = ", ".join(f["simbolo"] for f in res["doble_fuerza"]) or "ninguna"
+    prompt = (f"Fuerza relativa cripto vs BTC:\n"
+              f"Top 7 días: {corto_txt}\n"
+              f"Top ~200 días (6-7 meses): {largo_txt}\n"
+              f"Fuertes en AMBOS plazos a la vez: {doble_txt}\n\n"
               "No inventes catalizadores concretos que no estén aquí — si no sabes la razón real "
               "de por qué una moneda concreta está fuerte, dilo, no la inventes.\n\n"
-              "1. ¿Qué interpretación general tiene que estas monedas estén ganando a BTC ahora mismo?\n"
-              "2. ¿Fuerza relativa reciente tiende a persistir o a revertirse? Explica el razonamiento\n"
-              "3. Riesgos de perseguir a las monedas que ya han subido mucho relativo al mercado")
+              "1. ¿Qué diferencia hay entre estar fuerte solo 7 días y estar fuerte también a 200 días? "
+              "¿Cuál es más significativo y por qué?\n"
+              "2. Si hay monedas en ambas listas, ¿qué sugiere eso sobre su papel en el ciclo actual?\n"
+              "3. Riesgos de perseguir fuerza relativa, tanto a corto como a largo plazo")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
@@ -3803,4 +3886,3 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
