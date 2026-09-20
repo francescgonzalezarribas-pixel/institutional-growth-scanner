@@ -1263,12 +1263,19 @@ def cmd_premium(msg):
             f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'indefinido'}")
         return
     if WALLET_USDT:
+        importe = importe_para(chat_id)
+        if importe is None:
+            safe_send(chat_id, "Ahora mismo no puedo asignarte un importe de pago. Contacta al administrador.")
+            return
         safe_send(chat_id,
             f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
-            f"Envía el equivalente a {PRECIO_MENSUAL}€ en USDT por la red TRC20 (Tron) a:\n"
+            f"Envía EXACTAMENTE <code>{importe:.3f}</code> USDT por la red TRC20 (Tron) a:\n"
             f"<code>{WALLET_USDT}</code>\n\n"
-            "⚠️ Solo USDT en red TRC20. Otra red o token no se puede verificar.\n\n"
-            "Después envía el hash de la transacción:\n/verificar HASH",
+            "⚠️ Este importe es solo tuyo: identifica tu pago. Si envías otra cantidad "
+            "no se puede verificar automáticamente.\n"
+            "⚠️ Solo USDT en red TRC20. Si pagas desde un exchange, suma su comisión "
+            "de retirada aparte para que a la wallet lleguen exactamente esos USDT.\n\n"
+            f"Tu importe se mantiene {PAGO_TTL_DIAS} días. Después de pagar, envía el hash:\n/verificar HASH",
             parse_mode="HTML")
         return
     enlace, _ = crear_pago()
@@ -1302,6 +1309,71 @@ def _save_used_tx():
         os.replace(tmp, USED_TX_FILE)
     except Exception as e:
         log.warning(f"_save_used_tx: {e}")
+
+# ── Importes únicos por usuario ──
+# Cada usuario recibe un importe exacto (p.ej. 5.347 USDT). Como el importe
+# identifica al pagador, nadie puede reclamar con su cuenta el hash de un
+# pago ajeno: la cantidad de esa transacción no coincide con la suya.
+PRECIO_USDT = float(os.environ.get("PRECIO_USDT", PRECIO_MENSUAL))
+PAGOS_FILE = os.environ.get("PAGOS_PENDIENTES_FILE", _p("pagos_pendientes.json"))
+PAGO_TTL_DIAS = 7
+_PAGOS_LOCK = threading.Lock()
+
+def _load_pagos():
+    try:
+        with open(PAGOS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_PAGOS = _load_pagos()  # {str(chat_id): {"k": 1..999, "ts": epoch}}
+
+def _save_pagos():
+    try:
+        tmp = PAGOS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_PAGOS, f)
+        os.replace(tmp, PAGOS_FILE)
+    except Exception as e:
+        log.warning(f"_save_pagos: {e}")
+
+def _purgar_pagos_caducados():
+    ahora = time.time()
+    for cid in [c for c, v in _PAGOS.items() if ahora - v.get("ts", 0) > PAGO_TTL_DIAS * 86400]:
+        del _PAGOS[cid]
+
+def importe_para(chat_id):
+    """Importe único en USDT de este usuario. Crea uno si no tiene y renueva
+    su caducidad (7 días). Devuelve None solo si los 999 huecos están ocupados."""
+    with _PAGOS_LOCK:
+        _purgar_pagos_caducados()
+        key = str(chat_id)
+        if key not in _PAGOS:
+            usados = {v["k"] for v in _PAGOS.values()}
+            k = abs(int(chat_id)) % 999 + 1
+            for _ in range(999):
+                if k not in usados:
+                    break
+                k = k % 999 + 1
+            else:
+                return None
+            _PAGOS[key] = {"k": k, "ts": time.time()}
+        else:
+            _PAGOS[key]["ts"] = time.time()
+        _save_pagos()
+        return round(PRECIO_USDT + _PAGOS[key]["k"] / 1000, 3)
+
+def importe_asignado(chat_id):
+    """Solo lectura: el importe que se le asignó a este usuario, o None."""
+    with _PAGOS_LOCK:
+        _purgar_pagos_caducados()
+        v = _PAGOS.get(str(chat_id))
+        return round(PRECIO_USDT + v["k"] / 1000, 3) if v else None
+
+def liberar_importe(chat_id):
+    with _PAGOS_LOCK:
+        if _PAGOS.pop(str(chat_id), None) is not None:
+            _save_pagos()
 
 def verificar_pago_usdt(tx_hash):
     """Devuelve (ok, cantidad_usdt, motivo)."""
@@ -1357,6 +1429,10 @@ def cmd_verificar(msg):
         if tx_hash in _USED_TX:
             safe_send(chat_id, "Ese hash ya fue utilizado para activar una suscripción.")
             return
+    esperado = importe_asignado(chat_id)
+    if esperado is None:
+        safe_send(chat_id, "Primero usa /premium para obtener tu importe exacto a pagar.")
+        return
     try:
         ok, cantidad, motivo = verificar_pago_usdt(tx_hash)
     except Exception as e:
@@ -1366,11 +1442,12 @@ def cmd_verificar(msg):
     if not ok:
         safe_send(chat_id, motivo)
         return
-    # Umbral con margen del 10% por el cambio EUR/USD del momento
-    if cantidad < PRECIO_MENSUAL * 0.90:
+    # El importe debe coincidir con el asignado a ESTE usuario (tolerancia: medio milésimo)
+    if abs(cantidad - esperado) > 0.0005:
         safe_send(chat_id,
-            f"Pago detectado pero insuficiente ({cantidad:.2f} USDT).\n"
-            f"Se esperaban ~{PRECIO_MENSUAL} USDT equivalentes.")
+            f"He encontrado tu pago, pero el importe ({cantidad:.4f} USDT) no coincide con el "
+            f"que te asigné ({esperado:.3f} USDT).\n\n"
+            "Si enviaste otra cantidad o tu exchange descontó comisión, contacta al administrador.")
         return
     with _USED_TX_LOCK:
         if tx_hash in _USED_TX:   # re-comprobación por si dos /verificar llegaron a la vez
@@ -1378,15 +1455,16 @@ def cmd_verificar(msg):
             return
         _USED_TX[tx_hash] = chat_id
         _save_used_tx()
+    liberar_importe(chat_id)
     expiry = activar(chat_id, dias=30)
     safe_send(chat_id,
-        f"✅ PAGO VERIFICADO — {cantidad:.2f} USDT\n\n"
+        f"✅ PAGO VERIFICADO — {cantidad:.3f} USDT\n\n"
         f"Acceso premium hasta {expiry.strftime('%d/%m/%Y')}\n\n"
         "Comandos: /valor /fundamental /halvingbtc")
     safe_send(ALLOWED_USER_ID,
         f"💰 NUEVO SUSCRIPTOR\nChat ID: {chat_id}\n"
         f"Nombre: {msg.from_user.first_name}\n"
-        f"Pago: {cantidad:.2f} USDT\nTX: {tx_hash[:20]}...")
+        f"Pago: {cantidad:.3f} USDT\nTX: {tx_hash[:20]}...")
 
 @bot.message_handler(commands=["mistatus"])
 def cmd_mistatus(msg):
@@ -2659,7 +2737,6 @@ def _scheduler_loop():
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
-
 
 # ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
 # Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
@@ -4015,3 +4092,4 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
