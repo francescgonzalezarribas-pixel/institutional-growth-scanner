@@ -1187,7 +1187,8 @@ def cmd_start(msg):
             "/suelo — Triple Suelo de Sentimiento (VIX + AAII + Fear&Greed)\n"
             "/curva — Curva de tipos EEUU (10 años vs 2 años)\n"
             "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
-            "/correlacion — Correlación BTC vs Nasdaq (risk-on/risk-off)\n\n"
+            "/correlacion — Correlación BTC vs Nasdaq (risk-on/risk-off)\n"
+            "/fuerza — Qué criptos aguantan o suben más que BTC (fuerza relativa)\n\n"
             "/guia — Explicación completa de cada comando\n"
             "/dyor — Aviso legal (léelo antes de usar el bot para decidir)\n\n"
             "Además, cada 2h (9-21h) recibes un resumen automático de mercados, "
@@ -3587,7 +3588,10 @@ Tipos Fed, inflación, paro, bonos (FRED) + derivados cripto (Binance).
 Curva de tipos EEUU (10 años vs 2 años) — indicador de recesión más vigilado históricamente.
 
 ━━━ /correlacion ━━━
-Correlación BTC vs Nasdaq — mide si cripto se mueve pegado a las tech (risk-on/risk-off).""",
+Correlación BTC vs Nasdaq — mide si cripto se mueve pegado a las tech (risk-on/risk-off).
+
+━━━ /fuerza ━━━
+Compara 100 criptos contra BTC en los últimos 7/30 días — detecta cuáles aguantan o suben más que el mercado general ahora mismo (no predice el futuro, describe divergencias ya en marcha).""",
 
 """📖 GUÍA DE COMANDOS (3/3) — Noticias y automatizaciones
 
@@ -3642,6 +3646,149 @@ En resumen: DYOR — Do Your Own Research. Usa este bot como una herramienta má
 @bot.message_handler(commands=["dyor"])
 def cmd_dyor(msg):
     safe_send(msg.chat.id, TEXTO_DYOR)
+
+
+# ═══ /FUERZA — Fuerza relativa cripto vs BTC ════════════════════
+# Detecta qué criptos aguantan o suben MIENTRAS el mercado en general cae
+# (o suben más que el mercado cuando todo sube) — no predice el futuro,
+# describe divergencias que ya están pasando ahora mismo. Es el mismo
+# patrón que HYPE/PURR mostraron: mantenerse fuerte mientras el resto
+# sufre suele preceder a un liderazgo sostenido, aunque no es garantía.
+# CoinGecko top 100 por capitalización, gratis, sin key (ya lo usamos
+# para HYPE/PURR).
+
+STABLECOINS_EXCLUIR = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usds",
+                       "pyusd", "usdp", "frax", "gusd", "usdd"}
+
+def fetch_top_cryptos_cambios(n=100):
+    ck = "cg_markets_top100"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
+        r = requests.get("https://api.coingecko.com/api/v3/coins/markets",
+                        params={"vs_currency": "usd", "order": "market_cap_desc",
+                                "per_page": str(n), "page": "1",
+                                "price_change_percentage": "24h,7d,30d"},
+                        timeout=15)
+        if r.status_code != 200:
+            raise RuntimeError(f"CoinGecko markets: HTTP {r.status_code}")
+        data = r.json()
+        if not data:
+            raise RuntimeError("CoinGecko markets: sin datos")
+        return data
+    res = with_retry(_do, tries=2, base_delay=3, what="fetch_top_cryptos_cambios")
+    if res: cache_set(ck, res)
+    return res
+
+def calcular_fuerza_relativa():
+    data = fetch_top_cryptos_cambios(100)
+    if not data:
+        return None
+    btc = next((c for c in data if c["symbol"].lower() == "btc"), None)
+    if not btc:
+        return None
+    btc_7d = btc.get("price_change_percentage_7d_in_currency") or 0
+    btc_30d = btc.get("price_change_percentage_30d_in_currency") or 0
+
+    filas = []
+    for c in data:
+        sym = c["symbol"].lower()
+        if sym in STABLECOINS_EXCLUIR or sym == "btc":
+            continue
+        cambio_7d = c.get("price_change_percentage_7d_in_currency")
+        if cambio_7d is None:
+            continue
+        filas.append({
+            "nombre": c["name"], "simbolo": c["symbol"].upper(),
+            "cambio_7d": cambio_7d,
+            "cambio_30d": c.get("price_change_percentage_30d_in_currency"),
+            "fuerza_7d": cambio_7d - btc_7d,
+            "rank": c.get("market_cap_rank"),
+        })
+    filas.sort(key=lambda x: x["fuerza_7d"], reverse=True)
+    return {"btc_7d": btc_7d, "btc_30d": btc_30d, "top": filas[:15], "cola": filas[-5:]}
+
+def chart_fuerza_relativa(res):
+    top = res["top"]
+    fig, ax = plt.subplots(figsize=(12, 8))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    nombres = [f"{f['simbolo']}" for f in top]
+    valores = [f["fuerza_7d"] for f in top]
+    colores = ['#00CC44' if v >= 0 else '#FF3333' for v in valores]
+    y_pos = list(range(len(top)))
+
+    ax.barh(y_pos, valores, color=colores, height=0.6, zorder=3)
+    ax.axvline(0, color='#666666', linewidth=1, zorder=2)
+    max_abs = max(abs(v) for v in valores) or 1
+    for i, f in enumerate(top):
+        v = f["fuerza_7d"]
+        offset = max_abs * 0.03
+        ax.text(v + (offset if v >= 0 else -offset), i, f"{v:+.1f}pp",
+                va='center', ha='left' if v >= 0 else 'right',
+                color=colores[i], fontweight='bold', fontsize=10)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(nombres, color='white', fontsize=11, fontweight='bold')
+    ax.invert_yaxis()
+    ax.set_xlim(-max_abs*1.3, max_abs*1.3)
+    ax.set_xticks([])
+    for spine in ax.spines.values(): spine.set_visible(False)
+    ax.tick_params(left=False)
+
+    ax.set_title(f'FUERZA RELATIVA vs BTC — últimos 7 días (BTC: {res["btc_7d"]:+.1f}%)',
+                color='white', fontsize=14, fontweight='bold', loc='left', pad=15)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+@bot.message_handler(commands=["fuerza"])
+def cmd_fuerza(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Comparando 100 criptos contra BTC... (10-15s)")
+    res = calcular_fuerza_relativa()
+    if not res:
+        safe_send(msg.chat.id, "No he podido calcular la fuerza relativa ahora mismo.",
+                  message_id=m.message_id)
+        return
+    try:
+        chart = chart_fuerza_relativa(res)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, chart)
+    except Exception as e:
+        log.warning(f"chart_fuerza_relativa: {e}")
+        lines = [f"{f['simbolo']}: {f['fuerza_7d']:+.1f}pp vs BTC" for f in res["top"]]
+        safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
+
+    lines = [f"📖 FUERZA RELATIVA — top 100 por capitalización\n",
+             f"BTC en 7 días: {res['btc_7d']:+.1f}% | en 30 días: {res['btc_30d']:+.1f}%\n",
+             "Qué es \"fuerza relativa\": cuánto ha subido/bajado cada moneda POR ENCIMA o "
+             "POR DEBAJO de BTC en el mismo periodo. Positivo = aguanta o sube más que el "
+             "mercado general (el patrón que describías con HYPE/PURR). No predice el "
+             "futuro — describe qué está pasando YA, que suele ser la señal temprana antes "
+             "de que se note del todo en el precio.\n",
+             "🏆 Más fuertes vs BTC (7 días):"]
+    for f in res["top"][:10]:
+        lines.append(f"  {f['simbolo']}: {f['cambio_7d']:+.1f}% (vs BTC: {f['fuerza_7d']:+.1f}pp)"
+                     f" — rank #{f['rank']}")
+    safe_send(msg.chat.id, "\n".join(lines)[:4096])
+
+    top_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_7d']:+.1f}pp)" for f in res["top"][:8])
+    prompt = (f"Ranking de fuerza relativa cripto vs BTC (últimos 7 días, BTC: {res['btc_7d']:+.1f}%): "
+              f"{top_txt}\n\n"
+              "No inventes catalizadores concretos que no estén aquí — si no sabes la razón real "
+              "de por qué una moneda concreta está fuerte, dilo, no la inventes.\n\n"
+              "1. ¿Qué interpretación general tiene que estas monedas estén ganando a BTC ahora mismo?\n"
+              "2. ¿Fuerza relativa reciente tiende a persistir o a revertirse? Explica el razonamiento\n"
+              "3. Riesgos de perseguir a las monedas que ya han subido mucho relativo al mercado")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
 if __name__ == "__main__":
