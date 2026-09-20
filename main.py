@@ -1165,7 +1165,6 @@ def cmd_halvingbtc(msg):
     except Exception as e:
         log.error(f"halvingbtc: {e}")
         safe_send(msg.chat.id,f"Error: {e}",message_id=m.message_id)
-
 @bot.message_handler(commands=["start","ayuda"])
 def cmd_start(msg):
     chat_id = msg.from_user.id
@@ -3692,8 +3691,18 @@ def calcular_fuerza_relativa():
     btc_30d = btc.get("price_change_percentage_30d_in_currency") or 0
     btc_200d = btc.get("price_change_percentage_200d_in_currency") or 0
 
+    # FIX: valores como "+528pp a 7 días" o "+38.000pp a 200 días" no son
+    # una señal real — son casi siempre microcaps con tan poca liquidez
+    # que su precio de referencia era casi cero (dispara el % aunque no
+    # signifique nada útil), o directamente un error de datos puntual de
+    # CoinGecko para esa moneda. Sin filtrarlos, aplastan la escala del
+    # gráfico y esconden la señal de verdad del resto.
+    LIMITE_7D = 200
+    LIMITE_200D = 2000
+
     filas = []
     sin_dato = []
+    anomalos = []
     for c in data:
         sym = c["symbol"].lower()
         if sym in STABLECOINS_EXCLUIR or sym == "btc":
@@ -3703,16 +3712,21 @@ def calcular_fuerza_relativa():
         if cambio_7d is None:
             sin_dato.append(c["symbol"].upper())
             continue
+        fuerza_7d = cambio_7d - btc_7d
+        fuerza_200d = (cambio_200d - btc_200d) if cambio_200d is not None else None
+        if abs(fuerza_7d) > LIMITE_7D or (fuerza_200d is not None and abs(fuerza_200d) > LIMITE_200D):
+            anomalos.append(c["symbol"].upper())
+            continue
         filas.append({
             "nombre": c["name"], "simbolo": c["symbol"].upper(),
             "cambio_7d": cambio_7d,
             "cambio_30d": c.get("price_change_percentage_30d_in_currency"),
             "cambio_200d": cambio_200d,
-            "fuerza_7d": cambio_7d - btc_7d,
+            "fuerza_7d": fuerza_7d,
             # Si no hay dato de 200d (moneda muy nueva, p.ej. HYPE/PURR que
             # llevan menos de 200 días cotizando), no inventamos un cero —
             # lo dejamos en None y lo tratamos aparte.
-            "fuerza_200d": (cambio_200d - btc_200d) if cambio_200d is not None else None,
+            "fuerza_200d": fuerza_200d,
             "rank": c.get("market_cap_rank"),
         })
     filas.sort(key=lambda x: x["fuerza_7d"], reverse=True)
@@ -3737,7 +3751,7 @@ def calcular_fuerza_relativa():
 
     return {"btc_7d": btc_7d, "btc_30d": btc_30d, "btc_200d": btc_200d,
             "top_corto": top_corto, "top_largo": top_largo, "doble_fuerza": doble_fuerza,
-            "demasiado_nuevas": demasiado_nuevas, "todas": filas,
+            "demasiado_nuevas": demasiado_nuevas, "anomalos": anomalos, "todas": filas,
             "sin_dato": sin_dato, "simbolos_en_top100": simbolos_en_top100}
 
 def buscar_moneda_en_fuerza(res, simbolo):
@@ -3856,6 +3870,11 @@ def cmd_fuerza(msg):
                         f"{', '.join(nuevas_top[:10])} — no significa que no sean fuertes, solo que no "
                         "podemos medir su plazo largo todavía.")
 
+    if res.get("anomalos"):
+        lines.append(f"\n🚫 Excluidas por valores imposibles ({', '.join(res['anomalos'][:8])}) — "
+                    "casi siempre microcaps con precio de referencia cercano a cero (el % se dispara "
+                    "sin significar nada real) o un error de datos puntual, no una señal de verdad.")
+
     safe_send(msg.chat.id, "\n".join(lines)[:4096])
 
     corto_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_7d']:+.1f}pp)" for f in res["top_corto"][:6])
@@ -3886,3 +3905,4 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
