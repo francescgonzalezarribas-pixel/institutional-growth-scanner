@@ -21,6 +21,15 @@ GROQ_API_KEY    = os.environ["GROQ_API_KEY"]
 ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", 0))
 MADRID = pytz.timezone("Europe/Madrid")
 
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except Exception as _e:
+    log.warning(f"DATA_DIR {DATA_DIR}: {_e}")
+
+def _p(nombre):
+    return os.path.join(DATA_DIR, nombre)
+
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 ai  = Groq(api_key=GROQ_API_KEY)
 
@@ -29,7 +38,7 @@ NOWPAYMENTS_KEY  = os.environ.get("NOWPAYMENTS_API_KEY", "")
 WALLET_USDT      = os.environ.get("WALLET_USDT", "")
 PRECIO_MENSUAL   = 5  # EUR
 TRIAL_DIAS       = 7
-SUBS_FILE        = os.environ.get("SUBS_FILE", "subscribers.json")
+SUBS_FILE        = os.environ.get("SUBS_FILE", _p("subscribers.json"))
 
 def _load_subs():
     try:
@@ -47,17 +56,22 @@ def _load_subs():
         log.info(f"_load_subs: sin fichero previo o vacío ({e})")
         return {}
 
+_SUBS_LOCK = threading.Lock()
+
 def _save_subs():
     try:
-        raw = {}
-        for cid, s in SUSCRIPTORES.items():
-            raw[str(cid)] = {
-                "activo": s.get("activo", False),
-                "expiry": s["expiry"].isoformat() if s.get("expiry") else None,
-                "trial_used": s.get("trial_used", False),
-            }
-        with open(SUBS_FILE, "w") as f:
-            json.dump(raw, f)
+        with _SUBS_LOCK:
+            raw = {}
+            for cid, s in list(SUSCRIPTORES.items()):
+                raw[str(cid)] = {
+                    "activo": s.get("activo", False),
+                    "expiry": s["expiry"].isoformat() if s.get("expiry") else None,
+                    "trial_used": s.get("trial_used", False),
+                }
+            tmp = SUBS_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(raw, f)
+            os.replace(tmp, SUBS_FILE)  # escritura atómica: nunca deja el JSON a medias
     except Exception as e:
         log.warning(f"_save_subs: {e}")
 
@@ -175,7 +189,10 @@ def ask_ai(prompt, max_chars=2500):
             messages=[{"role":"system","content":SYSTEM},
                       {"role":"user","content":prompt}],
             max_tokens=1024, temperature=0.7)
-        t = r.choices[0].message.content
+        t = (r.choices[0].message.content or "").strip()
+        if not t:
+            log.warning("ask_ai: respuesta vacía")
+            return "IA no disponible."
         return t[:max_chars]
     except Exception as e:
         log.error(f"Groq: {e}")
@@ -570,8 +587,8 @@ def calcular_valor(ticker):
         else:
             comp["Fear & Greed"] = {"p":5,"v":"N/D"}
 
-        sym_map = {"BTC-USD":"BTCUSDT","ETH-USD":"ETHUSDT","SOL-USD":"SOLUSDT"}
-        sym = sym_map.get(t,"BTCUSDT")
+        base = t[:-4] if t.endswith("-USD") else t
+        sym = BINANCE_MAP.get(t, f"{base}USDT")
         fr = get_funding(sym)
         if fr is not None:
             if fr<-0.02: p=10; v=f"{fr:+.4f}% — shorts pagando"
@@ -691,7 +708,7 @@ def chart_valor(res):
     ax.set_ylim(0,1.35); ax.set_theta_zero_location('E'); ax.set_theta_direction(1)
     ax.set_thetamin(0); ax.set_thetamax(180)
     ax.set_xticks([np.pi,3*np.pi/4,np.pi/2,np.pi/4,0])
-    ax.set_xticklabels(['0\nCARO','25','50\nNEUTRAL','75','100\nBARATÓ'],
+    ax.set_xticklabels(['0\nCARO','25','50\nNEUTRAL','75','100\nBARATO'],
                        color='white',fontsize=10,fontweight='bold')
     ax.set_yticks([]); ax.spines['polar'].set_visible(False); ax.grid(False)
     zc='#FF3333' if score<30 else '#FF7700' if score<45 else '#FFCC00' if score<65 else '#99DD00' if score<80 else '#00CC44'
@@ -1040,6 +1057,8 @@ def chart_halving():
     fig,ax=plt.subplots(figsize=(18,10))
     fig.patch.set_facecolor('#0d1117'); ax.set_facecolor('#0d1117')
 
+    _hoy = pd.Timestamp.today().normalize()
+    _bear_activo = _hoy <= pd.Timestamp("2026-09-13")
     fases=[
         {"ini":"2012-11-01","fin":"2013-12-31","tipo":"bull","label":"Bull 12m"},
         {"ini":"2014-01-01","fin":"2015-01-31","tipo":"bear","label":"Bear 13m"},
@@ -1051,8 +1070,8 @@ def chart_halving():
         {"ini":"2021-12-01","fin":"2022-11-30","tipo":"bear","label":"Bear 12m"},
         {"ini":"2022-12-01","fin":"2024-04-01","tipo":"rec","label":"Recovery 16m"},
         {"ini":"2024-04-01","fin":"2025-10-06","tipo":"bull","label":"Bull 18m (REAL)"},
-        {"ini":"2025-10-07","fin":"2026-09-13","tipo":"bear","label":"Bear ← AHORA"},
-        {"ini":"2026-09-13","fin":"2027-06-30","tipo":"rec","label":"Recovery (proyec.)"},
+        {"ini":"2025-10-07","fin":"2026-09-13","tipo":"bear","label":"Bear ← AHORA" if _bear_activo else "Bear 11m"},
+        {"ini":"2026-09-13","fin":"2027-06-30","tipo":"rec","label":"Recovery (proyec.)" if _bear_activo else "Recovery ← AHORA"},
         {"ini":"2027-07-01","fin":"2029-06-30","tipo":"bull","label":"Bull (proyec. 2028-29)"},
     ]
     col={"bull":"#0a3a0a","bear":"#3a0a0a","rec":"#0a1a3a"}
@@ -1165,6 +1184,7 @@ def cmd_halvingbtc(msg):
     except Exception as e:
         log.error(f"halvingbtc: {e}")
         safe_send(msg.chat.id,f"Error: {e}",message_id=m.message_id)
+
 @bot.message_handler(commands=["start","ayuda"])
 def cmd_start(msg):
     chat_id = msg.from_user.id
@@ -1242,20 +1262,88 @@ def cmd_premium(msg):
             f"Ya tienes acceso premium activo ✅\n"
             f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'indefinido'}")
         return
+    if WALLET_USDT:
+        safe_send(chat_id,
+            f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
+            f"Envía el equivalente a {PRECIO_MENSUAL}€ en USDT por la red TRC20 (Tron) a:\n"
+            f"<code>{WALLET_USDT}</code>\n\n"
+            "⚠️ Solo USDT en red TRC20. Otra red o token no se puede verificar.\n\n"
+            "Después envía el hash de la transacción:\n/verificar HASH",
+            parse_mode="HTML")
+        return
     enlace, _ = crear_pago()
     if enlace:
         safe_send(chat_id,
             f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
-            "✅ Acceso a todos los comandos\n"
-            "✅ Análisis con IA incluido\n"
-            "✅ Sin límites\n\n"
-            f"👇 Enlace de pago (equivalente en USDT TRC20):\n{enlace}\n\n"
-            "Después de pagar: /verificar HASH_TRANSACCION")
+            f"👇 Enlace de pago (USDT TRC20):\n{enlace}\n\n"
+            "Tras pagar, avisa al administrador para que active tu acceso.")
     else:
-        safe_send(chat_id,
-            f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
-            f"Envía el equivalente a {PRECIO_MENSUAL}€ en USDT (red TRC20) a:\n`{WALLET_USDT}`\n\n"
-            "Después envía el hash de la transacción:\n/verificar HASH")
+        safe_send(chat_id, "Ahora mismo no puedo generar el pago. Contacta al administrador.")
+
+USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # contrato oficial de USDT en Tron
+TX_MAX_EDAD_H = 72
+USED_TX_FILE = os.environ.get("USED_TX_FILE", _p("used_tx.json"))
+_USED_TX_LOCK = threading.Lock()
+
+def _load_used_tx():
+    try:
+        with open(USED_TX_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_USED_TX = _load_used_tx()  # {hash: chat_id}
+
+def _save_used_tx():
+    try:
+        tmp = USED_TX_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_USED_TX, f)
+        os.replace(tmp, USED_TX_FILE)
+    except Exception as e:
+        log.warning(f"_save_used_tx: {e}")
+
+def verificar_pago_usdt(tx_hash):
+    """Devuelve (ok, cantidad_usdt, motivo)."""
+    if not re.fullmatch(r"[0-9a-f]{64}", tx_hash):
+        return False, 0.0, "El hash no tiene formato válido (64 caracteres hexadecimales)."
+    if not WALLET_USDT:
+        return False, 0.0, "El pago manual no está configurado. Contacta al administrador."
+    r = requests.get("https://apilist.tronscan.org/api/transaction-info",
+                     params={"hash": tx_hash}, timeout=10)
+    data = r.json() or {}
+    if not data.get("hash"):
+        return False, 0.0, "No encuentro esa transacción. Espera unos minutos e inténtalo de nuevo."
+    if data.get("contractRet") != "SUCCESS":
+        return False, 0.0, "La transacción no fue exitosa en la blockchain."
+    if not data.get("confirmed"):
+        return False, 0.0, "Transacción no confirmada aún. Espera unos minutos e inténtalo de nuevo."
+    ts = data.get("timestamp")
+    if ts and time.time() - ts / 1000 > TX_MAX_EDAD_H * 3600:
+        return False, 0.0, f"Esa transacción tiene más de {TX_MAX_EDAD_H}h. Contacta al administrador."
+
+    transfers = list(data.get("trc20TransferInfo") or [])
+    tti = data.get("tokenTransferInfo")
+    if isinstance(tti, dict) and tti:
+        transfers.append(tti)
+
+    total = 0.0
+    for t in transfers:
+        contrato = t.get("contract_address") or t.get("address") or ""
+        if contrato != USDT_TRC20_CONTRACT:   # el símbolo "USDT" se puede falsificar; el contrato no
+            continue
+        if t.get("to_address") != WALLET_USDT:
+            continue
+        try:
+            decimales = int(t.get("decimals") or 6)
+            total += float(t.get("amount_str", "0")) / (10 ** decimales)
+        except (ValueError, TypeError):
+            continue
+    if total <= 0:
+        log.info(f"verificar {tx_hash[:12]}: sin transferencia USDT a la wallet. "
+                 f"Campos recibidos: {list(data.keys())[:25]}")
+        return False, 0.0, "No veo un pago en USDT (TRC20) a la dirección indicada en esa transacción."
+    return True, total, ""
 
 @bot.message_handler(commands=["verificar"])
 def cmd_verificar(msg):
@@ -1264,40 +1352,41 @@ def cmd_verificar(msg):
     if len(parts) < 2:
         safe_send(chat_id, "Uso: /verificar HASH_TRANSACCION")
         return
-    tx_hash = parts[1]
-    try:
-        r = requests.get(
-            f"https://apilist.tronscan.org/api/transaction-info?hash={tx_hash}",
-            timeout=10)
-        data = r.json()
-        confirmado = data.get("confirmed", False)
-        cantidad = 0
-        token = data.get("tokenTransferInfo", {})
-        if token:
-            cantidad = float(token.get("amount_str", "0")) / 1e6
-        if not confirmado:
-            safe_send(chat_id, "Transacción no confirmada aún. Espera unos minutos e inténtalo de nuevo.")
+    tx_hash = parts[1].strip().lower()
+    with _USED_TX_LOCK:
+        if tx_hash in _USED_TX:
+            safe_send(chat_id, "Ese hash ya fue utilizado para activar una suscripción.")
             return
-        # Umbral aproximado: el importe en USDT varía según el cambio EUR/USD
-        # del momento del pago, así que aceptamos con un margen del 10%.
-        umbral_min = PRECIO_MENSUAL * 0.90
-        if cantidad >= umbral_min:
-            expiry = activar(chat_id, dias=30)
-            safe_send(chat_id,
-                f"✅ PAGO VERIFICADO — {cantidad:.2f} USDT\n\n"
-                f"Acceso premium hasta {expiry.strftime('%d/%m/%Y')}\n\n"
-                "Comandos: /valor /fundamental /halvingbtc")
-            safe_send(ALLOWED_USER_ID,
-                f"💰 NUEVO SUSCRIPTOR\nChat ID: {chat_id}\n"
-                f"Nombre: {msg.from_user.first_name}\n"
-                f"Pago: {cantidad:.2f} USDT\nTX: {tx_hash[:20]}...")
-        else:
-            safe_send(chat_id,
-                f"Pago detectado pero insuficiente ({cantidad:.2f} USDT).\n"
-                f"Se esperaban ~{PRECIO_MENSUAL} USDT equivalentes.")
+    try:
+        ok, cantidad, motivo = verificar_pago_usdt(tx_hash)
     except Exception as e:
         log.error(f"verificar: {e}")
         safe_send(chat_id, "No pude verificar automáticamente. Contacta al administrador.")
+        return
+    if not ok:
+        safe_send(chat_id, motivo)
+        return
+    # Umbral con margen del 10% por el cambio EUR/USD del momento
+    if cantidad < PRECIO_MENSUAL * 0.90:
+        safe_send(chat_id,
+            f"Pago detectado pero insuficiente ({cantidad:.2f} USDT).\n"
+            f"Se esperaban ~{PRECIO_MENSUAL} USDT equivalentes.")
+        return
+    with _USED_TX_LOCK:
+        if tx_hash in _USED_TX:   # re-comprobación por si dos /verificar llegaron a la vez
+            safe_send(chat_id, "Ese hash ya fue utilizado para activar una suscripción.")
+            return
+        _USED_TX[tx_hash] = chat_id
+        _save_used_tx()
+    expiry = activar(chat_id, dias=30)
+    safe_send(chat_id,
+        f"✅ PAGO VERIFICADO — {cantidad:.2f} USDT\n\n"
+        f"Acceso premium hasta {expiry.strftime('%d/%m/%Y')}\n\n"
+        "Comandos: /valor /fundamental /halvingbtc")
+    safe_send(ALLOWED_USER_ID,
+        f"💰 NUEVO SUSCRIPTOR\nChat ID: {chat_id}\n"
+        f"Nombre: {msg.from_user.first_name}\n"
+        f"Pago: {cantidad:.2f} USDT\nTX: {tx_hash[:20]}...")
 
 @bot.message_handler(commands=["mistatus"])
 def cmd_mistatus(msg):
@@ -1326,7 +1415,7 @@ def cmd_mistatus(msg):
 
 SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "AnalisisProBot/1.0 (contacto: admin@example.com)")
 SEC_HEADERS = {"User-Agent": SEC_USER_AGENT}
-CIK_CACHE_FILE = os.environ.get("CIK_CACHE_FILE", "cik_cache.json")
+CIK_CACHE_FILE = os.environ.get("CIK_CACHE_FILE", _p("cik_cache.json"))
 
 def _load_cik_cache():
     try:
@@ -1593,7 +1682,7 @@ def cmd_suscriptores(msg):
 # pero ambos requieren plan de pago para histórico o agotan el free tier
 # en la primera consulta — ver conversación.)
 
-FEARGREED_CACHE_FILE = os.environ.get("FEARGREED_CACHE_FILE", "feargreed_cache.json")
+FEARGREED_CACHE_FILE = os.environ.get("FEARGREED_CACHE_FILE", _p("feargreed_cache.json"))
 FEARGREED_CACHE_HOURS = 12  # el índice solo se actualiza una vez al día, no hace falta más
 
 def _load_feargreed_cache():
@@ -2364,7 +2453,7 @@ def _lista_suscriptores_activos():
 # ── Noticias relevantes: solo avisamos de titulares NUEVOS desde la
 # última vez, y solo si la IA los juzga realmente importantes (para no
 # mandar una alerta cada hora con cualquier cosa) ──
-NOTICIAS_VISTAS_FILE = os.environ.get("NOTICIAS_VISTAS_FILE", "noticias_vistas.json")
+NOTICIAS_VISTAS_FILE = os.environ.get("NOTICIAS_VISTAS_FILE", _p("noticias_vistas.json"))
 
 def _cargar_noticias_vistas():
     try:
@@ -3214,7 +3303,7 @@ def cmd_curva(msg):
 # tienen información que el mercado no tiene. Datos oficiales de la SEC,
 # misma infraestructura que ya usamos para /cartera (13F).
 
-TICKER_CIK_MAP_FILE = os.environ.get("TICKER_CIK_MAP_FILE", "ticker_cik_map.json")
+TICKER_CIK_MAP_FILE = os.environ.get("TICKER_CIK_MAP_FILE", _p("ticker_cik_map.json"))
 _TICKER_CIK_MAP = None
 
 def _cargar_ticker_cik_map():
@@ -3926,4 +4015,3 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
