@@ -1404,15 +1404,38 @@ def liberar_importe(chat_id):
         if _PAGOS.pop(str(chat_id), None) is not None:
             _save_pagos()
 
-def verificar_pago_usdt(tx_hash):
+def _consultar_tronscan(tx_hash):
+    """Una consulta a Tronscan con reintentos. Devuelve el JSON (dict) o None si no responde.
+    Tronscan a veces contesta vacío o con una página en vez de JSON (límite de peticiones);
+    con_retry lo reintenta con espera en lugar de fallar a la primera."""
+    def _do():
+        r = requests.get("https://apilist.tronscan.org/api/transaction-info",
+                         params={"hash": tx_hash}, timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return r.json() or {}
+    return with_retry(_do, tries=3, base_delay=2, what=f"tronscan {tx_hash[:10]}")
+
+def _transferencias_trc20(data):
+    """Transferencias TRC20 de la respuesta de Tronscan. Tronscan repite la MISMA transferencia
+    en 'trc20TransferInfo' (lista) y en 'tokenTransferInfo' (objeto): sumar las dos duplicaba
+    el importe. Se usa la lista y, solo si viene vacía, el objeto como respaldo."""
+    tr = [t for t in (data.get("trc20TransferInfo") or []) if isinstance(t, dict)]
+    if tr:
+        return tr
+    tti = data.get("tokenTransferInfo")
+    return [tti] if isinstance(tti, dict) and tti else []
+
+def verificar_pago_usdt(tx_hash, data=None):
     """Devuelve (ok, cantidad_usdt, motivo)."""
     if not re.fullmatch(r"[0-9a-f]{64}", tx_hash):
         return False, 0.0, "El hash no tiene formato válido (64 caracteres hexadecimales)."
     if not WALLET_USDT:
         return False, 0.0, "El pago manual no está configurado. Contacta al administrador."
-    r = requests.get("https://apilist.tronscan.org/api/transaction-info",
-                     params={"hash": tx_hash}, timeout=10)
-    data = r.json() or {}
+    if data is None:
+        data = _consultar_tronscan(tx_hash)
+    if data is None:
+        return False, 0.0, "Tronscan no responde ahora mismo. Inténtalo de nuevo en un par de minutos."
     if not data.get("hash"):
         return False, 0.0, "No encuentro esa transacción. Espera unos minutos e inténtalo de nuevo."
     if data.get("contractRet") != "SUCCESS":
@@ -1423,10 +1446,7 @@ def verificar_pago_usdt(tx_hash):
     if ts and time.time() - ts / 1000 > TX_MAX_EDAD_H * 3600:
         return False, 0.0, f"Esa transacción tiene más de {TX_MAX_EDAD_H}h. Contacta al administrador."
 
-    transfers = list(data.get("trc20TransferInfo") or [])
-    tti = data.get("tokenTransferInfo")
-    if isinstance(tti, dict) and tti:
-        transfers.append(tti)
+    transfers = _transferencias_trc20(data)
 
     total = 0.0
     for t in transfers:
@@ -2815,16 +2835,13 @@ def cmd_probartx(msg):
     if not re.fullmatch(r"[0-9a-f]{64}", tx):
         safe_send(msg.chat.id, L[0] + "❌ El hash no tiene formato válido (64 caracteres hexadecimales).")
         return
-    try:
-        r = requests.get("https://apilist.tronscan.org/api/transaction-info",
-                         params={"hash": tx}, timeout=10)
-        data = r.json() or {}
-    except Exception as e:
-        safe_send(msg.chat.id, L[0] + f"❌ No pude consultar Tronscan: {str(e)[:150]}")
+    data = _consultar_tronscan(tx)
+    if data is None:
+        safe_send(msg.chat.id, L[0] + "❌ Tronscan no responde ahora mismo (lo intenté 3 veces). Prueba en un minuto.")
         return
     claves = [k for k in ("contractRet", "confirmed", "timestamp", "trc20TransferInfo", "tokenTransferInfo")
               if k in data]
-    L.append(f"Tronscan: HTTP {r.status_code} · campos que usa el bot presentes: {', '.join(claves) or 'ninguno'}")
+    L.append(f"Tronscan: respondió · campos que usa el bot presentes: {', '.join(claves) or 'ninguno'}")
     if not data.get("hash"):
         L.append("❌ Tronscan no devuelve esa transacción (¿hash incorrecto o muy reciente?).")
         safe_send(msg.chat.id, "\n".join(L))
@@ -2833,10 +2850,7 @@ def cmd_probartx(msg):
     ts = data.get("timestamp")
     if ts:
         L.append(f"Antigüedad: {(time.time() - ts / 1000) / 3600:.1f} h (el bot acepta hasta {TX_MAX_EDAD_H} h)")
-    transfers = list(data.get("trc20TransferInfo") or [])
-    tti = data.get("tokenTransferInfo")
-    if isinstance(tti, dict) and tti:
-        transfers.append(tti)
+    transfers = _transferencias_trc20(data)
     def corto(a):
         a = a or ""
         return f"{a[:5]}…{a[-4:]}" if len(a) > 12 else (a or "?")
@@ -2855,7 +2869,7 @@ def cmd_probartx(msg):
                  f"destino {corto(t.get('to_address'))} "
                  f"{'= TU WALLET ✅' if WALLET_USDT and t.get('to_address') == WALLET_USDT else '(no es tu wallet)'}")
     try:
-        ok, cantidad, motivo = verificar_pago_usdt(tx)
+        ok, cantidad, motivo = verificar_pago_usdt(tx, data=data)
         L.append("\nVeredicto del bot: " + (f"✅ aceptaría {cantidad:.4f} USDT como pago a tu wallet"
                                               if ok else f"❌ {motivo}"))
     except Exception as e:
