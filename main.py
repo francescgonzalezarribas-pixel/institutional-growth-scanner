@@ -2798,6 +2798,72 @@ def cmd_diagnostico(msg):
         L.append("Finnhub: no aplica (solo acciones de EEUU sin sufijo)")
     safe_send(msg.chat.id, "\n".join(L), message_id=m.message_id)
 
+@bot.message_handler(commands=["probartx"])
+def cmd_probartx(msg):
+    """Solo administrador. Prueba de la verificación de pagos SIN pagar ni activar nada: coge
+    cualquier hash de una transferencia USDT (TRC20), lo consulta en Tronscan y enseña qué
+    entiende el bot (contrato, destino, cantidad) y qué veredicto daría."""
+    if msg.from_user.id != ALLOWED_USER_ID:
+        return
+    parts = msg.text.split()
+    if len(parts) < 2:
+        safe_send(msg.chat.id, "Uso: /probartx HASH\n\nPrueba la verificación de pagos con cualquier "
+                               "transferencia USDT (TRC20) ya hecha. No activa nada ni consume el hash.")
+        return
+    tx = parts[1].strip().lower()
+    L = [f"🔎 PRUEBA DE VERIFICACIÓN (no activa nada)\nHash: {tx[:14]}…\n"]
+    if not re.fullmatch(r"[0-9a-f]{64}", tx):
+        safe_send(msg.chat.id, L[0] + "❌ El hash no tiene formato válido (64 caracteres hexadecimales).")
+        return
+    try:
+        r = requests.get("https://apilist.tronscan.org/api/transaction-info",
+                         params={"hash": tx}, timeout=10)
+        data = r.json() or {}
+    except Exception as e:
+        safe_send(msg.chat.id, L[0] + f"❌ No pude consultar Tronscan: {str(e)[:150]}")
+        return
+    claves = [k for k in ("contractRet", "confirmed", "timestamp", "trc20TransferInfo", "tokenTransferInfo")
+              if k in data]
+    L.append(f"Tronscan: HTTP {r.status_code} · campos que usa el bot presentes: {', '.join(claves) or 'ninguno'}")
+    if not data.get("hash"):
+        L.append("❌ Tronscan no devuelve esa transacción (¿hash incorrecto o muy reciente?).")
+        safe_send(msg.chat.id, "\n".join(L))
+        return
+    L.append(f"Estado: {data.get('contractRet')} · confirmada: {data.get('confirmed')}")
+    ts = data.get("timestamp")
+    if ts:
+        L.append(f"Antigüedad: {(time.time() - ts / 1000) / 3600:.1f} h (el bot acepta hasta {TX_MAX_EDAD_H} h)")
+    transfers = list(data.get("trc20TransferInfo") or [])
+    tti = data.get("tokenTransferInfo")
+    if isinstance(tti, dict) and tti:
+        transfers.append(tti)
+    def corto(a):
+        a = a or ""
+        return f"{a[:5]}…{a[-4:]}" if len(a) > 12 else (a or "?")
+    if not transfers:
+        L.append("\nTransferencias TRC20 detectadas: ninguna (¿es una transferencia de USDT?)")
+    else:
+        L.append("\nTransferencias TRC20 detectadas:")
+    for t in transfers[:5]:
+        contrato = t.get("contract_address") or t.get("address") or ""
+        try:
+            cant = float(t.get("amount_str", "0")) / (10 ** int(t.get("decimals") or 6))
+        except (ValueError, TypeError):
+            cant = 0.0
+        L.append(f"• {t.get('symbol') or t.get('name') or '?'} · {cant:,.4f} · "
+                 f"contrato {'USDT oficial ✅' if contrato == USDT_TRC20_CONTRACT else 'OTRO ⚠️ ' + corto(contrato)} · "
+                 f"destino {corto(t.get('to_address'))} "
+                 f"{'= TU WALLET ✅' if WALLET_USDT and t.get('to_address') == WALLET_USDT else '(no es tu wallet)'}")
+    try:
+        ok, cantidad, motivo = verificar_pago_usdt(tx)
+        L.append("\nVeredicto del bot: " + (f"✅ aceptaría {cantidad:.4f} USDT como pago a tu wallet"
+                                              if ok else f"❌ {motivo}"))
+    except Exception as e:
+        L.append(f"\nVeredicto del bot: error → {str(e)[:150]}")
+    L.append("\nSi los campos y la cantidad salen bien, la lectura de Tronscan funciona. "
+             "Con un pago real, además tendría que coincidir el destino y el importe asignado.")
+    safe_send(msg.chat.id, "\n".join(L))
+
 @bot.message_handler(commands=["scheduler_estado"])
 def cmd_scheduler_estado(msg):
     if msg.from_user.id != ALLOWED_USER_ID: return
@@ -5002,5 +5068,8 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
+
+
 
 
