@@ -35,7 +35,24 @@ ai  = Groq(api_key=GROQ_API_KEY)
 
 # ═══ SISTEMA DE SUSCRIPCIONES ════════════════════════════════
 NOWPAYMENTS_KEY  = os.environ.get("NOWPAYMENTS_API_KEY", "")
-WALLET_USDT      = os.environ.get("WALLET_USDT", "")
+WALLET_USDT      = os.environ.get("WALLET_USDT", "").strip()   # strip: un espacio o salto de línea pegado por error rompería la verificación
+
+def _direccion_tron_valida(a):
+    """Comprueba longitud, prefijo y suma de control (base58check) de una dirección Tron."""
+    try:
+        import hashlib
+        ALF = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+        n = 0
+        for c in a:
+            n = n * 58 + ALF.index(c)
+        b = n.to_bytes(25, "big")
+        return (len(a) == 34 and b[0] == 0x41
+                and hashlib.sha256(hashlib.sha256(b[:-4]).digest()).digest()[:4] == b[-4:])
+    except Exception:
+        return False
+
+if WALLET_USDT and not _direccion_tron_valida(WALLET_USDT):
+    log.warning("WALLET_USDT no parece una dirección Tron válida: revisa la variable en Railway")
 PRECIO_MENSUAL   = 5  # EUR
 TRIAL_DIAS       = 7
 SUBS_FILE        = os.environ.get("SUBS_FILE", _p("subscribers.json"))
@@ -1520,7 +1537,13 @@ def cmd_mistatus(msg):
     chat_id = msg.from_user.id
     if chat_id == ALLOWED_USER_ID:
         activos = sum(1 for s in SUSCRIPTORES.values() if s.get("activo"))
-        safe_send(chat_id, f"Eres el administrador.\nSuscriptores activos: {activos}")
+        if WALLET_USDT:
+            w = (f"Wallet de cobro: {WALLET_USDT[:5]}…{WALLET_USDT[-4:]} "
+                 + ("(dirección Tron válida ✅)" if _direccion_tron_valida(WALLET_USDT)
+                    else "(NO parece una dirección Tron válida ⚠️)"))
+        else:
+            w = "Wallet de cobro: no configurada (WALLET_USDT vacía) ⚠️"
+        safe_send(chat_id, f"Eres el administrador.\nSuscriptores activos: {activos}\n{w}")
         return
     sub = SUSCRIPTORES.get(chat_id)
     if not sub or not sub.get("activo"):
