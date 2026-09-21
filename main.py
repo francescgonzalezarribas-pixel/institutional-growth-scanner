@@ -2441,6 +2441,7 @@ def cmd_macro(msg):
               "sentimiento del mercado ahora mismo?\n"
               "3. Qué vigilar en las próximas semanas")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 # ═══ DIFUSIÓN AUTOMÁTICA — resumen cada hora (9:00-22:00) + alertas ═
 # de noticias relevantes. A diferencia de todo lo demás en este bot (que
 # solo responde cuando el usuario escribe un comando), esto corre en
@@ -3869,8 +3870,9 @@ def chart_liquidaciones(res):
     for precio_p, total, val in res["picos_largos"][:3]:
         ax2.text(val * 1.08, precio_p, _e(f"${precio_p/1000:.1f}K · {_usd(total)}"), color='#88EEAA',
                  fontsize=10, va='center', ha='left', clip_on=True)
-    ax2.text(xmax * 0.97, p, _e(f"AHORA ${p:,.0f}"), color='#00FFFF', fontsize=10.5, fontweight='bold',
-             va='bottom', ha='right')
+    ax1.text(fechas[0] + (fechas[-1] - fechas[0]) * 0.01, p, _e(f"AHORA ${p:,.0f}"), color='#00FFFF', fontsize=10.5,
+             fontweight='bold', va='bottom', ha='left', zorder=6,
+             bbox=dict(boxstyle='round,pad=0.2', facecolor='#0d1117', edgecolor='none', alpha=0.8))
 
     fig.text(0.5, 0.965, "BTC — MAPA DE LIQUIDACIONES ESTIMADO (30 días)", ha='center', color='white', fontsize=19, fontweight='bold')
     fig.text(0.5, 0.932, f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de Binance Futures, últimos {LIQ_DIAS} días",
@@ -3908,7 +3910,7 @@ def chart_liquidaciones_zoom(res):
     EXT = 8                                                 # velas de proyección a la derecha
     fig = plt.figure(figsize=(12, 9.5))
     fig.patch.set_facecolor('#131722')
-    ax = fig.add_axes([0.03, 0.13, 0.87, 0.70])
+    ax = fig.add_axes([0.08, 0.13, 0.76, 0.70])
     ax.set_facecolor('#131722')
     for sp in ax.spines.values(): sp.set_color('#2a2e39')
     parches, cols = [], []
@@ -3930,14 +3932,13 @@ def chart_liquidaciones_zoom(res):
         for precio_p, total, _v in picos[:3]:
             if ylo <= precio_p <= yhi:
                 ax.axhline(precio_p, color=col, linestyle=':', linewidth=0.6, alpha=0.5, zorder=1)
-                ax.text(n24 + EXT + 0.2, precio_p, _e(f"${precio_p/1000:.2f}K · {_usd(total)}"), color=col,
-                        fontsize=9.5, va='center', ha='left', clip_on=False)
+                ax.text(n24 + EXT + 0.4, precio_p, _e(f"${precio_p/1000:.2f}K · {_usd(total)}"), color=col,
+                        fontsize=10, va='center', ha='left', clip_on=False)
     ax.set_xlim(0, n24 + EXT); ax.set_ylim(ylo, yhi)
     cada = max(1, 180 // paso)
     pos_x = list(range(0, n24, cada))
     ax.set_xticks([x + 0.5 for x in pos_x])
     ax.set_xticklabels([_hora_madrid(tt[x]).strftime("%H:%M") for x in pos_x], color='#AAAAAA', fontsize=11)
-    ax.yaxis.tick_right()
     ax.tick_params(axis='y', colors='#AAAAAA', labelsize=11)
     ax.yaxis.set_major_formatter(lambda x, _: f"{x:,.0f}")
     ax.grid(color='#1f2330', linestyle='-', linewidth=0.6, zorder=0)
@@ -3979,7 +3980,7 @@ def texto_liquidaciones(res):
     ratio = res["cortos_10"] / res["largos_10"] if res["largos_10"] > 0 else None
     if ratio:
         L.append(f"Dentro de ±10%: cortos {_usd(res['cortos_10'])} frente a largos {_usd(res['largos_10'])} "
-                 f"({ratio:.1f}x {'más cortos' if ratio >= 1 else 'menos cortos'} que largos).")
+                 f"({ratio:.2f} cortos por cada largo).")
     L.append(f"Interés abierto de Binance: {_usd(res['oi'])} · {res['long_share']*100:.0f}% de las cuentas en largo.\n")
     L.append("⚠️ Cómo leerlo con cabeza:\n"
              "• Es un MODELO con supuestos (reparto de apalancamiento, margen). Otros mapas usan otros supuestos y "
@@ -5511,7 +5512,6 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
 
 
 
