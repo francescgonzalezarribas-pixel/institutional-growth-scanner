@@ -2685,6 +2685,93 @@ def cmd_ticker(msg):
         lines = [f"{r['nombre']}: {r['d1']:+.2f}%" for r in resultados]
         safe_send(msg.chat.id, "\n".join(lines), message_id=m.message_id)
 
+@bot.message_handler(commands=["diagnostico"])
+def cmd_diagnostico(msg):
+    """Solo administrador. Prueba cada fuente de datos con un ticker y cuenta en el propio
+    chat qué contesta cada una (sin tener que rebuscar en los logs de Railway)."""
+    if msg.from_user.id != ALLOWED_USER_ID:
+        return
+    parts = msg.text.split()
+    if len(parts) < 2:
+        safe_send(msg.chat.id, "Uso: /diagnostico TICKER\nEjemplos: /diagnostico VWCE.DE  /diagnostico AAPL")
+        return
+    t = normalize_ticker(parts[1])
+    m = bot.send_message(msg.chat.id, f"Probando las fuentes de datos para {t}... (10-20s)")
+    secretos = [k for k in (TWELVEDATA_API_KEY, FINNHUB_API_KEY, GROQ_API_KEY, TELEGRAM_TOKEN) if k]
+    def limpia(x):
+        x = str(x)
+        for k in secretos:
+            x = x.replace(k, "***")      # nunca mostrar claves, ni dentro de un mensaje de error
+        return x[:170]
+    L = [f"🔧 DIAGNÓSTICO — {t}\n"]
+
+    # 1) Stooq (misma traducción de símbolo que usa el bot)
+    import datetime as dt
+    if t in STOOQ_MAP: st = STOOQ_MAP[t]
+    elif t.endswith((".MC", ".DE", ".PA")): st = t.lower()
+    elif t.endswith(".L"): st = t.lower().replace(".l", ".uk")
+    elif "." not in t: st = f"{t.lower()}.us"
+    else: st = t.lower()
+    try:
+        d1 = (dt.date.today() - dt.timedelta(days=250)).strftime("%Y%m%d")
+        d2 = dt.date.today().strftime("%Y%m%d")
+        r = requests.get(f"https://stooq.com/q/d/l/?s={st}&d1={d1}&d2={d2}&i=d", timeout=10,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        filas = max(0, r.text.count("\n") - 1)
+        L.append(f"Stooq ({st}): HTTP {r.status_code} · {len(r.text)} bytes · ~{filas} filas · "
+                 f"inicio: {limpia(r.text[:70])!r}")
+    except Exception as e:
+        L.append(f"Stooq ({st}): error → {limpia(e)}")
+
+    # 2) Twelve Data (símbolo tal cual el bot; y, si es de Xetra, con exchange=XETR)
+    if TWELVEDATA_API_KEY:
+        variantes = [{"symbol": TWELVEDATA_SYMBOL_MAP.get(t, t)}]
+        if t.endswith(".DE"):
+            variantes.append({"symbol": t[:-3], "exchange": "XETR"})
+        for v in variantes:
+            etiqueta = ", ".join(f"{k}={x}" for k, x in v.items())
+            try:
+                r = requests.get("https://api.twelvedata.com/time_series",
+                                 params={**v, "interval": "1day", "outputsize": 5,
+                                         "apikey": TWELVEDATA_API_KEY}, timeout=10)
+                j = r.json()
+                if "values" in j and j["values"]:
+                    L.append(f"Twelve Data ({etiqueta}): OK · último cierre {j['values'][0]['close']} "
+                             f"({j['values'][0]['datetime']})")
+                else:
+                    L.append(f"Twelve Data ({etiqueta}): {limpia(j.get('message', j))}")
+            except Exception as e:
+                L.append(f"Twelve Data ({etiqueta}): error → {limpia(e)}")
+    else:
+        L.append("Twelve Data: sin clave (falta TWELVEDATA_API_KEY)")
+
+    # 3) Yahoo (yfinance): suele estar bloqueado desde Railway
+    try:
+        import yfinance as yf
+        h = yf.Ticker(t).history(period="5d")
+        if h is not None and not h.empty:
+            L.append(f"Yahoo (yfinance): OK · {len(h)} filas")
+        else:
+            L.append("Yahoo (yfinance): sin datos (probable bloqueo desde Railway)")
+    except Exception as e:
+        L.append(f"Yahoo (yfinance): error → {limpia(e)}")
+
+    # 4) Finnhub, solo para tickers de EEUU sin sufijo
+    if re.fullmatch(r"[A-Z]{1,5}", t):
+        if FINNHUB_API_KEY:
+            try:
+                r = requests.get("https://finnhub.io/api/v1/quote",
+                                 params={"symbol": t, "token": FINNHUB_API_KEY}, timeout=8)
+                j = r.json()
+                L.append(f"Finnhub: HTTP {r.status_code} · precio {j.get('c')} · cambio {j.get('dp')}%")
+            except Exception as e:
+                L.append(f"Finnhub: error → {limpia(e)}")
+        else:
+            L.append("Finnhub: sin clave (falta FINNHUB_API_KEY)")
+    else:
+        L.append("Finnhub: no aplica (solo acciones de EEUU sin sufijo)")
+    safe_send(msg.chat.id, "\n".join(L), message_id=m.message_id)
+
 @bot.message_handler(commands=["scheduler_estado"])
 def cmd_scheduler_estado(msg):
     if msg.from_user.id != ALLOWED_USER_ID: return
@@ -2854,15 +2941,15 @@ _ultimo_aviso_cad_key = None
 # mide qué parte de ese volumen fue COMPRA agresiva (órdenes a mercado del
 # comprador) según el dato "taker buy" que Binance da en cada vela. Todo con la
 # API pública, sin claves. Sale solo lo que tiene volumen ≥1.5x lo normal y
-# compras ≥55%; lo de volumen alto pero dominado por ventas se lista aparte.
+# compras ≥52%; lo de volumen alto pero dominado por ventas se lista aparte.
 # Envío automático diario a CALIENTES_HORA (Madrid), cuando ya hay sesión de EEUU.
 
 CALIENTES_HORA = int(os.environ.get("CALIENTES_HORA", 18))
 CALIENTES_FILE = os.environ.get("CALIENTES_ENVIADO_FILE", _p("calientes_enviado.json"))
-CALIENTES_MIN_USDT = 20_000_000   # liquidez mínima 24h: evita monedas pequeñas, fáciles de manipular
-CALIENTES_UNIVERSO = 80           # cuántas monedas (las más líquidas) se analizan
+CALIENTES_MIN_USDT = 10_000_000   # liquidez mínima 24h: evita monedas pequeñas, fáciles de manipular
+CALIENTES_UNIVERSO = 120          # cuántas monedas (las más líquidas) se analizan
 CALIENTES_RATIO_MIN = 1.5
-CALIENTES_COMPRAS_MIN = 0.55
+CALIENTES_COMPRAS_MIN = 0.52
 CALIENTES_VENTAS_MAX = 0.45
 CALIENTES_TOP = 10
 CALIENTES_CASI_TOP = 5
