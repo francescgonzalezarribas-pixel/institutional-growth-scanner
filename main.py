@@ -2236,8 +2236,6 @@ def cmd_ballenas(msg):
               "2. ¿Qué estrategia de entrada/salida sugieren estos muros?\n"
               "3. Riesgo de que sean órdenes 'trampa' (spoofing) que se cancelan antes de ejecutarse")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
-
 # ═══ /NOTICIAS — Agregador de noticias financieras y cripto ═════
 # Varias fuentes distintas vía RSS (gratis, sin API key, sin límite de
 # peticiones): Investing.com (bolsa/economía/cripto), Cointelegraph en
@@ -2441,6 +2439,8 @@ def cmd_macro(msg):
               "sentimiento del mercado ahora mismo?\n"
               "3. Qué vigilar en las próximas semanas")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+
 # ═══ DIFUSIÓN AUTOMÁTICA — resumen cada hora (9:00-22:00) + alertas ═
 # de noticias relevantes. A diferencia de todo lo demás en este bot (que
 # solo responde cuando el usuario escribe un comando), esto corre en
@@ -3417,7 +3417,6 @@ def ejecutar_calientes_auto(dia):
             time.sleep(0.05)
     except Exception as e:
         log.error(f"ejecutar_calientes_auto: {e}")
-
 # ═══ /COMPRESION — Compresión de precio de BTC (30 días) ═══
 # Aproximación propia, con datos de Binance, de indicadores tipo "Price Compression
 # Score" (CryptoQuant): mide lo ESTRECHO que está el rango de precio de los últimos 30
@@ -3741,8 +3740,9 @@ def modelo_liquidaciones(d, bins):
     """Devuelve matrices (velas x bins) con el USD estimado de liquidaciones de largos y de cortos."""
     n, nb = len(d["oi"]), len(bins) - 1
     typ = (d["h"] + d["l"] + d["c"]) / 3
-    liq = np.zeros(0); amt = np.zeros(0); largo = np.zeros(0, dtype=bool)
-    Lm, Sm = np.zeros((n, nb)), np.zeros((n, nb))
+    liq = np.zeros(0); amt = np.zeros(0); largo = np.zeros(0, dtype=bool); previo = np.zeros(0, dtype=bool)
+    Lm, Sm, Pm = np.zeros((n, nb)), np.zeros((n, nb)), np.zeros((n, nb))
+    pl_fin, ps_fin = np.zeros(nb), np.zeros(nb)
     for i in range(n):
         liq_l = liq_s = 0.0
         if i == 0:
@@ -3769,15 +3769,20 @@ def modelo_liquidaciones(d, bins):
                     na = na * (delta / na[vivas].sum())         # y se renormaliza al interés abierto real
                     nl, na, nlg = nl[vivas], na[vivas], nlg[vivas]
             liq, amt, largo = np.concatenate([liq, nl]), np.concatenate([amt, na]), np.concatenate([largo, nlg])
+            previo = np.concatenate([previo, np.full(len(nl), i == 0)])   # la semilla es "previa a la ventana"
         elif delta < 0 and amt.sum() > 0:  # cierres voluntarios = bajada de OI que no fue liquidación
             cierre = max(0.0, -delta - (liq_l + liq_s))
             amt = amt * max(0.0, 1 - cierre / amt.sum())
         k = amt > 1.0
-        liq, amt, largo = liq[k], amt[k], largo[k]
+        liq, amt, largo, previo = liq[k], amt[k], largo[k], previo[k]
         if len(amt):
             Lm[i] = np.histogram(liq[largo], bins=bins, weights=amt[largo])[0]
             Sm[i] = np.histogram(liq[~largo], bins=bins, weights=amt[~largo])[0]
-    return Lm, Sm
+            Pm[i] = np.histogram(liq[previo], bins=bins, weights=amt[previo])[0]
+            if i == n - 1:
+                pl_fin = np.histogram(liq[previo & largo], bins=bins, weights=amt[previo & largo])[0]
+                ps_fin = np.histogram(liq[previo & ~largo], bins=bins, weights=amt[previo & ~largo])[0]
+    return Lm, Sm, Pm, pl_fin, ps_fin
 
 def _suavizar(M, eje=1):
     k = np.array([1, 2, 3, 2, 1], dtype=float); k /= k.sum()
@@ -3816,19 +3821,24 @@ def calcular_liquidaciones(symbol="BTCUSDT"):
         return None
     precio = float(d["c"][-1])
     bins = np.linspace(precio * 0.72, precio * 1.32, LIQ_NBINS + 1)
-    Lm, Sm = modelo_liquidaciones(d, bins)
+    Lm, Sm, Pm, pl_fin, ps_fin = modelo_liquidaciones(d, bins)
     centros = (bins[:-1] + bins[1:]) / 2
     L, S = _suavizar(Lm[-1:], 1)[0], _suavizar(Sm[-1:], 1)[0]
+    PL, PS = _suavizar(pl_fin[None, :], 1)[0], _suavizar(ps_fin[None, :], 1)[0]
+    Ln, Sn = np.maximum(L - PL, 0), np.maximum(S - PS, 0)      # solo lo nacido DENTRO de la ventana
     def suma(vec, a, b):
         return float(vec[(centros >= a) & (centros <= b)].sum())
+    tot10 = suma(S, precio, precio * 1.10) + suma(L, precio * 0.90, precio)
+    prev10 = suma(PS, precio, precio * 1.10) + suma(PL, precio * 0.90, precio)
     res = {"precio": precio, "bins": bins, "centros": centros, "t": d["t"], "paso_min": d["paso_min"],
            "o": d["o"], "h": d["h"], "l": d["l"], "c": d["c"], "close": d["c"],
-           "Lm": Lm, "Sm": Sm, "L": L, "S": S,
+           "Lm": Lm, "Sm": Sm, "Pm": Pm, "L": L, "S": S,
+           "previo_pct": (prev10 / tot10 * 100) if tot10 > 0 else 0.0,
            "oi": float(d["oi"][-1]), "long_share": float(d["long_share"][-1]),
            "cortos_5": suma(S, precio, precio * 1.05), "cortos_10": suma(S, precio, precio * 1.10),
            "largos_5": suma(L, precio * 0.95, precio), "largos_10": suma(L, precio * 0.90, precio),
-           "picos_cortos": _picos(np.where(centros > precio, S, 0), centros),
-           "picos_largos": _picos(np.where(centros < precio, L, 0), centros),
+           "picos_cortos": _picos(np.where(centros > precio, Sn, 0), centros),
+           "picos_largos": _picos(np.where(centros < precio, Ln, 0), centros),
            "hora": datetime.now(MADRID).strftime("%d/%m %H:%M")}
     cache_set(ck, res)
     return res
@@ -3905,7 +3915,7 @@ def chart_liquidaciones_calor(res):
     return buf
 
 def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titulo, subtitulo, aclaracion,
-                     fmt_x, cada_velas, resumen, calentamiento):
+                     fmt_x, cada_velas, resumen, calentamiento, tf_txt):
     """Velas + un bloque por vela y nivel de liquidación estimado que sigue sin tocar (estilo TradingView).
     Sirve para el zoom de 24 h y para los 30 días: solo cambian el tamaño de vela, el zoom y los umbrales."""
     from matplotlib.collections import PatchCollection
@@ -3920,36 +3930,44 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
     h = res["h"][sl].reshape(nc, k).max(axis=1); l = res["l"][sl].reshape(nc, k).min(axis=1)
     tt = res["t"][sl].reshape(nc, k)[:, 0]
     M = (res["Lm"] + res["Sm"])[sl].reshape(nc, k, -1)[:, -1, :]      # estado al final de cada vela
+    PM = res["Pm"][sl].reshape(nc, k, -1)[:, -1, :]                   # la parte previa a la ventana
     pad = pad_pct * p
     ylo, yhi = float(l.min()) - pad, float(h.max()) + pad
     cen = res["centros"]
     paso_bin = float(res["bins"][1] - res["bins"][0])
     bi = np.where((cen >= ylo) & (cen <= yhi))[0]
-    V = M[:, bi]
+    V, PV = M[:, bi], PM[:, bi]
     cen_v = cen[bi]
     if agrup_bins > 1:                                        # filas más gruesas para ventanas largas
         r = V.shape[1] // agrup_bins
         V = V[:, :r * agrup_bins].reshape(nc, r, agrup_bins).sum(axis=2)
+        PV = PV[:, :r * agrup_bins].reshape(nc, r, agrup_bins).sum(axis=2)
         cen_v = cen_v[:r * agrup_bins].reshape(r, agrup_bins).mean(axis=1)
-    pos = V[V > 0]
+    N = np.maximum(V - PV, 0.0)                               # lo nacido dentro de la ventana: datos
+    pos = N[N > 0]
     umbrales = np.percentile(pos, pcts) if len(pos) else np.array([np.inf] * 4)
-    idx = np.digitize(V, umbrales)                            # 0 = no se dibuja; 1..4 = intensidad relativa
+    idx = np.digitize(N, umbrales)                            # 0 = no se dibuja; 1..4 = intensidad relativa
+    gris = (PV >= umbrales[1]) & (idx == 0)                   # posiciones previas a la ventana: incierto (solo las más pesadas)
     COL = {1: '#1f6f7a', 2: '#2f9a2f', 3: '#a9a92a', 4: '#c62828'}
     hb = paso_bin * agrup_bins * 0.72
     fig = plt.figure(figsize=(12, 10 if resumen else 9.5))
     fig.patch.set_facecolor('#131722')
-    top = 0.79 if resumen else 0.83
+    top = 0.765 if resumen else 0.83
     ax = fig.add_axes([0.08, 0.13, 0.76, top - 0.13])
     ax.set_facecolor('#131722')
     for sp in ax.spines.values(): sp.set_color('#2a2e39')
+    GRIS = '#555c6b'
     parches, cols = [], []
+    for j, kk in zip(*np.nonzero(gris)):
+        parches.append(Rectangle((j + 0.12, cen_v[kk] - hb / 2), 0.76, hb)); cols.append(GRIS)
     for j, kk in zip(*np.nonzero(idx)):
         parches.append(Rectangle((j + 0.12, cen_v[kk] - hb / 2), 0.76, hb)); cols.append(COL[int(idx[j, kk])])
     ax.add_collection(PatchCollection(parches, facecolors=cols, edgecolors='none', zorder=2))
     proy, pcols = [], []
-    for kk in np.nonzero(idx[-1])[0]:                         # niveles aún vivos: se prolongan, apagados
+    for kk in np.nonzero(idx[-1] | gris[-1])[0]:              # niveles aún vivos: se prolongan, apagados
+        colp = COL[int(idx[-1, kk])] if idx[-1, kk] else GRIS
         for j in range(nc, nc + ext):
-            proy.append(Rectangle((j + 0.12, cen_v[kk] - hb / 2), 0.76, hb)); pcols.append(COL[int(idx[-1, kk])])
+            proy.append(Rectangle((j + 0.12, cen_v[kk] - hb / 2), 0.76, hb)); pcols.append(colp)
     ax.add_collection(PatchCollection(proy, facecolors=pcols, edgecolors='none', alpha=0.30, zorder=2))
     ancho_v = 0.64 if nc <= 120 else 0.72
     for j in range(nc):                                       # velas
@@ -3971,6 +3989,16 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
     ax.tick_params(axis='y', colors='#AAAAAA', labelsize=11)
     ax.yaxis.set_major_formatter(lambda x, _: f"{x:,.0f}")
     ax.grid(color='#1f2330', linestyle='-', linewidth=0.6, zorder=0)
+    chg = float(c[-1] - c[-2]) if nc > 1 else 0.0
+    pct = chg / float(c[-2]) * 100 if nc > 1 and c[-2] else 0.0
+    t1 = ax.text(0.006, 0.988, f"BTC/USDT · {tf_txt}   O {o[-1]:,.1f}   H {h[-1]:,.1f}   L {l[-1]:,.1f}   C {c[-1]:,.1f}",
+                 transform=ax.transAxes, va='top', ha='left', fontsize=10.5, family='DejaVu Sans Mono',
+                 color='#D1D4DC', zorder=8,
+                 bbox=dict(boxstyle='round,pad=0.25', facecolor='#131722', edgecolor='none', alpha=0.88))
+    bb = t1.get_window_extent(fig.canvas.get_renderer()).transformed(ax.transAxes.inverted())
+    ax.text(bb.x1 + 0.010, 0.988, f"{chg:+,.1f} ({pct:+.2f}%)", transform=ax.transAxes, va='top', ha='left',
+            fontsize=10.5, family='DejaVu Sans Mono', fontweight='bold', color=('#26a69a' if chg >= 0 else '#ef5350'),
+            zorder=8, bbox=dict(boxstyle='round,pad=0.25', facecolor='#131722', edgecolor='none', alpha=0.88))
     ax.text(nc + ext - 0.3, p + p * 0.0022, _e(f"AHORA ${p:,.0f}"), color='#26a69a', fontsize=10.5, fontweight='bold',
             va='bottom', ha='right', zorder=6,
             bbox=dict(boxstyle='round,pad=0.2', facecolor='#131722', edgecolor='none', alpha=0.85))
@@ -3984,9 +4012,12 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
                  ha='center', color='#FF9999', fontsize=11.5, fontweight='bold')
         fig.text(0.5, 0.815, _e(f"Largos por debajo (se liquidan vendiendo): hasta −5% {_usd(res['largos_5'])}  ·  hasta −10% {_usd(res['largos_10'])}"),
                  ha='center', color='#88EEAA', fontsize=11.5, fontweight='bold')
+        fig.text(0.5, 0.790, f"En gris, posiciones previas a la ventana (ubicación incierta): {res['previo_pct']:.0f}% de lo estimado dentro de ±10%",
+                 ha='center', color='#9AA0AE', fontsize=10)
     ax.legend(handles=[Patch(color=COL[1], label='baja'), Patch(color=COL[2], label='media'),
-                       Patch(color=COL[3], label='alta'), Patch(color=COL[4], label='máxima')],
-              loc='upper center', bbox_to_anchor=(0.5, -0.07), ncol=4, frameon=False, labelcolor='#CCCCCC', fontsize=11)
+                       Patch(color=COL[3], label='alta'), Patch(color=COL[4], label='máxima'),
+                       Patch(color=GRIS, label='previa a la ventana (incierta)')],
+              loc='upper center', bbox_to_anchor=(0.5, -0.07), ncol=5, frameon=False, labelcolor='#CCCCCC', fontsize=10.5)
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=120, facecolor='#131722')
     plt.close()
@@ -4002,7 +4033,8 @@ def chart_liquidaciones_zoom(res):
         subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de Binance Futures",
         aclaracion="Cada bloque es un nivel de liquidación estimado que el precio todavía no ha tocado. "
                    "Se prolonga a la derecha hasta que lo toque.",
-        fmt_x=lambda dt_: dt_.strftime("%H:%M"), cada_velas=max(1, 180 // paso), resumen=False, calentamiento=False)
+        fmt_x=lambda dt_: dt_.strftime("%H:%M"), cada_velas=max(1, 180 // paso), resumen=False, calentamiento=False,
+        tf_txt=f"{paso}m")
 
 def chart_liquidaciones(res):
     """Visión de 30 días con el MISMO estilo que el zoom: velas de 4 h y un bloque por nivel sin tocar."""
@@ -4012,7 +4044,7 @@ def chart_liquidaciones(res):
         subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de Binance Futures",
         aclaracion="Cada bloque es un nivel de liquidación estimado que el precio todavía no ha tocado. "
                    "Se prolonga a la derecha hasta que lo toque.",
-        fmt_x=lambda dt_: dt_.strftime("%d %b"), cada_velas=30, resumen=True, calentamiento=True)
+        fmt_x=lambda dt_: dt_.strftime("%d %b"), cada_velas=30, resumen=True, calentamiento=True, tf_txt="4h")
 
 def texto_liquidaciones(res):
     p = res["precio"]
@@ -4033,13 +4065,15 @@ def texto_liquidaciones(res):
     if ratio:
         L.append(f"Dentro de ±10%: cortos {_usd(res['cortos_10'])} frente a largos {_usd(res['largos_10'])} "
                  f"({ratio:.2f} cortos por cada largo).")
+    L.append(f"De lo estimado dentro de ±10%, un {res['previo_pct']:.0f}% son posiciones previas a la ventana (en gris, "
+             "ubicación incierta). Los grupos etiquetados son solo de lo nacido dentro de los 30 días.")
     L.append(f"Interés abierto de Binance: {_usd(res['oi'])} · {res['long_share']*100:.0f}% de las cuentas en largo.\n")
     L.append("⚠️ Cómo leerlo con cabeza:\n"
              "• Es un MODELO con supuestos (reparto de apalancamiento, margen). Otros mapas usan otros supuestos y "
              "saldrán distintos.\n"
              "• Solo usa 30 días de datos: lo anterior no lo ve, y las primeras 48 h se descartan. Las posiciones "
-             "que ya existían al empezar la ventana se reparten de forma difusa alrededor del precio de entonces, "
-             "por eso los niveles más antiguos salen tenues.\n"
+             "que ya existían al empezar la ventana se dibujan en GRIS y se reparten de forma difusa alrededor "
+             "del precio de entonces: no sabemos dónde se abrieron.\n"
              "• No distingue entre posiciones cubiertas o con margen cruzado.\n"
              "• Los colores del zoom son intensidad relativa dentro de la ventana.\n"
              "• Que haya liquidaciones estimadas en una zona no significa que el precio vaya hacia allí.")
@@ -4087,7 +4121,8 @@ def cmd_liquidaciones(msg):
               f"Zonas con más liquidaciones estimadas de CORTOS por encima del precio: {pc}.\n"
               f"Zonas con más liquidaciones estimadas de LARGOS por debajo: {pl}.\n"
               f"Dentro de ±5%: cortos {_usd(res['cortos_5'])}, largos {_usd(res['largos_5'])}. "
-              f"Dentro de ±10%: cortos {_usd(res['cortos_10'])}, largos {_usd(res['largos_10'])}.\n\n"
+              f"Dentro de ±10%: cortos {_usd(res['cortos_10'])}, largos {_usd(res['largos_10'])}. De eso, un "
+              f"{res['previo_pct']:.0f}% son posiciones previas a la ventana de 30 días, de ubicación incierta.\n\n"
               "Datos ya interpretados, úsalos tal cual. No inventes cifras ni noticias. Reglas: NO des "
               "recomendaciones de operativa (stops, objetivos, toma de beneficios, tamaño de posición, "
               "'compre' o 'venda').\n\n"
@@ -4297,7 +4332,6 @@ def cmd_ciclo(msg):
               "2. ¿Qué señales confirmarían el paso a la siguiente fase?\n"
               "3. Estrategia razonable dado este punto del ciclo")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-	
 # ═══ /SUELO — Triple Suelo de Sentimiento (VIX + AAII + Fear & Greed) ═
 # Metodología: alineación de tres métricas de pánico desde ángulos
 # distintos. El NAAIM (gestores activos) hubiera sido el tercer ángulo
@@ -5567,6 +5601,8 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
+
 
 
 
