@@ -2441,7 +2441,6 @@ def cmd_macro(msg):
               "sentimiento del mercado ahora mismo?\n"
               "3. Qué vigilar en las próximas semanas")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
 # ═══ DIFUSIÓN AUTOMÁTICA — resumen cada hora (9:00-22:00) + alertas ═
 # de noticias relevantes. A diferencia de todo lo demás en este bot (que
 # solo responde cuando el usuario escribe un comando), esto corre en
@@ -3824,7 +3823,7 @@ def _hora_madrid(ts):
     except Exception:
         return datetime.fromtimestamp(int(ts))
 
-def chart_liquidaciones(res):
+def chart_liquidaciones_calor(res):
     """Visión de 30 días: mapa de calor en el tiempo + estado actual por niveles."""
     from matplotlib.colors import PowerNorm
     p = res["precio"]
@@ -3889,70 +3888,86 @@ def chart_liquidaciones(res):
     buf.seek(0)
     return buf
 
-def chart_liquidaciones_zoom(res):
-    """Zoom de 24 h estilo TradingView: velas + un bloque por vela y nivel de liquidación que sigue sin tocar."""
+def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titulo, subtitulo, aclaracion,
+                     fmt_x, cada_velas, resumen, calentamiento):
+    """Velas + un bloque por vela y nivel de liquidación estimado que sigue sin tocar (estilo TradingView).
+    Sirve para el zoom de 24 h y para los 30 días: solo cambian el tamaño de vela, el zoom y los umbrales."""
     from matplotlib.collections import PatchCollection
     from matplotlib.patches import Rectangle, Patch
     p, paso = res["precio"], res["paso_min"]
-    n24 = 24 * 60 // paso
-    o, h, l, c = (res[k][-n24:] for k in ("o", "h", "l", "c"))
-    tt = res["t"][-n24:]
-    pad = 0.018 * p
+    n_tot = len(res["c"])
+    ini = (LIQ_CALENTAMIENTO_H * 60 // paso) if calentamiento else 0
+    k = max(1, vela_min // paso)                              # pasos del modelo que forman una vela
+    nc = min(n_tot - ini, horas * 60 // paso) // k
+    sl = slice(n_tot - nc * k, n_tot)                         # alineado al final: la última vela es la actual
+    o = res["o"][sl].reshape(nc, k)[:, 0]; c = res["c"][sl].reshape(nc, k)[:, -1]
+    h = res["h"][sl].reshape(nc, k).max(axis=1); l = res["l"][sl].reshape(nc, k).min(axis=1)
+    tt = res["t"][sl].reshape(nc, k)[:, 0]
+    M = (res["Lm"] + res["Sm"])[sl].reshape(nc, k, -1)[:, -1, :]      # estado al final de cada vela
+    pad = pad_pct * p
     ylo, yhi = float(l.min()) - pad, float(h.max()) + pad
     cen = res["centros"]
+    paso_bin = float(res["bins"][1] - res["bins"][0])
     bi = np.where((cen >= ylo) & (cen <= yhi))[0]
-    V = (res["Lm"] + res["Sm"])[-n24:][:, bi]              # velas x niveles visibles
+    V = M[:, bi]
+    cen_v = cen[bi]
+    if agrup_bins > 1:                                        # filas más gruesas para ventanas largas
+        r = V.shape[1] // agrup_bins
+        V = V[:, :r * agrup_bins].reshape(nc, r, agrup_bins).sum(axis=2)
+        cen_v = cen_v[:r * agrup_bins].reshape(r, agrup_bins).mean(axis=1)
     pos = V[V > 0]
-    umbrales = np.percentile(pos, [86, 94, 98.2, 99.7]) if len(pos) else np.array([np.inf] * 4)
-    idx = np.digitize(V, umbrales)                          # 0 = no se dibuja; 1..4 = intensidad
+    umbrales = np.percentile(pos, pcts) if len(pos) else np.array([np.inf] * 4)
+    idx = np.digitize(V, umbrales)                            # 0 = no se dibuja; 1..4 = intensidad relativa
     COL = {1: '#1f6f7a', 2: '#2f9a2f', 3: '#a9a92a', 4: '#c62828'}
-    hb = float(res["bins"][1] - res["bins"][0]) * 0.72
-    EXT = 8                                                 # velas de proyección a la derecha
-    fig = plt.figure(figsize=(12, 9.5))
+    hb = paso_bin * agrup_bins * 0.72
+    fig = plt.figure(figsize=(12, 10 if resumen else 9.5))
     fig.patch.set_facecolor('#131722')
-    ax = fig.add_axes([0.08, 0.13, 0.76, 0.70])
+    top = 0.79 if resumen else 0.83
+    ax = fig.add_axes([0.08, 0.13, 0.76, top - 0.13])
     ax.set_facecolor('#131722')
     for sp in ax.spines.values(): sp.set_color('#2a2e39')
     parches, cols = [], []
-    for j, k in zip(*np.nonzero(idx)):
-        parches.append(Rectangle((j + 0.12, cen[bi[k]] - hb / 2), 0.76, hb)); cols.append(COL[int(idx[j, k])])
+    for j, kk in zip(*np.nonzero(idx)):
+        parches.append(Rectangle((j + 0.12, cen_v[kk] - hb / 2), 0.76, hb)); cols.append(COL[int(idx[j, kk])])
     ax.add_collection(PatchCollection(parches, facecolors=cols, edgecolors='none', zorder=2))
     proy, pcols = [], []
-    for k in np.nonzero(idx[-1])[0]:                        # niveles aún vivos: se prolongan, apagados
-        for j in range(n24, n24 + EXT):
-            proy.append(Rectangle((j + 0.12, cen[bi[k]] - hb / 2), 0.76, hb)); pcols.append(COL[int(idx[-1, k])])
+    for kk in np.nonzero(idx[-1])[0]:                         # niveles aún vivos: se prolongan, apagados
+        for j in range(nc, nc + ext):
+            proy.append(Rectangle((j + 0.12, cen_v[kk] - hb / 2), 0.76, hb)); pcols.append(COL[int(idx[-1, kk])])
     ax.add_collection(PatchCollection(proy, facecolors=pcols, edgecolors='none', alpha=0.30, zorder=2))
-    for j in range(n24):                                    # velas
+    ancho_v = 0.64 if nc <= 120 else 0.72
+    for j in range(nc):                                       # velas
         col = '#26a69a' if c[j] >= o[j] else '#ef5350'
-        ax.plot([j + 0.5, j + 0.5], [l[j], h[j]], color=col, linewidth=1, zorder=4)
-        ax.add_patch(Rectangle((j + 0.18, min(o[j], c[j])), 0.64, max(abs(c[j] - o[j]), p * 0.00006),
+        ax.plot([j + 0.5, j + 0.5], [l[j], h[j]], color=col, linewidth=1 if nc <= 120 else 0.8, zorder=4)
+        ax.add_patch(Rectangle((j + 0.5 - ancho_v / 2, min(o[j], c[j])), ancho_v, max(abs(c[j] - o[j]), p * 0.00006),
                                facecolor=col, edgecolor=col, zorder=5))
     ax.axhline(p, color='#26a69a', linestyle=':', linewidth=1, zorder=3)
-    for tag, picos, col in (("cortos", res["picos_cortos"], '#FF8888'), ("largos", res["picos_largos"], '#77DD99')):
+    for picos, col in ((res["picos_cortos"], '#FF8888'), (res["picos_largos"], '#77DD99')):
         for precio_p, total, _v in picos[:3]:
             if ylo <= precio_p <= yhi:
                 ax.axhline(precio_p, color=col, linestyle=':', linewidth=0.6, alpha=0.5, zorder=1)
-                ax.text(n24 + EXT + 0.4, precio_p, _e(f"${precio_p/1000:.2f}K · {_usd(total)}"), color=col,
+                ax.text(nc + ext + 0.4, precio_p, _e(f"${precio_p/1000:.2f}K · {_usd(total)}"), color=col,
                         fontsize=10, va='center', ha='left', clip_on=False)
-    ax.set_xlim(0, n24 + EXT); ax.set_ylim(ylo, yhi)
-    cada = max(1, 180 // paso)
-    pos_x = list(range(0, n24, cada))
+    ax.set_xlim(0, nc + ext); ax.set_ylim(ylo, yhi)
+    pos_x = list(range(0, nc, cada_velas))
     ax.set_xticks([x + 0.5 for x in pos_x])
-    ax.set_xticklabels([_hora_madrid(tt[x]).strftime("%H:%M") for x in pos_x], color='#AAAAAA', fontsize=11)
+    ax.set_xticklabels([fmt_x(_hora_madrid(tt[x])) for x in pos_x], color='#AAAAAA', fontsize=11)
     ax.tick_params(axis='y', colors='#AAAAAA', labelsize=11)
     ax.yaxis.set_major_formatter(lambda x, _: f"{x:,.0f}")
     ax.grid(color='#1f2330', linestyle='-', linewidth=0.6, zorder=0)
-    ax.text(n24 + EXT - 0.3, p + p * 0.0022, _e(f"AHORA ${p:,.0f}"), color='#26a69a', fontsize=10.5, fontweight='bold',
+    ax.text(nc + ext - 0.3, p + p * 0.0022, _e(f"AHORA ${p:,.0f}"), color='#26a69a', fontsize=10.5, fontweight='bold',
             va='bottom', ha='right', zorder=6,
             bbox=dict(boxstyle='round,pad=0.2', facecolor='#131722', edgecolor='none', alpha=0.85))
-    fig.text(0.5, 0.965, f"BTC — LIQUIDACIONES ESTIMADAS · ZOOM 24 H (velas de {paso} min)", ha='center',
-             color='white', fontsize=18, fontweight='bold')
-    fig.text(0.5, 0.932, f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de Binance Futures",
-             ha='center', color='#FFB84D', fontsize=11)
-    fig.text(0.5, 0.900, "Cada bloque es un nivel de liquidación estimado que el precio todavía no ha tocado. "
-             "Se prolonga a la derecha hasta que lo toque.", ha='center', color='#AAAAAA', fontsize=10)
+    fig.text(0.5, 0.965, titulo, ha='center', color='white', fontsize=18, fontweight='bold')
+    fig.text(0.5, 0.932, subtitulo, ha='center', color='#FFB84D', fontsize=11)
+    fig.text(0.5, 0.900, aclaracion, ha='center', color='#AAAAAA', fontsize=10)
     fig.text(0.5, 0.874, "El color es la intensidad RELATIVA dentro de esta ventana, no dólares absolutos.",
              ha='center', color='#777777', fontsize=9.5)
+    if resumen:
+        fig.text(0.5, 0.842, _e(f"Cortos por encima (se liquidan comprando): hasta +5% {_usd(res['cortos_5'])}  ·  hasta +10% {_usd(res['cortos_10'])}"),
+                 ha='center', color='#FF9999', fontsize=11.5, fontweight='bold')
+        fig.text(0.5, 0.815, _e(f"Largos por debajo (se liquidan vendiendo): hasta −5% {_usd(res['largos_5'])}  ·  hasta −10% {_usd(res['largos_10'])}"),
+                 ha='center', color='#88EEAA', fontsize=11.5, fontweight='bold')
     ax.legend(handles=[Patch(color=COL[1], label='baja'), Patch(color=COL[2], label='media'),
                        Patch(color=COL[3], label='alta'), Patch(color=COL[4], label='máxima')],
               loc='upper center', bbox_to_anchor=(0.5, -0.07), ncol=4, frameon=False, labelcolor='#CCCCCC', fontsize=11)
@@ -3962,6 +3977,27 @@ def chart_liquidaciones_zoom(res):
     buf.seek(0)
     return buf
 
+def chart_liquidaciones_zoom(res):
+    """Zoom de 24 h: velas de la resolución del modelo (15 min si Binance la da)."""
+    paso = res["paso_min"]
+    return _grafico_bloques(
+        res, horas=24, vela_min=paso, pad_pct=0.018, agrup_bins=1, ext=8, pcts=[86, 94, 98.2, 99.7],
+        titulo=f"BTC — LIQUIDACIONES ESTIMADAS · ZOOM 24 H (velas de {paso} min)",
+        subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de Binance Futures",
+        aclaracion="Cada bloque es un nivel de liquidación estimado que el precio todavía no ha tocado. "
+                   "Se prolonga a la derecha hasta que lo toque.",
+        fmt_x=lambda dt_: dt_.strftime("%H:%M"), cada_velas=max(1, 180 // paso), resumen=False, calentamiento=False)
+
+def chart_liquidaciones(res):
+    """Visión de 30 días con el MISMO estilo que el zoom: velas de 4 h y un bloque por nivel sin tocar."""
+    return _grafico_bloques(
+        res, horas=24 * LIQ_DIAS, vela_min=240, pad_pct=0.03, agrup_bins=3, ext=12, pcts=[88, 95, 98.5, 99.7],
+        titulo="BTC — LIQUIDACIONES ESTIMADAS · 30 DÍAS (velas de 4 h)",
+        subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de Binance Futures",
+        aclaracion="Cada bloque es un nivel de liquidación estimado que el precio todavía no ha tocado. "
+                   "Se prolonga a la derecha hasta que lo toque.",
+        fmt_x=lambda dt_: dt_.strftime("%d %b"), cada_velas=30, resumen=True, calentamiento=True)
+
 def texto_liquidaciones(res):
     p = res["precio"]
     L = ["📖 QUÉ ES ESTE MAPA\n",
@@ -3969,7 +4005,7 @@ def texto_liquidaciones(res):
          "Al liquidarse, el exchange cierra la posición a la fuerza: un corto liquidado COMPRA y un largo liquidado "
          "VENDE, así que las zonas con muchas liquidaciones pueden acelerar el movimiento… o quedarse en nada.\n",
          f"🖼 Imagen 1: zoom de 24 h con velas de {res['paso_min']} min; cada bloque es un nivel aún sin tocar y se "
-         "prolonga a la derecha. Imagen 2: visión de 30 días.\n",
+         "prolonga a la derecha. Imagen 2: los 30 días con el mismo estilo (velas de 4 h).\n",
          f"📊 AHORA — BTC ${p:,.0f}"]
     if res["picos_cortos"]:
         a = ", ".join(f"${x:,.0f} ({(x/p-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_cortos"])
@@ -5512,6 +5548,7 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
 
 
 
