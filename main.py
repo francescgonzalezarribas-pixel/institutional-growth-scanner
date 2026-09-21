@@ -1230,7 +1230,8 @@ def cmd_start(msg):
             "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
             "/correlacion — Correlación BTC vs Nasdaq (risk-on/risk-off)\n"
             "/fuerza — Qué criptos aguantan o suben más que BTC (fuerza relativa)\n"
-            "/calientes — Criptos con volumen inusual y compras dominantes\n\n"
+            "/calientes — Criptos con volumen inusual y compras dominantes\n"
+            "/compresion — Compresión de precio de BTC (volatilidad 30 días)\n\n"
             "/guia — Explicación completa de cada comando\n"
             "/dyor — Aviso legal (léelo antes de usar el bot para decidir)\n\n"
             "Además, cada 2h (9-21h) recibes un resumen automático de mercados, "
@@ -3314,6 +3315,224 @@ def ejecutar_calientes_auto(dia):
     except Exception as e:
         log.error(f"ejecutar_calientes_auto: {e}")
 
+# ═══ /COMPRESION — Compresión de precio de BTC (30 días) ═══
+# Aproximación propia, con datos de Binance, de indicadores tipo "Price Compression
+# Score" (CryptoQuant): mide lo ESTRECHO que está el rango de precio de los últimos 30
+# días frente a los rangos de los últimos 12 meses. 100% = el rango más estrecho del
+# año; 0% = el más ancho. Es volatilidad, NO dirección. La fórmula exacta de
+# CryptoQuant no es pública, así que los números no coincidirán al 100%.
+
+COMPRESION_VENTANA = 30
+COMPRESION_HISTORIA = 365
+
+def _zona_compresion(s):
+    if s >= 90: return "COMPRESIÓN EXTREMA", '#FF3333'
+    if s >= 75: return "COMPRESIÓN FUERTE", '#FF7700'
+    if s >= 60: return "COMPRESIÓN", '#FFCC00'
+    if s >= 40: return "NORMAL", '#99DD00'
+    return "EXPANDIDO", '#3388FF'
+
+def calcular_compresion():
+    ck = "compresion_btc"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    V = COMPRESION_VENTANA
+    h = fetch_btc_price_history_long(days=COMPRESION_HISTORIA + V + 60)
+    if not h:
+        return None
+    closes = pd.Series(h["closes"]).astype(float).reset_index(drop=True)
+    fechas = list(h["fechas"])
+    n = len(closes)
+    if n < V + 120:
+        return None
+    rmax = closes.rolling(V).max()
+    rmin = closes.rolling(V).min()
+    rango = ((rmax - rmin) / rmin * 100).values
+    scores = np.full(n, np.nan)
+    for i in range(V - 1, n):
+        base = rango[max(V - 1, i - COMPRESION_HISTORIA + 1): i + 1]
+        if len(base) >= 90:                       # mínimo de historia para que el % signifique algo
+            scores[i] = 100.0 * float(np.mean(base > rango[i]))   # % de días con un rango MÁS ANCHO que hoy
+    ult = n - 1
+    if np.isnan(scores[ult]):
+        return None
+    def _sc(k):
+        v = scores[ult - k] if ult - k >= 0 else np.nan
+        return None if np.isnan(v) else float(v)
+    win = closes.iloc[-V:].values
+    precio, max30, min30 = float(closes.iloc[-1]), float(rmax.iloc[-1]), float(rmin.iloc[-1])
+    primero = int(np.argmax(~np.isnan(scores)))
+    desde = max(n - COMPRESION_HISTORIA, primero)
+    res = {"fechas": fechas[desde:], "closes": closes.values[desde:],
+           "rmax": rmax.values[desde:], "rmin": rmin.values[desde:], "scores": scores[desde:],
+           "score": float(scores[ult]), "score_7d": _sc(7), "score_30d": _sc(30),
+           "precio": precio, "max30": max30, "min30": min30, "rango_pct": float(rango[ult]),
+           "pos": (precio - min30) / (max30 - min30) * 100 if max30 > min30 else 50.0,
+           "dias_max": int(V - 1 - np.argmax(win)), "dias_min": int(V - 1 - np.argmin(win)),
+           "hora": datetime.now(MADRID).strftime("%d/%m %H:%M")}
+    cache_set(ck, res)
+    return res
+
+def chart_compresion(res):
+    score = res["score"]
+    zona, zc = _zona_compresion(score)
+    fig = plt.figure(figsize=(11, 14))
+    fig.patch.set_facecolor('#0d1117')
+    fig.text(0.5, 0.975, "BTC — COMPRESIÓN DE PRECIO (30 días)", ha='center', color='white',
+             fontsize=19, fontweight='bold')
+    fig.text(0.5, 0.953, f"{res['hora']} (Madrid)  ·  rango de los últimos 30 días frente al de los últimos 12 meses",
+             ha='center', color='#999999', fontsize=11)
+
+    # ── Velocímetro con aguja (0 = expandido, 100 = compresión extrema) ──
+    # Dibujado con cuñas en ejes cartesianos (no polares): la geometría es exacta y controlable.
+    from matplotlib.patches import Wedge
+    ax = fig.add_axes([0.08, 0.60, 0.84, 0.33])
+    ax.set_facecolor('#0d1117'); ax.axis('off')
+    ax.set_xlim(-1.3, 1.3); ax.set_ylim(-0.15, 1.15); ax.set_aspect('equal', adjustable='box')
+    for i in range(100):
+        c = '#3388FF' if i < 40 else '#99DD00' if i < 60 else '#FFCC00' if i < 75 else '#FF7700' if i < 90 else '#FF3333'
+        ax.add_patch(Wedge((0, 0), 1.0, 180 - (i + 1) * 1.8, 180 - i * 1.8, width=0.30, color=c, ec='none'))
+    ang = np.radians(180 - score * 1.8)
+    ax.plot([0, 0.86 * np.cos(ang)], [0, 0.86 * np.sin(ang)], color='white', linewidth=7,
+            solid_capstyle='round', zorder=5)
+    ax.plot(0, 0, 'o', color='white', markersize=24, zorder=6)
+    ax.plot(0, 0, 'o', color='#0d1117', markersize=12, zorder=7)
+    for val, txt in [(0, '0%\nEXPANDIDO'), (25, '25'), (50, '50\nNORMAL'), (75, '75'), (100, '100%\nEXTREMA')]:
+        a = np.radians(180 - val * 1.8)
+        r = 1.13 if val in (0, 100) else 1.10
+        ha = 'right' if val == 0 else 'left' if val == 100 else 'center'
+        ax.text(r * np.cos(a) if val not in (0, 100) else (1.0 if val == 100 else -1.0), 
+                r * np.sin(a) if val not in (0, 100) else -0.06,
+                txt, color='white', fontsize=10, fontweight='bold', ha='center',
+                va='top' if val in (0, 100) else 'bottom')
+    fig.text(0.5, 0.590, f"{score:.0f}%", ha='center', va='center', fontsize=40, color='white', fontweight='bold')
+    fig.text(0.5, 0.552, zona, ha='center', va='center', fontsize=15, color=zc, fontweight='bold')
+    s7 = res["score_7d"]
+    if s7 is not None:
+        d = score - s7
+        flecha = "▲" if d > 2 else "▼" if d < -2 else "▶"
+        fig.text(0.5, 0.527, f"{flecha} hace 7 días: {s7:.0f}%   ({d:+.0f} puntos)", ha='center',
+                 va='center', fontsize=12, color='#CCCCCC')
+
+    # ── Dónde está el precio dentro del rango de 30 días ──
+    axr = fig.add_axes([0.10, 0.445, 0.80, 0.055])
+    axr.set_facecolor('#0d1117'); axr.axis('off')
+    axr.set_xlim(-2, 102); axr.set_ylim(-1, 1.6)
+    axr.plot([0, 100], [0, 0], color='#444444', linewidth=10, solid_capstyle='round', zorder=1)
+    axr.plot([res['pos']], [0], marker='v', color=zc, markersize=20, markeredgecolor='white',
+             markeredgewidth=1.5, zorder=5, clip_on=False)
+    ha_ahora = 'right' if res['pos'] > 70 else 'left' if res['pos'] < 30 else 'center'
+    axr.text(res['pos'], 0.95, f"AHORA ${res['precio']:,.0f}  ({res['pos']:.0f}% del rango)", ha=ha_ahora,
+             va='bottom', color='white', fontsize=11, fontweight='bold')
+    axr.text(0, -0.55, f"mín 30d\n${res['min30']:,.0f}", ha='left', va='top', color='#66DD66', fontsize=10)
+    axr.text(100, -0.55, f"máx 30d\n${res['max30']:,.0f}", ha='right', va='top', color='#66B2FF', fontsize=10)
+
+    # ── Historia: precio con su rango de 30 días, y debajo el score ──
+    fechas = [pd.Timestamp(f) for f in res["fechas"]]
+    ax1 = fig.add_axes([0.11, 0.225, 0.84, 0.16])
+    ax2 = fig.add_axes([0.11, 0.055, 0.84, 0.135], sharex=ax1)
+    for a in (ax1, ax2):
+        a.set_facecolor('#0d1117')
+        for sp in a.spines.values(): sp.set_color('#333333')
+        a.tick_params(colors='#AAAAAA', labelsize=10)
+        a.grid(color='#222222', linestyle='--', alpha=0.3)
+    ax1.plot(fechas, res["closes"], color='white', linewidth=1.5, zorder=4)
+    ax1.plot(fechas, res["rmax"], color='#66B2FF', linestyle=':', linewidth=1.2)
+    ax1.plot(fechas, res["rmin"], color='#66DD66', linestyle=':', linewidth=1.2)
+    ax1.fill_between(fechas, res["rmin"], res["rmax"], color='#4488FF', alpha=0.10)
+    ax1.set_title("Precio y rango de 30 días (punteado)", color='#AAAAAA', fontsize=11, loc='left')
+    ax1.tick_params(labelbottom=False)
+    sc = np.array(res["scores"], dtype=float)
+    ax2.plot(fechas, sc, color='#DDDDDD', linewidth=1.3, zorder=4)
+    ax2.fill_between(fechas, 0, sc, where=(sc >= 75), color='#FF7700', alpha=0.45, zorder=3, interpolate=True)
+    ax2.fill_between(fechas, 0, sc, where=(sc < 75), color='#4488FF', alpha=0.15, zorder=2, interpolate=True)
+    for nivel, col in [(40, '#3388FF'), (60, '#FFCC00'), (75, '#FF7700'), (90, '#FF3333')]:
+        ax2.axhline(nivel, color=col, linestyle='--', linewidth=0.9, alpha=0.6)
+    ax2.set_ylim(0, 100)
+    ax2.plot(fechas[-1], sc[-1], 'o', color=zc, markersize=11, markeredgecolor='white', markeredgewidth=2, zorder=6)
+    ax2.set_title("Compresión (%): más alto = rango más estrecho que casi todo el año", color='#AAAAAA',
+                  fontsize=11, loc='left')
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%b %y'))
+    fig.text(0.5, 0.012, "Aproximación propia con datos de Binance (no coincide exactamente con CryptoQuant). "
+             "Mide volatilidad, no dirección.", ha='center', color='#777777', fontsize=9)
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+def texto_compresion(res):
+    score = res["score"]
+    zona, _ = _zona_compresion(score)
+    L = ["📖 QUÉ ES LA COMPRESIÓN DE PRECIO\n",
+         "Mide lo estrecho que está el rango de precio de BTC en los últimos 30 días, comparado con los "
+         "últimos 12 meses. 100% = el rango más estrecho del año; 0% = el más ancho.\n",
+         "• Alta: el precio lleva semanas en un pasillo estrecho. Suele anteceder a un movimiento fuerte, "
+         "pero NO dice si será al alza o a la baja.",
+         "• Baja: ya hubo un movimiento grande hace poco; la volatilidad ya se ha liberado.\n",
+         f"📊 AHORA: {score:.0f}% — {zona.lower()}",
+         f"BTC ${res['precio']:,.0f}. En 30 días ha oscilado entre ${res['min30']:,.0f} y ${res['max30']:,.0f} "
+         f"(un rango del {res['rango_pct']:.1f}%). Está al {res['pos']:.0f}% de ese rango."]
+    if res["pos"] >= 85:
+        L.append(f"Está pegado a la parte alta: superar ${res['max30']:,.0f} sería salir del rango por arriba.")
+    elif res["pos"] <= 15:
+        L.append(f"Está pegado a la parte baja: perder ${res['min30']:,.0f} sería salir del rango por abajo.")
+    if res["score_7d"] is not None and res["score_30d"] is not None:
+        L.append(f"Hace 7 días: {res['score_7d']:.0f}%. Hace 30 días: {res['score_30d']:.0f}%.")
+    avisos = []
+    if res["score_7d"] is not None and res["score"] - res["score_7d"] >= 40:
+        avisos.append("El score ha subido de golpe en pocos días. Suele pasar cuando un movimiento fuerte sale "
+                      "de la ventana de 30 días (el rango se estrecha solo), no porque el mercado se haya "
+                      "calmado de repente.")
+    for nombre, dias in (("máximo", res["dias_max"]), ("mínimo", res["dias_min"])):
+        if dias >= 25:
+            avisos.append(f"El {nombre} del rango es de hace {dias} días: saldrá de la ventana en unos "
+                          f"{30 - dias} días y el rango cambiará solo por eso.")
+    if avisos:
+        L.append("\n⚠️ Ojo con el efecto de ventana:\n" + "\n".join(f"• {a}" for a in avisos))
+    L.append("\nNo es una señal de compra ni de venta: avisa de que el mercado puede moverse, no hacia dónde.")
+    return "\n".join(L)
+
+@bot.message_handler(commands=["compresion"])
+@con_dyor
+def cmd_compresion(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Calculando la compresión de precio de BTC... (10-15s)")
+    res = calcular_compresion()
+    if not res:
+        safe_send(msg.chat.id, "No he podido obtener el histórico de BTC ahora mismo. Reintenta en un momento.",
+                  message_id=m.message_id)
+        return
+    zona, _ = _zona_compresion(res["score"])
+    caption = (f"📉 COMPRESIÓN DE PRECIO — BTC\n{res['score']:.0f}% · {zona.lower()}\n"
+               f"BTC ${res['precio']:,.0f} · rango 30d ${res['min30']:,.0f}–${res['max30']:,.0f}")
+    try:
+        img = chart_compresion(res)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, img, caption=caption[:1020])
+    except Exception as e:
+        log.warning(f"chart_compresion: {e}")
+        safe_send(msg.chat.id, caption, message_id=m.message_id)
+    safe_send(msg.chat.id, texto_compresion(res))
+    s7 = f"{res['score_7d']:.0f}%" if res["score_7d"] is not None else "N/D"
+    prompt = (f"Compresión de precio de BTC (aproximación propia con datos de Binance): {res['score']:.0f}% "
+              f"→ {zona}. Significa que el rango de precio de los últimos 30 días es más estrecho que el "
+              f"{res['score']:.0f}% de los rangos de 30 días de los últimos 12 meses. "
+              f"BTC ${res['precio']:,.0f}; en 30 días ha oscilado entre ${res['min30']:,.0f} y "
+              f"${res['max30']:,.0f} ({res['rango_pct']:.1f}%); está al {res['pos']:.0f}% de ese rango. "
+              f"Hace 7 días el score era {s7}. El máximo del rango es de hace {res['dias_max']} días y el "
+              f"mínimo de hace {res['dias_min']} días.\n\n"
+              "Datos ya interpretados, úsalos tal cual. No inventes cifras ni catalizadores. Recuerda que "
+              "la compresión mide volatilidad y no dirección.\n\n"
+              "1. ¿Qué implica este nivel de compresión y qué NO implica?\n"
+              "2. ¿Podría el score actual deberse en parte a que un movimiento fuerte ha salido de la "
+              "ventana de 30 días? ¿Cómo distinguirlo?\n"
+              "3. Qué habría que vigilar para confirmar una ruptura del rango y riesgos de falsas rupturas")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 def _scheduler_loop():
     global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_aviso_cad_key, _ultimo_calientes_key
     log.info("Scheduler de difusión automática arrancado")
@@ -3330,28 +3549,6 @@ def _scheduler_loop():
                 if clave != _ultimo_broadcast_key:
                     _ultimo_broadcast_key = clave
                     log.info(f"Ejecutando broadcast automático ({clave})")
-                    ejecutar_broadcast_hora()
-            if _debe_emitir_resumen_diario(ahora):
-                clave_dia = ahora.strftime("%Y-%m-%d")
-                if clave_dia != _ultimo_resumen_diario_key:
-                    _ultimo_resumen_diario_key = clave_dia
-                    log.info(f"Ejecutando resumen diario ({clave_dia})")
-                    ejecutar_resumen_diario()
-            if 9 <= ahora.hour <= 21 and ahora.minute < 15:
-                clave_cad = ahora.strftime("%Y-%m-%d %H")
-                if clave_cad != _ultimo_aviso_cad_key:
-                    _ultimo_aviso_cad_key = clave_cad
-                    revisar_caducidades()
-            if ahora.hour == CALIENTES_HORA and ahora.minute < 15:
-                clave_cal = ahora.strftime("%Y-%m-%d")
-                if clave_cal != _ultimo_calientes_key and not _calientes_ya_enviado(clave_cal):
-                    _ultimo_calientes_key = clave_cal
-                    log.info(f"Ejecutando /calientes automático ({clave_cal})")
-                    ejecutar_calientes_auto(clave_cal)
-        except Exception as e:
-            log.error(f"_scheduler_loop: {e}")
-        time.sleep(60)
-
 # ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
 # Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
 # Reutiliza la misma lógica de "meses desde el halving" que ya usa
@@ -4399,7 +4596,10 @@ Correlación BTC vs Nasdaq — mide si cripto se mueve pegado a las tech (risk-o
 Compara 100 criptos contra BTC en 3 plazos: 24 horas, 7 días y ~200 días — detecta cuáles lideran solo hoy o esta semana vs cuáles llevan meses haciéndolo (señal más sólida). No predice el futuro, describe divergencias ya en marcha.
 
 ━━━ /calientes ━━━
-Criptos de Binance con volumen de las últimas 24h muy por encima de lo normal (mediana de los 20 días previos) Y con compras agresivas dominantes. Gráfico de barras: la longitud es cuántas veces el volumen normal, el verde más intenso es más compra, y el panel de la derecha reparte compra (verde) y venta (rojo). También llega solo cada día a la hora indicada en /start. Es volumen, no una recomendación de compra.""",
+Criptos de Binance con volumen de las últimas 24h muy por encima de lo normal (mediana de los 20 días previos) Y con compras agresivas dominantes. Gráfico de barras: la longitud es cuántas veces el volumen normal, el verde más intenso es más compra, y el panel de la derecha reparte compra (verde) y venta (rojo). También llega solo cada día a la hora indicada en /start. Es volumen, no una recomendación de compra.
+
+━━━ /compresion ━━━
+Mide lo estrecho que está el rango de precio de BTC en los últimos 30 días frente a los últimos 12 meses, con un velocímetro (0% expandido, 100% compresión extrema), dónde está el precio dentro del rango y la historia. Una compresión alta suele anteceder a un movimiento fuerte, pero no dice hacia dónde. Aproximación propia con datos de Binance, no coincide exactamente con CryptoQuant.""",
 
 """📖 GUÍA DE COMANDOS (3/3) — Noticias y automatizaciones
 
@@ -4757,6 +4957,7 @@ MENU_COMANDOS = [
     ("correlacion", "Correlación BTC vs Nasdaq"),
     ("fuerza", "Fuerza relativa de 100 criptos vs BTC (24h, 7d, 200d)"),
     ("calientes", "Criptos con volumen inusual y compras dominantes"),
+    ("compresion", "Compresión de precio de BTC (volatilidad 30 días)"),
     ("noticias", "Noticias de bolsa, economía y cripto"),
     ("ticker", "Resumen de mercados al momento"),
 ]
@@ -4777,4 +4978,4 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
+            
