@@ -3656,6 +3656,8 @@ LIQ_TIERS = {5: 0.10, 10: 0.25, 25: 0.30, 50: 0.20, 100: 0.15}   # apalancamient
 LIQ_MMR = 0.005                                                   # margen de mantenimiento aprox.
 LIQ_CALENTAMIENTO_H = 48        # las primeras horas del modelo no son fiables (no vemos lo anterior)
 LIQ_NBINS = 600                 # ~0,1% de precio por fila
+LIQ_SEED_SIGMA = 0.05           # al empezar la ventana no sabemos a qué precio se abrieron las posiciones ya existentes:
+LIQ_SEED_RANGO = 0.15           # se reparten alrededor del precio de inicio (campana de ±5%, hasta ±15%), no en un punto
 LIQ_PASOS_MS = {"5m": 300000, "15m": 900000, "30m": 1800000, "1h": 3600000}
 
 def _fut_get(path, params):
@@ -3729,6 +3731,12 @@ def _liq_datos(symbol, periodo):
             "oi": np.array(oi_v[sl], dtype=float), "long_share": np.array(ls_v[sl], dtype=float),
             "paso_min": paso // 60000}
 
+def _semilla(p):
+    """Precios de entrada (y pesos) de las posiciones que ya existían al empezar la ventana."""
+    offs = np.arange(-LIQ_SEED_RANGO, LIQ_SEED_RANGO + 1e-9, 0.001)     # una entrada cada 0,1%: densidad continua
+    w = np.exp(-0.5 * (offs / LIQ_SEED_SIGMA) ** 2)
+    return p * (1 + offs), w / w.sum()
+
 def modelo_liquidaciones(d, bins):
     """Devuelve matrices (velas x bins) con el USD estimado de liquidaciones de largos y de cortos."""
     n, nb = len(d["oi"]), len(bins) - 1
@@ -3747,11 +3755,19 @@ def modelo_liquidaciones(d, bins):
             delta = d["oi"][i] - d["oi"][i - 1]
         if delta > 0:                     # posiciones nuevas
             p, sh = typ[i], d["long_share"][i]
+            entradas, pesos = ([p], [1.0]) if i > 0 else _semilla(p)
             nl, na, nlg = [], [], []
-            for lev, w in LIQ_TIERS.items():
-                nl += [p * (1 - 1 / lev + LIQ_MMR), p * (1 + 1 / lev - LIQ_MMR)]
-                na += [delta * sh * w, delta * (1 - sh) * w]
-                nlg += [True, False]
+            for ep, we in zip(entradas, pesos):
+                for lev, w in LIQ_TIERS.items():
+                    nl += [ep * (1 - 1 / lev + LIQ_MMR), ep * (1 + 1 / lev - LIQ_MMR)]
+                    na += [delta * sh * w * we, delta * (1 - sh) * w * we]
+                    nlg += [True, False]
+            if i == 0:                    # las que ya estarían liquidadas al precio de inicio no existen: se descartan
+                nl, na, nlg = np.array(nl), np.array(na), np.array(nlg)
+                vivas = np.where(nlg, nl < p, nl > p)
+                if vivas.any():
+                    na = na * (delta / na[vivas].sum())         # y se renormaliza al interés abierto real
+                    nl, na, nlg = nl[vivas], na[vivas], nlg[vivas]
             liq, amt, largo = np.concatenate([liq, nl]), np.concatenate([amt, na]), np.concatenate([largo, nlg])
         elif delta < 0 and amt.sum() > 0:  # cierres voluntarios = bajada de OI que no fue liquidación
             cierre = max(0.0, -delta - (liq_l + liq_s))
@@ -4021,7 +4037,9 @@ def texto_liquidaciones(res):
     L.append("⚠️ Cómo leerlo con cabeza:\n"
              "• Es un MODELO con supuestos (reparto de apalancamiento, margen). Otros mapas usan otros supuestos y "
              "saldrán distintos.\n"
-             "• Solo usa 30 días de datos: lo anterior no lo ve, y las primeras 48 h se descartan.\n"
+             "• Solo usa 30 días de datos: lo anterior no lo ve, y las primeras 48 h se descartan. Las posiciones "
+             "que ya existían al empezar la ventana se reparten de forma difusa alrededor del precio de entonces, "
+             "por eso los niveles más antiguos salen tenues.\n"
              "• No distingue entre posiciones cubiertas o con margen cruzado.\n"
              "• Los colores del zoom son intensidad relativa dentro de la ventana.\n"
              "• Que haya liquidaciones estimadas en una zona no significa que el precio vaya hacia allí.")
@@ -4279,6 +4297,7 @@ def cmd_ciclo(msg):
               "2. ¿Qué señales confirmarían el paso a la siguiente fase?\n"
               "3. Estrategia razonable dado este punto del ciclo")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+	
 # ═══ /SUELO — Triple Suelo de Sentimiento (VIX + AAII + Fear & Greed) ═
 # Metodología: alineación de tres métricas de pánico desde ángulos
 # distintos. El NAAIM (gestores activos) hubiera sido el tercer ángulo
@@ -5548,7 +5567,6 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
 
 
 
