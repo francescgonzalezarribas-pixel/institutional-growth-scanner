@@ -3991,14 +3991,13 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
     ax.grid(color='#1f2330', linestyle='-', linewidth=0.6, zorder=0)
     chg = float(c[-1] - c[-2]) if nc > 1 else 0.0
     pct = chg / float(c[-2]) * 100 if nc > 1 and c[-2] else 0.0
-    t1 = ax.text(0.006, 0.988, f"BTC/USDT · {tf_txt}   O {o[-1]:,.1f}   H {h[-1]:,.1f}   L {l[-1]:,.1f}   C {c[-1]:,.1f}",
-                 transform=ax.transAxes, va='top', ha='left', fontsize=10.5, family='DejaVu Sans Mono',
-                 color='#D1D4DC', zorder=8,
-                 bbox=dict(boxstyle='round,pad=0.25', facecolor='#131722', edgecolor='none', alpha=0.88))
-    bb = t1.get_window_extent(fig.canvas.get_renderer()).transformed(ax.transAxes.inverted())
-    ax.text(bb.x1 + 0.010, 0.988, f"{chg:+,.1f} ({pct:+.2f}%)", transform=ax.transAxes, va='top', ha='left',
-            fontsize=10.5, family='DejaVu Sans Mono', fontweight='bold', color=('#26a69a' if chg >= 0 else '#ef5350'),
-            zorder=8, bbox=dict(boxstyle='round,pad=0.25', facecolor='#131722', edgecolor='none', alpha=0.88))
+    # Una sola cadena (evita medir el ancho de la primera para colocar la segunda, que se desajustaba
+    # por el relleno del recuadro y las dejaba pegadas). Los signos +/- ya dan suficiente contraste de color.
+    cab = (f"BTC/USDT · {tf_txt}   O {o[-1]:,.1f}   H {h[-1]:,.1f}   L {l[-1]:,.1f}   C {c[-1]:,.1f}   "
+           f"{chg:+,.1f} ({pct:+.2f}%)")
+    ax.text(0.006, 0.988, cab, transform=ax.transAxes, va='top', ha='left', fontsize=10.5,
+            family='DejaVu Sans Mono', color=('#26a69a' if chg >= 0 else '#ef5350'), zorder=8,
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#131722', edgecolor='none', alpha=0.9))
     ax.text(nc + ext - 0.3, p + p * 0.0022, _e(f"AHORA ${p:,.0f}"), color='#26a69a', fontsize=10.5, fontweight='bold',
             va='bottom', ha='right', zorder=6,
             bbox=dict(boxstyle='round,pad=0.2', facecolor='#131722', edgecolor='none', alpha=0.85))
