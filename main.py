@@ -459,11 +459,12 @@ def fetch_stooq(ticker, days=220):
         url = f"https://stooq.com/q/d/l/?s={st}&d1={d1}&d2={d2}&i=d"
         r = requests.get(url,timeout=10,headers={"User-Agent":"Mozilla/5.0"})
         if r.status_code!=200 or "No data" in r.text or len(r.text)<50:
-            raise RuntimeError("sin datos en Stooq")
+            raise RuntimeError(f"sin datos en Stooq (HTTP {r.status_code}, respuesta: {r.text[:100]!r})")
         from io import StringIO
         df = pd.read_csv(StringIO(r.text))
         if df.empty or len(df)<5:
-            raise RuntimeError("Stooq: pocos datos")
+            raise RuntimeError(f"Stooq: pocos datos ({len(df)} filas, HTTP {r.status_code}, "
+                               f"respuesta: {r.text[:100]!r})")
         df.columns = [c.strip() for c in df.columns]
         df = df.sort_values("Date")
         c  = df["Close"].astype(float)
@@ -1512,7 +1513,6 @@ def cmd_mistatus(msg):
         f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'N/D'}\n"
         f"Días restantes: {dias}\n\n"
         f"{'⚠️ Renueva pronto con /premium' if dias<5 else '✅ Acceso activo'}")
-
 # ═══ /CARTERA — Carteras de grandes inversores (13F oficial SEC) ═
 # Fuente: filings 13F-HR presentados obligatoriamente ante la SEC cada
 # trimestre. No dependemos de Dataroma ni de ningún scraper de terceros
@@ -2474,20 +2474,50 @@ def fetch_coingecko_simple(coin_id):
         return {"price": j[coin_id]["usd"], "d1": j[coin_id].get("usd_24h_change", 0)}
     return with_retry(_do, tries=3, base_delay=5, what=f"fetch_coingecko_simple {coin_id}")
 
+_BROADCAST_FALTAN = []   # nombres sin dato en el último resumen (se avisa en el gráfico)
+
+def fetch_finnhub_cambio(ticker):
+    """Variación diaria de una acción de EEUU vía Finnhub /quote (con clave, sin
+    scraping). Solo se usa en el resumen, que únicamente necesita el % del día:
+    evita pasar por Stooq -> Twelve Data (7 llamadas/min), que era lo que retrasaba
+    el envío varios minutos."""
+    if not FINNHUB_API_KEY:
+        return None
+    ck = f"fh_q:{ticker}"
+    cached = cache_get(ck)
+    if cached is not None: return cached
+    def _do():
+        r = requests.get("https://finnhub.io/api/v1/quote",
+                         params={"symbol": ticker, "token": FINNHUB_API_KEY}, timeout=8)
+        j = r.json()
+        if r.status_code != 200 or not j.get("c"):
+            raise RuntimeError(f"Finnhub quote: HTTP {r.status_code} {str(j)[:80]}")
+        return {"d1": float(j.get("dp") or 0.0), "price": j["c"]}
+    res = with_retry(_do, tries=2, base_delay=1, what=f"finnhub quote {ticker}")
+    if res: cache_set(ck, res)
+    return res
+
 def calcular_broadcast():
     """Recorre los ~30 activos con una pequeña pausa entre cada uno —
     lección aprendida de cuando /mercados reventaba el límite de Twelve
     Data al pedir muchos tickers en ráfaga."""
+    global _BROADCAST_FALTAN
+    t0 = time.time()
+    faltan = []
     resultados = []
     for grupo, tickers in [("🪙 Cripto", BROADCAST_CRYPTO), ("📈 Acciones", BROADCAST_STOCKS),
                             ("🌍 Índices", BROADCAST_INDICES), ("📦 ETF", BROADCAST_ETF),
                             ("🥇 Materias primas", BROADCAST_COMMODITIES)]:
         for nombre, ticker in tickers.items():
-            d = get_quote(ticker)
+            d = fetch_finnhub_cambio(ticker) if grupo == "📈 Acciones" else None
+            if not d:
+                d = get_quote(ticker)
             if not d and ticker in BROADCAST_FALLBACK:
                 d = get_quote(BROADCAST_FALLBACK[ticker])
             if d:
                 resultados.append({"grupo": grupo, "nombre": nombre, "d1": d["d1"]})
+            else:
+                faltan.append(nombre)
             time.sleep(0.3)
     for nombre, coin_id in BROADCAST_CRYPTO_COINGECKO.items():
         d = fetch_coingecko_simple(coin_id)
@@ -2499,8 +2529,21 @@ def calcular_broadcast():
             pos_insercion = sum(1 for r in resultados if r["grupo"] == "🪙 Cripto")
             resultados.insert(pos_insercion,
                               {"grupo": "🪙 Cripto", "nombre": nombre, "d1": d["d1"]})
+        else:
+            faltan.append(nombre)
         time.sleep(0.3)
+    _BROADCAST_FALTAN = faltan
+    log.info(f"calcular_broadcast: {len(resultados)} activos en {time.time()-t0:.0f}s; "
+             f"sin datos: {faltan or 'ninguno'}")
     return resultados
+
+def _bolsa_eeuu_abierta():
+    """Aproximado: lunes-viernes 9:30-16:00 hora de Nueva York (no contempla festivos)."""
+    try:
+        ny = datetime.now(pytz.timezone("America/New_York"))
+        return ny.weekday() < 5 and (9, 30) <= (ny.hour, ny.minute) < (16, 0)
+    except Exception:
+        return True
 
 def chart_broadcast(resultados):
     n = len(resultados)
@@ -2545,8 +2588,16 @@ def chart_broadcast(resultados):
             grupo_actual = r["grupo"]
 
     fecha_txt = datetime.now(MADRID).strftime('%d/%m %H:%M')
+    nota_cierre = "" if _bolsa_eeuu_abierta() else \
+        "Acciones de EEUU, S&P 500 y Nasdaq: variación de la última sesión (bolsa de EEUU cerrada)"
     ax.set_title(f'RESUMEN DE MERCADOS — {fecha_txt}', color='white', fontsize=17,
-                 fontweight='bold', loc='left', pad=18)
+                 fontweight='bold', loc='left', pad=(40 if nota_cierre else 18))
+    if nota_cierre:
+        ax.text(0, 1.006, nota_cierre, transform=ax.transAxes, fontsize=11, color='#FFB84D',
+                va='bottom', ha='left')
+    if _BROADCAST_FALTAN:
+        ax.text(0, -0.012, "Sin datos ahora: " + ", ".join(_BROADCAST_FALTAN), transform=ax.transAxes,
+                fontsize=10, color='#888888', va='top', ha='left')
 
     plt.tight_layout()
     buf = io.BytesIO()
@@ -2814,6 +2865,8 @@ CALIENTES_RATIO_MIN = 1.5
 CALIENTES_COMPRAS_MIN = 0.55
 CALIENTES_VENTAS_MAX = 0.45
 CALIENTES_TOP = 10
+CALIENTES_CASI_TOP = 5
+CALIENTES_RATIO_ANOMALO = 20      # más allá de ×20 no es comparable (listado, campaña...): se aparta
 _CALIENTES_EXCLUIR = {"usdc", "fdusd", "tusd", "usde", "usds", "usdp", "busd", "dai", "eur",
                       "eurc", "bfusd", "xusd", "usd1", "rlusd", "pyusd", "paxg", "xaut"}
 _ultimo_calientes_key = None
@@ -2821,16 +2874,16 @@ _ultimo_calientes_key = None
 def _fetch_klines_horarias(symbol):
     def _do():
         r = requests.get("https://api.binance.com/api/v3/klines",
-                         params={"symbol": symbol, "interval": "1h", "limit": 520}, timeout=10)
+                         params={"symbol": symbol, "interval": "1h", "limit": 500}, timeout=10)
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code}")
         return r.json()
-    return with_retry(_do, tries=2, base_delay=1, what=f"klines 1h {symbol}")
+    return with_retry(_do, tries=3, base_delay=2, what=f"klines 1h {symbol}")
 
 def _analizar_volumen_compras(symbol):
     kl = _fetch_klines_horarias(symbol)
     if not kl:
-        return None
+        return "ERR"                      # Binance no contestó (límite de peticiones, red...)
     if kl[-1][6] > int(time.time() * 1000):
         kl = kl[:-1]                      # fuera la vela de la hora en curso (incompleta)
     n_ventanas = len(kl) // 24
@@ -2885,22 +2938,43 @@ def calcular_calientes():
             d = _analizar_volumen_compras(c[0])
         except Exception as e:
             log.warning(f"calientes {c[0]}: {e}")
-            return None
-        if d:
+            return "ERR"
+        if isinstance(d, dict):
             d["simbolo"] = c[1]
         return d
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        datos = [d for d in ex.map(_job, cands) if d]
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        resultados = list(ex.map(_job, cands))
+    datos = [d for d in resultados if isinstance(d, dict)]
+    fallidas = [c for c, d in zip(cands, resultados) if isinstance(d, str)]
+    n_err = 0
+    for c in fallidas:                    # segunda pasada en serie y con pausa
+        time.sleep(0.4)
+        d = _job(c)
+        if isinstance(d, dict):
+            datos.append(d)
+        elif isinstance(d, str):
+            n_err += 1
+    log.info(f"calientes: {len(cands)} candidatas, {len(datos)} analizadas, "
+             f"{len(fallidas)} fallaron a la primera, {n_err} siguen sin datos")
     if not datos:
         return None
-    calientes = sorted([d for d in datos if d["ratio"] >= CALIENTES_RATIO_MIN
-                        and d["compras"] >= CALIENTES_COMPRAS_MIN],
-                       key=lambda d: -d["ratio"])[:CALIENTES_TOP]
-    vendedores = sorted([d for d in datos if d["ratio"] >= CALIENTES_RATIO_MIN
+    anomalos = sorted([d for d in datos if d["ratio"] > CALIENTES_RATIO_ANOMALO],
+                      key=lambda d: -d["ratio"])[:3]
+    normales = [d for d in datos if d["ratio"] <= CALIENTES_RATIO_ANOMALO]
+    def _cumple(d):
+        return d["ratio"] >= CALIENTES_RATIO_MIN and d["compras"] >= CALIENTES_COMPRAS_MIN
+    calientes = sorted([d for d in normales if _cumple(d)], key=lambda d: -d["ratio"])[:CALIENTES_TOP]
+    vendedores = sorted([d for d in normales if d["ratio"] >= CALIENTES_RATIO_MIN
                          and d["compras"] <= CALIENTES_VENTAS_MAX],
                         key=lambda d: -d["ratio"])[:5]
+    def _distancia(d):                    # cuánto le falta para cumplir (0 = cumple)
+        return (0.5 * max(0.0, 1 - d["ratio"] / CALIENTES_RATIO_MIN)
+                + 0.5 * max(0.0, 1 - d["compras"] / CALIENTES_COMPRAS_MIN))
+    casi = sorted([d for d in normales if not _cumple(d) and d["ratio"] >= 1.0 and d["compras"] >= 0.50],
+                  key=_distancia)[:CALIENTES_CASI_TOP]
     res = {"hora": datetime.now(MADRID).strftime("%d/%m %H:%M"),
-           "calientes": calientes, "vendedores": vendedores, "n_analizadas": len(datos)}
+           "calientes": calientes, "vendedores": vendedores, "casi": casi, "anomalos": anomalos,
+           "n_analizadas": len(datos), "n_candidatas": len(cands), "n_errores": n_err}
     cache_set(ck, res)
     return res
 
@@ -2911,7 +2985,8 @@ def _color_compras(p):
     return '#B8C92A'
 
 def chart_calientes(res):
-    filas = res["calientes"]
+    modo_casi = not res["calientes"]
+    filas = res["casi"] if modo_casi else res["calientes"]
     n = len(filas)
     fig = plt.figure(figsize=(12, 2.9 + n * 0.62))
     fig.patch.set_facecolor('#0d1117')
@@ -2927,7 +3002,8 @@ def chart_calientes(res):
 
     # Panel 1: cuántas veces el volumen normal (el color = cuánta compra hubo)
     ratios = [f["ratio"] for f in filas]
-    ax1.barh(ys, ratios, height=0.62, color=[_color_compras(f["compras"]) for f in filas], zorder=3)
+    ax1.barh(ys, ratios, height=0.62, color=[_color_compras(f["compras"]) for f in filas],
+             alpha=(0.55 if modo_casi else 1.0), zorder=3)
     ax1.axvline(1, color='#888888', linestyle='--', linewidth=1, zorder=2)
     ax1.axvline(CALIENTES_RATIO_MIN, color='#555555', linestyle=':', linewidth=1, zorder=2)
     xmax = max(ratios) * 1.28
@@ -2963,11 +3039,18 @@ def chart_calientes(res):
     ax2.text(1.04, 1.02, "Precio 24h", transform=ax2.transAxes, color='#888888',
              fontsize=10, ha='left', va='bottom')
 
-    fig.text(0.5, 0.955, "CALIENTES — volumen inusual con compras dominantes",
-             ha='center', color='white', fontsize=17, fontweight='bold')
-    fig.text(0.5, 0.905, f"{res['hora']} (Madrid)  ·  últimas 24h vs mediana de los 20 días previos  ·  "
-             f"filtro: volumen ≥ ×{CALIENTES_RATIO_MIN} y compras ≥ {CALIENTES_COMPRAS_MIN*100:.0f}%",
-             ha='center', color='#999999', fontsize=10)
+    if modo_casi:
+        fig.text(0.5, 0.955, "CALIENTES — hoy ninguna cumple el filtro", ha='center', color='white',
+                 fontsize=17, fontweight='bold')
+        fig.text(0.5, 0.905, f"{res['hora']} (Madrid)  ·  estas son las que MÁS SE ACERCAN (no llegan a "
+                 f"×{CALIENTES_RATIO_MIN} de volumen y {CALIENTES_COMPRAS_MIN*100:.0f}% de compras)",
+                 ha='center', color='#FFB84D', fontsize=10)
+    else:
+        fig.text(0.5, 0.955, "CALIENTES — volumen inusual con compras dominantes",
+                 ha='center', color='white', fontsize=17, fontweight='bold')
+        fig.text(0.5, 0.905, f"{res['hora']} (Madrid)  ·  últimas 24h vs mediana de ~20 días previos  ·  "
+                 f"filtro: volumen ≥ ×{CALIENTES_RATIO_MIN} y compras ≥ {CALIENTES_COMPRAS_MIN*100:.0f}%",
+                 ha='center', color='#999999', fontsize=10)
     fig.text(0.5, 0.03, "Barra de la izquierda: más verde intenso = más compras agresivas. "
              "Volumen alto no es una recomendación de compra.", ha='center', color='#777777', fontsize=9)
     buf = io.BytesIO()
@@ -2977,19 +3060,31 @@ def chart_calientes(res):
     return buf
 
 def texto_calientes(res, con_aviso=False):
-    lineas = [f"🔥 CALIENTES — {res['hora']} (Madrid)",
-              "Volumen de las últimas 24h muy por encima de lo normal, con compras agresivas dominantes."]
+    lineas = [f"🔥 CALIENTES — {res['hora']} (Madrid)"]
     if res["calientes"]:
+        lineas.append("Volumen de las últimas 24h muy por encima de lo normal, con compras agresivas dominantes.")
         top = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f}" for f in res["calientes"][:5])
         lineas.append(f"\nTop: {top}")
     else:
-        lineas.append("\nHoy ninguna moneda cumple: volumen ≥ ×1.5 lo normal y compras ≥ 55%.")
+        lineas.append(f"Hoy ninguna moneda cumple el filtro (volumen ≥ ×{CALIENTES_RATIO_MIN} lo normal "
+                      f"y compras ≥ {CALIENTES_COMPRAS_MIN*100:.0f}%).")
+        if res["casi"]:
+            c = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f} ({f['compras']*100:.0f}% compra)"
+                          for f in res["casi"][:5])
+            lineas.append(f"\nLas que más se acercan: {c}")
     if res["vendedores"]:
         v = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f} ({f['compras']*100:.0f}% compra)"
                       for f in res["vendedores"][:5])
         lineas.append(f"\n⚠️ Volumen inusual pero dominado por VENTAS (descartadas): {v}")
-    lineas.append(f"\n({res['n_analizadas']} monedas analizadas con más de "
-                  f"${CALIENTES_MIN_USDT/1e6:.0f}M de volumen diario)")
+    if res["anomalos"]:
+        a = ", ".join(f"{f['simbolo']} ×{f['ratio']:.0f} ({f['compras']*100:.0f}% compra)"
+                      for f in res["anomalos"])
+        lineas.append(f"\n🔎 Salto de volumen fuera de escala (más de ×{CALIENTES_RATIO_ANOMALO}): {a} — "
+                      "suele ser un listado o una campaña; no es comparable con el resto.")
+    lineas.append(f"\n({res['n_analizadas']} de {res['n_candidatas']} monedas analizadas, "
+                  f"con más de ${CALIENTES_MIN_USDT/1e6:.0f}M de volumen diario)")
+    if res["n_candidatas"] and res["n_errores"] > 0.25 * res["n_candidatas"]:
+        lineas.append("⚠️ Binance limitó parte de las consultas: resultado parcial.")
     if con_aviso:
         lineas.append(AVISO_DYOR)
     return "\n".join(lineas)
@@ -3011,7 +3106,7 @@ def cmd_calientes(msg):
     except Exception:
         pass
     texto = texto_calientes(res)
-    if res["calientes"]:
+    if res["calientes"] or res["casi"]:
         try:
             bot.send_photo(msg.chat.id, chart_calientes(res), caption=texto[:1020])
         except Exception as e:
@@ -3019,7 +3114,8 @@ def cmd_calientes(msg):
             safe_send(msg.chat.id, texto)
     else:
         safe_send(msg.chat.id, texto)
-        return
+    if not res["calientes"]:
+        return                            # sin monedas que cumplan no hay nada que analizar con IA
     filas = "\n".join(f"{f['simbolo']}: volumen ×{f['ratio']:.1f} lo normal, compras {f['compras']*100:.0f}% "
                       f"del volumen, precio 24h {f['cambio']:+.1f}%" for f in res["calientes"])
     vend = ", ".join(f"{f['simbolo']} (×{f['ratio']:.1f}, {f['compras']*100:.0f}% compra)"
@@ -4539,5 +4635,6 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
 
 
