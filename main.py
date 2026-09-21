@@ -2424,14 +2424,10 @@ BROADCAST_STOCKS = {
 BROADCAST_INDICES = {
     "S&P 500": "^GSPC", "Nasdaq": "^IXIC", "IBEX 35": "^IBEX", "DAX": "^GDAXI", "CAC 40": "^FCHI",
 }
-# VWCE (Vanguard FTSE All-World UCITS ETF) cotiza en Xetra como VWCE.DE —
-# el sufijo ".DE" ya lo reconoce fetch_stooq automáticamente, sin necesitar
-# ningún mapeo especial. VGLA (FTSE Global All-Cap, lanzado 20 agosto
-# 2026) igual, mismo patrón.
-BROADCAST_ETF = {
-    "VWCE (All-World)": "VWCE.DE",
-    "VGLA (Global All-Cap)": "VGLA.DE",
-}
+# Sin ETFs en el resumen: VWCE/VGLA (Xetra) no tienen ninguna fuente gratuita que
+# funcione desde Railway (Stooq bloquea la IP, Twelve Data lo da solo en plan de
+# pago y Yahoo limita las peticiones). El grupo queda vacío y no se dibuja.
+BROADCAST_ETF = {}
 BROADCAST_COMMODITIES = {
     "Oro": "GC=F",
 }
@@ -2712,16 +2708,29 @@ def cmd_diagnostico(msg):
     elif t.endswith(".L"): st = t.lower().replace(".l", ".uk")
     elif "." not in t: st = f"{t.lower()}.us"
     else: st = t.lower()
-    try:
-        d1 = (dt.date.today() - dt.timedelta(days=250)).strftime("%Y%m%d")
-        d2 = dt.date.today().strftime("%Y%m%d")
-        r = requests.get(f"https://stooq.com/q/d/l/?s={st}&d1={d1}&d2={d2}&i=d", timeout=10,
-                         headers={"User-Agent": "Mozilla/5.0"})
-        filas = max(0, r.text.count("\n") - 1)
-        L.append(f"Stooq ({st}): HTTP {r.status_code} · {len(r.text)} bytes · ~{filas} filas · "
-                 f"inicio: {limpia(r.text[:70])!r}")
-    except Exception as e:
-        L.append(f"Stooq ({st}): error → {limpia(e)}")
+    NAVEGADOR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                 "Accept-Language": "es-ES,es;q=0.9,en;q=0.8", "Referer": "https://stooq.com/"}
+    def texto_html(x):
+        x = re.sub(r"<(script|style).*?</\1>", " ", x, flags=re.S | re.I)
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", x)).strip()
+    d1 = (dt.date.today() - dt.timedelta(days=250)).strftime("%Y%m%d")
+    d2 = dt.date.today().strftime("%Y%m%d")
+    for etiqueta, host, cab in [("Stooq (como el bot)", "stooq.com", {"User-Agent": "Mozilla/5.0"}),
+                                ("Stooq (cabeceras de navegador)", "stooq.com", NAVEGADOR),
+                                ("Stooq .pl (navegador)", "stooq.pl", NAVEGADOR)]:
+        try:
+            r = requests.get(f"https://{host}/q/d/l/?s={st}&d1={d1}&d2={d2}&i=d", timeout=10, headers=cab)
+            if r.text.lstrip().startswith("<"):
+                L.append(f"{etiqueta} [{st}]: HTTP {r.status_code} · devuelve una PÁGINA WEB, no datos. "
+                         f"Dice: {limpia(texto_html(r.text))[:150]!r}")
+            else:
+                filas = max(0, r.text.count("\n") - 1)
+                L.append(f"{etiqueta} [{st}]: HTTP {r.status_code} · ~{filas} filas · "
+                         f"inicio: {limpia(r.text[:60])!r}")
+        except Exception as e:
+            L.append(f"{etiqueta} [{st}]: error → {limpia(e)}")
 
     # 2) Twelve Data (símbolo tal cual el bot; y, si es de Xetra, con exchange=XETR)
     if TWELVEDATA_API_KEY:
@@ -2755,6 +2764,24 @@ def cmd_diagnostico(msg):
             L.append("Yahoo (yfinance): sin datos (probable bloqueo desde Railway)")
     except Exception as e:
         L.append(f"Yahoo (yfinance): error → {limpia(e)}")
+
+    # 3b) Yahoo directo, sin la librería yfinance
+    for host in ("query1", "query2"):
+        try:
+            r = requests.get(f"https://{host}.finance.yahoo.com/v8/finance/chart/{t}",
+                             params={"range": "5d", "interval": "1d"}, headers=NAVEGADOR, timeout=10)
+            if r.status_code == 200:
+                res = (r.json().get("chart") or {}).get("result")
+                if res:
+                    cierres = [c for c in res[0]["indicators"]["quote"][0]["close"] if c is not None]
+                    L.append(f"Yahoo directo ({host}): OK · precio {res[0]['meta'].get('regularMarketPrice')} "
+                             f"· {len(cierres)} cierres")
+                else:
+                    L.append(f"Yahoo directo ({host}): HTTP 200 pero sin datos")
+            else:
+                L.append(f"Yahoo directo ({host}): HTTP {r.status_code} · {limpia(r.text[:90])!r}")
+        except Exception as e:
+            L.append(f"Yahoo directo ({host}): error → {limpia(e)}")
 
     # 4) Finnhub, solo para tickers de EEUU sin sufijo
     if re.fullmatch(r"[A-Z]{1,5}", t):
@@ -2952,6 +2979,7 @@ CALIENTES_RATIO_MIN = 1.5
 CALIENTES_COMPRAS_MIN = 0.52
 CALIENTES_VENTAS_MAX = 0.45
 CALIENTES_TOP = 10
+CALIENTES_CLARA = 0.60           # desde aquí las compras son 'claras'; entre el mínimo y esto, 'ligeras'
 CALIENTES_CASI_TOP = 5
 CALIENTES_RATIO_ANOMALO = 20      # más allá de ×20 no es comparable (listado, campaña...): se aparta
 _CALIENTES_EXCLUIR = {"usdc", "fdusd", "tusd", "usde", "usds", "usdp", "busd", "dai", "eur",
@@ -3050,7 +3078,10 @@ def calcular_calientes():
     normales = [d for d in datos if d["ratio"] <= CALIENTES_RATIO_ANOMALO]
     def _cumple(d):
         return d["ratio"] >= CALIENTES_RATIO_MIN and d["compras"] >= CALIENTES_COMPRAS_MIN
-    calientes = sorted([d for d in normales if _cumple(d)], key=lambda d: -d["ratio"])[:CALIENTES_TOP]
+    # Orden por calidad de la señal: volumen (veces lo normal) x exceso de compras sobre el 50%.
+    # Así un 65% de compras con ×2.9 pasa por delante de un 52% con ×3.0.
+    calientes = sorted([d for d in normales if _cumple(d)],
+                       key=lambda d: -(d["ratio"] * (d["compras"] - 0.5)))[:CALIENTES_TOP]
     vendedores = sorted([d for d in normales if d["ratio"] >= CALIENTES_RATIO_MIN
                          and d["compras"] <= CALIENTES_VENTAS_MAX],
                         key=lambda d: -d["ratio"])[:5]
@@ -3112,7 +3143,10 @@ def chart_calientes(res):
         c = f["compras"] * 100
         ax2.barh(i, c, height=0.62, color='#00AA44', alpha=0.9, zorder=3)
         ax2.barh(i, 100 - c, left=c, height=0.62, color='#CC3333', alpha=0.75, zorder=3)
-        ax2.text(c / 2, i, f"{c:.0f}%", va='center', ha='center', color='white',
+        etiqueta = f"{c:.0f}%"
+        if not modo_casi:
+            etiqueta += " · clara" if f["compras"] >= CALIENTES_CLARA else " · ligera"
+        ax2.text(c / 2, i, etiqueta, va='center', ha='center', color='white',
                  fontsize=12, fontweight='bold', zorder=5)
         flecha = "▲" if f["cambio"] >= 0 else "▼"
         col = '#00CC44' if f["cambio"] >= 0 else '#FF4444'
@@ -3138,6 +3172,8 @@ def chart_calientes(res):
         fig.text(0.5, 0.905, f"{res['hora']} (Madrid)  ·  últimas 24h vs mediana de ~20 días previos  ·  "
                  f"filtro: volumen ≥ ×{CALIENTES_RATIO_MIN} y compras ≥ {CALIENTES_COMPRAS_MIN*100:.0f}%",
                  ha='center', color='#999999', fontsize=10)
+        fig.text(0.5, 0.868, "Ordenadas de más a menos señal (volumen × exceso de compras sobre el 50%)",
+                 ha='center', color='#777777', fontsize=9)
     fig.text(0.5, 0.03, "Barra de la izquierda: más verde intenso = más compras agresivas. "
              "Volumen alto no es una recomendación de compra.", ha='center', color='#777777', fontsize=9)
     buf = io.BytesIO()
@@ -3149,9 +3185,19 @@ def chart_calientes(res):
 def texto_calientes(res, con_aviso=False):
     lineas = [f"🔥 CALIENTES — {res['hora']} (Madrid)"]
     if res["calientes"]:
-        lineas.append("Volumen de las últimas 24h muy por encima de lo normal, con compras agresivas dominantes.")
-        top = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f}" for f in res["calientes"][:5])
-        lineas.append(f"\nTop: {top}")
+        lineas.append("Volumen de las últimas 24h muy por encima de lo normal, con compras agresivas "
+                      "dominantes. Ordenadas de más a menos señal.")
+        claras = [f for f in res["calientes"] if f["compras"] >= CALIENTES_CLARA]
+        ligeras = [f for f in res["calientes"] if f["compras"] < CALIENTES_CLARA]
+        if claras:
+            c = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f} ({f['compras']*100:.0f}%)" for f in claras)
+            lineas.append(f"\n🟢 Compras claras (≥{CALIENTES_CLARA*100:.0f}%): {c}")
+        else:
+            lineas.append(f"\nNinguna con compras claras (≥{CALIENTES_CLARA*100:.0f}%) hoy: solo compras ligeras.")
+        if ligeras:
+            l = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f} ({f['compras']*100:.0f}%)" for f in ligeras)
+            lineas.append(f"\n🟡 Compras ligeras ({CALIENTES_COMPRAS_MIN*100:.0f}-{CALIENTES_CLARA*100-1:.0f}%, "
+                          f"casi equilibrio): {l}")
     else:
         lineas.append(f"Hoy ninguna moneda cumple el filtro (volumen ≥ ×{CALIENTES_RATIO_MIN} lo normal "
                       f"y compras ≥ {CALIENTES_COMPRAS_MIN*100:.0f}%).")
@@ -3203,17 +3249,25 @@ def cmd_calientes(msg):
         safe_send(msg.chat.id, texto)
     if not res["calientes"]:
         return                            # sin monedas que cumplan no hay nada que analizar con IA
+    def _calidad(f):
+        if f["compras"] >= CALIENTES_CLARA:
+            return "compras CLARAS"
+        return "compras LIGERAS (apenas por encima del equilibrio del 50%: señal débil)"
     filas = "\n".join(f"{f['simbolo']}: volumen ×{f['ratio']:.1f} lo normal, compras {f['compras']*100:.0f}% "
-                      f"del volumen, precio 24h {f['cambio']:+.1f}%" for f in res["calientes"])
+                      f"del volumen → {_calidad(f)}, precio 24h {f['cambio']:+.1f}%" for f in res["calientes"])
     vend = ", ".join(f"{f['simbolo']} (×{f['ratio']:.1f}, {f['compras']*100:.0f}% compra)"
                      for f in res["vendedores"]) or "ninguna"
-    prompt = (f"Monedas cripto (Binance) cuyo volumen de las últimas 24h supera 1.5 veces lo normal y donde "
-              f"las compras agresivas (órdenes a mercado del comprador) son mayoría del volumen:\n{filas}\n\n"
+    prompt = (f"Monedas cripto (Binance) ordenadas de más a menos señal. Su volumen de las últimas 24h supera "
+              f"{CALIENTES_RATIO_MIN} veces lo normal y las compras agresivas (órdenes a mercado del comprador) "
+              f"son mayoría del volumen:\n{filas}\n\n"
               f"Con volumen inusual pero dominado por ventas: {vend}\n\n"
-              "Datos ya interpretados: 'compras %' es la parte del volumen que fue compra agresiva; "
-              "por encima de 50% los compradores son más agresivos que los vendedores.\n"
-              "No inventes noticias ni catalizadores: si no sabes por qué se mueve una moneda, dilo.\n\n"
-              "1. ¿Qué patrón general se ve en este grupo (tipo de monedas, relación volumen-precio)?\n"
+              "Datos ya interpretados, úsalos tal cual: 'compras CLARAS' = 60% o más del volumen fue compra "
+              "agresiva; 'compras LIGERAS' = entre 52% y 59%, casi equilibrio, señal débil.\n"
+              "Reglas: NO trates el grupo como si fuera homogéneo; distingue expresamente las de compras claras "
+              "de las ligeras y no exageres las ligeras. NO asignes sectores ni categorías a las monedas "
+              "(por ejemplo 'DeFi' o 'IA') salvo que estés seguro. NO inventes noticias ni catalizadores: si no "
+              "sabes por qué se mueve una moneda, dilo.\n\n"
+              "1. ¿Qué se puede afirmar de verdad con estos datos, separando claras de ligeras?\n"
               "2. ¿Qué diferencia hay entre volumen alto con el precio subiendo y volumen alto con compras "
               "dominantes pero el precio plano o cayendo?\n"
               "3. Riesgos de usar esta señal sola (volumen inflado, liquidaciones, falsas rupturas)")
@@ -3297,6 +3351,7 @@ def _scheduler_loop():
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
+
 # ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
 # Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
 # Reutiliza la misma lógica de "meses desde el halving" que ya usa
@@ -4352,7 +4407,7 @@ Criptos de Binance con volumen de las últimas 24h muy por encima de lo normal (
 Titulares de bolsa/economía/cripto de varias fuentes, con análisis de IA basado solo en los titulares reales.
 
 ━━━ /ticker ━━━
-Resumen visual al momento de ~30 activos (cripto, acciones, ETFs, índices, oro).
+Resumen visual al momento de ~30 activos (cripto, acciones, índices, oro).
 
 ━━━ Automatizaciones (sin comando) ━━━
 • Cada 2h (9-21h): mismo resumen visual de /ticker, automático
@@ -4722,6 +4777,4 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
-
 
