@@ -3265,7 +3265,8 @@ def cmd_calientes(msg):
               "Reglas: NO trates el grupo como si fuera homogéneo; distingue expresamente las de compras claras "
               "de las ligeras y no exageres las ligeras. NO asignes sectores ni categorías a las monedas "
               "(por ejemplo 'DeFi' o 'IA') salvo que estés seguro. NO inventes noticias ni catalizadores: si no "
-              "sabes por qué se mueve una moneda, dilo.\n\n"
+              "sabes por qué se mueve una moneda, dilo. NO des recomendaciones de operativa (stops, objetivos, "
+              "toma de beneficios, tamaño de posición, 'compre' o 'venda').\n\n"
               "1. ¿Qué se puede afirmar de verdad con estos datos, separando claras de ligeras?\n"
               "2. ¿Qué diferencia hay entre volumen alto con el precio subiendo y volumen alto con compras "
               "dominantes pero el precio plano o cayendo?\n"
@@ -3439,6 +3440,7 @@ def chart_compresion(res):
     ax1.plot(fechas, res["rmax"], color='#66B2FF', linestyle=':', linewidth=1.2)
     ax1.plot(fechas, res["rmin"], color='#66DD66', linestyle=':', linewidth=1.2)
     ax1.fill_between(fechas, res["rmin"], res["rmax"], color='#4488FF', alpha=0.10)
+    ax1.yaxis.set_major_formatter(lambda x, _: f"${x/1000:.0f}K")
     ax1.set_title("Precio y rango de 30 días (punteado)", color='#AAAAAA', fontsize=11, loc='left')
     ax1.tick_params(labelbottom=False)
     sc = np.array(res["scores"], dtype=float)
@@ -3524,7 +3526,10 @@ def cmd_compresion(msg):
               f"Hace 7 días el score era {s7}. El máximo del rango es de hace {res['dias_max']} días y el "
               f"mínimo de hace {res['dias_min']} días.\n\n"
               "Datos ya interpretados, úsalos tal cual. No inventes cifras ni catalizadores. Recuerda que "
-              "la compresión mide volatilidad y no dirección.\n\n"
+              "la compresión mide volatilidad y no dirección.\n"
+              "Reglas: NO des recomendaciones de operativa: nada de stops, objetivos de precio, toma de "
+              "beneficios, tamaño de posición ni 'compre' o 'venda'. Limítate a explicar qué significan los "
+              "datos y qué señales habría que vigilar.\n\n"
               "1. ¿Qué implica este nivel de compresión y qué NO implica?\n"
               "2. ¿Podría el score actual deberse en parte a que un movimiento fuerte ha salido de la "
               "ventana de 30 días? ¿Cómo distinguirlo?\n"
@@ -4997,8 +5002,5 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
-
-
 
 
