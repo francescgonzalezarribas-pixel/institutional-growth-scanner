@@ -1236,7 +1236,8 @@ def cmd_start(msg):
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
-            "/mistatus — Ver tu suscripción")
+            "/mistatus — Ver tu suscripción\n"
+            "/premium — Suscribirte o renovar tu acceso (5€/mes)")
         return
     safe_send(chat_id,
         f"Hola {nombre}! 👋\n\n"
@@ -1276,20 +1277,24 @@ def cmd_trial(msg):
 @bot.message_handler(commands=["premium"])
 def cmd_premium(msg):
     chat_id = msg.from_user.id
+    extra = ""
     if is_premium(chat_id):
-        sub = SUSCRIPTORES.get(chat_id, {})
-        expiry = sub.get("expiry")
-        safe_send(chat_id,
-            f"Ya tienes acceso premium activo ✅\n"
-            f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'indefinido'}")
-        return
+        if chat_id == ALLOWED_USER_ID:
+            safe_send(chat_id, "Eres el administrador: acceso premium permanente ✅")
+            return
+        # Trial o suscripción aún activos: se puede pagar ya, los 30 días se
+        # suman al final del acceso actual (activar() ya lo hace así).
+        expiry = SUSCRIPTORES.get(chat_id, {}).get("expiry")
+        if expiry:
+            extra = (f"Tu acceso actual expira el {expiry.strftime('%d/%m/%Y')}. "
+                     "Si pagas ahora, los 30 días se suman a partir de esa fecha.\n\n")
     if WALLET_USDT:
         importe = importe_para(chat_id)
         if importe is None:
             safe_send(chat_id, "Ahora mismo no puedo asignarte un importe de pago. Contacta al administrador.")
             return
         safe_send(chat_id,
-            f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
+            extra + f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
             f"Envía EXACTAMENTE <code>{importe:.3f}</code> USDT por la red TRC20 (Tron) a:\n"
             f"<code>{WALLET_USDT}</code>\n\n"
             "⚠️ Este importe es solo tuyo: identifica tu pago. Si envías otra cantidad "
@@ -1302,7 +1307,7 @@ def cmd_premium(msg):
     enlace, _ = crear_pago()
     if enlace:
         safe_send(chat_id,
-            f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
+            extra + f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
             f"👇 Enlace de pago (USDT TRC20):\n{enlace}\n\n"
             "Tras pagar, avisa al administrador para que active tu acceso.")
     else:
@@ -1505,7 +1510,6 @@ def cmd_mistatus(msg):
         f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'N/D'}\n"
         f"Días restantes: {dias}\n\n"
         f"{'⚠️ Renueva pronto con /premium' if dias<5 else '✅ Acceso activo'}")
-
 # ═══ /CARTERA — Carteras de grandes inversores (13F oficial SEC) ═
 # Fuente: filings 13F-HR presentados obligatoriamente ante la SEC cada
 # trimestre. No dependemos de Dataroma ni de ningún scraper de terceros
@@ -2739,8 +2743,59 @@ def _debe_emitir_ahora(ahora):
         return False
     return ahora.minute < 15  # margen amplio por si hay un redeploy justo entonces
 
+# ── Aviso de caducidad: un solo mensaje cuando quedan ≤30h de acceso ──
+# Se guarda a qué caducidad se avisó (en el volumen), así un redeploy no repite
+# el aviso, y si el usuario renueva (nueva caducidad) puede volver a avisarse.
+AVISOS_CAD_FILE = os.environ.get("AVISOS_CADUCIDAD_FILE", _p("avisos_caducidad.json"))
+AVISO_CAD_HORAS = 30
+
+def _load_avisos_cad():
+    try:
+        with open(AVISOS_CAD_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_AVISOS_CAD = _load_avisos_cad()  # {str(chat_id): caducidad_iso ya avisada}
+
+def _save_avisos_cad():
+    try:
+        tmp = AVISOS_CAD_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_AVISOS_CAD, f)
+        os.replace(tmp, AVISOS_CAD_FILE)
+    except Exception as e:
+        log.warning(f"_save_avisos_cad: {e}")
+
+def revisar_caducidades():
+    ahora = datetime.now()
+    hubo_cambios = False
+    for cid, s in list(SUSCRIPTORES.items()):
+        if cid == ALLOWED_USER_ID or not s.get("activo") or not s.get("expiry"):
+            continue
+        exp = s["expiry"]
+        horas = (exp - ahora).total_seconds() / 3600
+        if not (0 < horas <= AVISO_CAD_HORAS):
+            continue
+        if _AVISOS_CAD.get(str(cid)) == exp.isoformat():
+            continue  # ya avisado para esta caducidad
+        safe_send(cid,
+            f"⏳ TU ACCESO CADUCA PRONTO\n\n"
+            f"Caduca el {exp.strftime('%d/%m/%Y')} (en unas {max(1, round(horas))} horas).\n\n"
+            "Para no perderlo: /premium — los 30 días nuevos se suman al final de tu acceso "
+            "actual, así que no pierdes nada por renovar antes.\n"
+            "Si ya has pagado, envía /verificar HASH.")
+        _AVISOS_CAD[str(cid)] = exp.isoformat()
+        hubo_cambios = True
+        log.info(f"aviso de caducidad enviado a {cid} (caduca {exp.isoformat()})")
+        time.sleep(0.05)
+    if hubo_cambios:
+        _save_avisos_cad()
+
+_ultimo_aviso_cad_key = None
+
 def _scheduler_loop():
-    global _ultimo_broadcast_key, _ultimo_resumen_diario_key
+    global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_aviso_cad_key
     log.info("Scheduler de difusión automática arrancado")
     _n_check = 0
     while True:
@@ -2762,10 +2817,14 @@ def _scheduler_loop():
                     _ultimo_resumen_diario_key = clave_dia
                     log.info(f"Ejecutando resumen diario ({clave_dia})")
                     ejecutar_resumen_diario()
+            if 9 <= ahora.hour <= 21 and ahora.minute < 15:
+                clave_cad = ahora.strftime("%Y-%m-%d %H")
+                if clave_cad != _ultimo_aviso_cad_key:
+                    _ultimo_aviso_cad_key = clave_cad
+                    revisar_caducidades()
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
-
 
 # ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
 # Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
@@ -4187,3 +4246,4 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
