@@ -1228,11 +1228,13 @@ def cmd_start(msg):
             "/curva — Curva de tipos EEUU (10 años vs 2 años)\n"
             "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
             "/correlacion — Correlación BTC vs Nasdaq (risk-on/risk-off)\n"
-            "/fuerza — Qué criptos aguantan o suben más que BTC (fuerza relativa)\n\n"
+            "/fuerza — Qué criptos aguantan o suben más que BTC (fuerza relativa)\n"
+            "/calientes — Criptos con volumen inusual y compras dominantes\n\n"
             "/guia — Explicación completa de cada comando\n"
             "/dyor — Aviso legal (léelo antes de usar el bot para decidir)\n\n"
             "Además, cada 2h (9-21h) recibes un resumen automático de mercados, "
-            "y cada mañana a las 8h un resumen diario con Fear & Greed y noticias destacadas.\n\n"
+            "cada mañana a las 8h un resumen diario con Fear & Greed y noticias destacadas, "
+            f"y a las {CALIENTES_HORA}h el /calientes del día.\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
@@ -1510,6 +1512,7 @@ def cmd_mistatus(msg):
         f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'N/D'}\n"
         f"Días restantes: {dias}\n\n"
         f"{'⚠️ Renueva pronto con /premium' if dias<5 else '✅ Acceso activo'}")
+
 # ═══ /CARTERA — Carteras de grandes inversores (13F oficial SEC) ═
 # Fuente: filings 13F-HR presentados obligatoriamente ante la SEC cada
 # trimestre. No dependemos de Dataroma ni de ningún scraper de terceros
@@ -2794,8 +2797,288 @@ def revisar_caducidades():
 
 _ultimo_aviso_cad_key = None
 
+# ═══ /CALIENTES — Volumen inusual con compras dominantes (Binance) ═══
+# Para cada moneda líquida de Binance se compara el volumen de las últimas 24h
+# (móviles, en USDT) con la mediana de los 20 periodos de 24h anteriores, y se
+# mide qué parte de ese volumen fue COMPRA agresiva (órdenes a mercado del
+# comprador) según el dato "taker buy" que Binance da en cada vela. Todo con la
+# API pública, sin claves. Sale solo lo que tiene volumen ≥1.5x lo normal y
+# compras ≥55%; lo de volumen alto pero dominado por ventas se lista aparte.
+# Envío automático diario a CALIENTES_HORA (Madrid), cuando ya hay sesión de EEUU.
+
+CALIENTES_HORA = int(os.environ.get("CALIENTES_HORA", 18))
+CALIENTES_FILE = os.environ.get("CALIENTES_ENVIADO_FILE", _p("calientes_enviado.json"))
+CALIENTES_MIN_USDT = 20_000_000   # liquidez mínima 24h: evita monedas pequeñas, fáciles de manipular
+CALIENTES_UNIVERSO = 80           # cuántas monedas (las más líquidas) se analizan
+CALIENTES_RATIO_MIN = 1.5
+CALIENTES_COMPRAS_MIN = 0.55
+CALIENTES_VENTAS_MAX = 0.45
+CALIENTES_TOP = 10
+_CALIENTES_EXCLUIR = {"usdc", "fdusd", "tusd", "usde", "usds", "usdp", "busd", "dai", "eur",
+                      "eurc", "bfusd", "xusd", "usd1", "rlusd", "pyusd", "paxg", "xaut"}
+_ultimo_calientes_key = None
+
+def _fetch_klines_horarias(symbol):
+    def _do():
+        r = requests.get("https://api.binance.com/api/v3/klines",
+                         params={"symbol": symbol, "interval": "1h", "limit": 520}, timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return r.json()
+    return with_retry(_do, tries=2, base_delay=1, what=f"klines 1h {symbol}")
+
+def _analizar_volumen_compras(symbol):
+    kl = _fetch_klines_horarias(symbol)
+    if not kl:
+        return None
+    if kl[-1][6] > int(time.time() * 1000):
+        kl = kl[:-1]                      # fuera la vela de la hora en curso (incompleta)
+    n_ventanas = len(kl) // 24
+    if n_ventanas < 8:
+        return None                       # listada hace poco: sin base fiable
+    ventanas = []                         # ventanas[0] = últimas 24h; el resto, días anteriores
+    for i in range(min(n_ventanas, 21)):
+        trozo = kl[len(kl) - 24 * (i + 1): len(kl) - 24 * i]
+        ventanas.append(sum(float(k[7]) for k in trozo))     # k[7] = volumen en USDT
+    base = float(np.median(ventanas[1:]))
+    actual = ventanas[0]
+    if base <= 0 or actual <= 0:
+        return None
+    ult = kl[-24:]
+    compras = sum(float(k[10]) for k in ult) / actual        # k[10] = compra agresiva en USDT
+    p_ini, p_fin = float(ult[0][1]), float(ult[-1][4])
+    cambio = (p_fin - p_ini) / p_ini * 100 if p_ini > 0 else 0.0
+    return {"ratio": actual / base, "compras": compras, "cambio": cambio, "vol_usdt": actual}
+
+def calcular_calientes():
+    ck = "calientes"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    def _tickers():
+        r = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=15)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return r.json()
+    tk = with_retry(_tickers, tries=2, base_delay=2, what="ticker 24hr Binance")
+    if not tk:
+        return None
+    cands = []
+    for t in tk:
+        s = t.get("symbol", "")
+        if not s.endswith("USDT"):
+            continue
+        base = s[:-4]
+        if base.lower() in _CALIENTES_EXCLUIR:
+            continue
+        try:
+            qv = float(t.get("quoteVolume") or 0)
+        except (ValueError, TypeError):
+            continue
+        if qv >= CALIENTES_MIN_USDT:
+            cands.append((s, base, qv))
+    cands.sort(key=lambda x: -x[2])
+    cands = cands[:CALIENTES_UNIVERSO]
+    from concurrent.futures import ThreadPoolExecutor
+    def _job(c):
+        try:
+            d = _analizar_volumen_compras(c[0])
+        except Exception as e:
+            log.warning(f"calientes {c[0]}: {e}")
+            return None
+        if d:
+            d["simbolo"] = c[1]
+        return d
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        datos = [d for d in ex.map(_job, cands) if d]
+    if not datos:
+        return None
+    calientes = sorted([d for d in datos if d["ratio"] >= CALIENTES_RATIO_MIN
+                        and d["compras"] >= CALIENTES_COMPRAS_MIN],
+                       key=lambda d: -d["ratio"])[:CALIENTES_TOP]
+    vendedores = sorted([d for d in datos if d["ratio"] >= CALIENTES_RATIO_MIN
+                         and d["compras"] <= CALIENTES_VENTAS_MAX],
+                        key=lambda d: -d["ratio"])[:5]
+    res = {"hora": datetime.now(MADRID).strftime("%d/%m %H:%M"),
+           "calientes": calientes, "vendedores": vendedores, "n_analizadas": len(datos)}
+    cache_set(ck, res)
+    return res
+
+def _color_compras(p):
+    if p >= 0.70: return '#00E060'
+    if p >= 0.65: return '#00CC44'
+    if p >= 0.60: return '#66CC33'
+    return '#B8C92A'
+
+def chart_calientes(res):
+    filas = res["calientes"]
+    n = len(filas)
+    fig = plt.figure(figsize=(12, 2.9 + n * 0.62))
+    fig.patch.set_facecolor('#0d1117')
+    gs = fig.add_gridspec(1, 2, width_ratios=[3, 2], left=0.11, right=0.90,
+                          top=0.80, bottom=0.11, wspace=0.06)
+    ax1 = fig.add_subplot(gs[0])
+    ax2 = fig.add_subplot(gs[1], sharey=ax1)
+    for ax in (ax1, ax2):
+        ax.set_facecolor('#0d1117')
+        for spine in ax.spines.values():
+            spine.set_color('#333333')
+    ys = list(range(n))
+
+    # Panel 1: cuántas veces el volumen normal (el color = cuánta compra hubo)
+    ratios = [f["ratio"] for f in filas]
+    ax1.barh(ys, ratios, height=0.62, color=[_color_compras(f["compras"]) for f in filas], zorder=3)
+    ax1.axvline(1, color='#888888', linestyle='--', linewidth=1, zorder=2)
+    ax1.axvline(CALIENTES_RATIO_MIN, color='#555555', linestyle=':', linewidth=1, zorder=2)
+    xmax = max(ratios) * 1.28
+    ax1.set_xlim(0, xmax)
+    for i, f in enumerate(filas):
+        ax1.text(f["ratio"] + xmax * 0.015, i, f"×{f['ratio']:.1f}", va='center', ha='left',
+                 color='white', fontsize=13, fontweight='bold')
+    ax1.set_yticks(ys)
+    ax1.set_yticklabels([f["simbolo"] for f in filas], color='white', fontsize=13, fontweight='bold')
+    ax1.invert_yaxis()
+    ax1.set_xticks([])
+    ax1.tick_params(left=False)
+    ax1.set_title("Volumen vs lo normal", color='#AAAAAA', fontsize=11, loc='left')
+    ax1.text(1, -0.02, "normal", transform=ax1.get_xaxis_transform(), color='#888888',
+             fontsize=9, ha='center', va='top')
+
+    # Panel 2: reparto compra / venta agresiva del volumen
+    for i, f in enumerate(filas):
+        c = f["compras"] * 100
+        ax2.barh(i, c, height=0.62, color='#00AA44', alpha=0.9, zorder=3)
+        ax2.barh(i, 100 - c, left=c, height=0.62, color='#CC3333', alpha=0.75, zorder=3)
+        ax2.text(c / 2, i, f"{c:.0f}%", va='center', ha='center', color='white',
+                 fontsize=12, fontweight='bold', zorder=5)
+        flecha = "▲" if f["cambio"] >= 0 else "▼"
+        col = '#00CC44' if f["cambio"] >= 0 else '#FF4444'
+        ax2.text(1.04, i, f"{flecha} {f['cambio']:+.1f}%", transform=ax2.get_yaxis_transform(),
+                 va='center', ha='left', color=col, fontsize=12, fontweight='bold', clip_on=False)
+    ax2.axvline(50, color='white', linestyle='--', linewidth=1, zorder=4)
+    ax2.set_xlim(0, 100)
+    ax2.set_xticks([])
+    ax2.tick_params(left=False, labelleft=False)
+    ax2.set_title("Compra (verde) vs venta (rojo)", color='#AAAAAA', fontsize=11, loc='left')
+    ax2.text(1.04, 1.02, "Precio 24h", transform=ax2.transAxes, color='#888888',
+             fontsize=10, ha='left', va='bottom')
+
+    fig.text(0.5, 0.955, "CALIENTES — volumen inusual con compras dominantes",
+             ha='center', color='white', fontsize=17, fontweight='bold')
+    fig.text(0.5, 0.905, f"{res['hora']} (Madrid)  ·  últimas 24h vs mediana de los 20 días previos  ·  "
+             f"filtro: volumen ≥ ×{CALIENTES_RATIO_MIN} y compras ≥ {CALIENTES_COMPRAS_MIN*100:.0f}%",
+             ha='center', color='#999999', fontsize=10)
+    fig.text(0.5, 0.03, "Barra de la izquierda: más verde intenso = más compras agresivas. "
+             "Volumen alto no es una recomendación de compra.", ha='center', color='#777777', fontsize=9)
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+def texto_calientes(res, con_aviso=False):
+    lineas = [f"🔥 CALIENTES — {res['hora']} (Madrid)",
+              "Volumen de las últimas 24h muy por encima de lo normal, con compras agresivas dominantes."]
+    if res["calientes"]:
+        top = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f}" for f in res["calientes"][:5])
+        lineas.append(f"\nTop: {top}")
+    else:
+        lineas.append("\nHoy ninguna moneda cumple: volumen ≥ ×1.5 lo normal y compras ≥ 55%.")
+    if res["vendedores"]:
+        v = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f} ({f['compras']*100:.0f}% compra)"
+                      for f in res["vendedores"][:5])
+        lineas.append(f"\n⚠️ Volumen inusual pero dominado por VENTAS (descartadas): {v}")
+    lineas.append(f"\n({res['n_analizadas']} monedas analizadas con más de "
+                  f"${CALIENTES_MIN_USDT/1e6:.0f}M de volumen diario)")
+    if con_aviso:
+        lineas.append(AVISO_DYOR)
+    return "\n".join(lineas)
+
+@bot.message_handler(commands=["calientes", "caliente"])
+@con_dyor
+def cmd_calientes(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Buscando monedas con volumen inusual y compras dominantes... (15-25s)")
+    res = calcular_calientes()
+    if not res:
+        safe_send(msg.chat.id, "No he podido obtener datos de Binance ahora mismo. Reintenta en un momento.",
+                  message_id=m.message_id)
+        return
+    try:
+        bot.delete_message(msg.chat.id, m.message_id)
+    except Exception:
+        pass
+    texto = texto_calientes(res)
+    if res["calientes"]:
+        try:
+            bot.send_photo(msg.chat.id, chart_calientes(res), caption=texto[:1020])
+        except Exception as e:
+            log.warning(f"chart_calientes: {e}")
+            safe_send(msg.chat.id, texto)
+    else:
+        safe_send(msg.chat.id, texto)
+        return
+    filas = "\n".join(f"{f['simbolo']}: volumen ×{f['ratio']:.1f} lo normal, compras {f['compras']*100:.0f}% "
+                      f"del volumen, precio 24h {f['cambio']:+.1f}%" for f in res["calientes"])
+    vend = ", ".join(f"{f['simbolo']} (×{f['ratio']:.1f}, {f['compras']*100:.0f}% compra)"
+                     for f in res["vendedores"]) or "ninguna"
+    prompt = (f"Monedas cripto (Binance) cuyo volumen de las últimas 24h supera 1.5 veces lo normal y donde "
+              f"las compras agresivas (órdenes a mercado del comprador) son mayoría del volumen:\n{filas}\n\n"
+              f"Con volumen inusual pero dominado por ventas: {vend}\n\n"
+              "Datos ya interpretados: 'compras %' es la parte del volumen que fue compra agresiva; "
+              "por encima de 50% los compradores son más agresivos que los vendedores.\n"
+              "No inventes noticias ni catalizadores: si no sabes por qué se mueve una moneda, dilo.\n\n"
+              "1. ¿Qué patrón general se ve en este grupo (tipo de monedas, relación volumen-precio)?\n"
+              "2. ¿Qué diferencia hay entre volumen alto con el precio subiendo y volumen alto con compras "
+              "dominantes pero el precio plano o cayendo?\n"
+              "3. Riesgos de usar esta señal sola (volumen inflado, liquidaciones, falsas rupturas)")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+def _calientes_ya_enviado(dia):
+    try:
+        with open(CALIENTES_FILE, "r") as f:
+            return json.load(f).get("dia") == dia
+    except Exception:
+        return False
+
+def _marcar_calientes_enviado(dia):
+    try:
+        tmp = CALIENTES_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"dia": dia}, f)
+        os.replace(tmp, CALIENTES_FILE)
+    except Exception as e:
+        log.warning(f"_marcar_calientes_enviado: {e}")
+
+def ejecutar_calientes_auto(dia):
+    destinatarios = _lista_suscriptores_activos()
+    if not destinatarios:
+        log.info("ejecutar_calientes_auto: sin suscriptores activos")
+        return
+    try:
+        res = calcular_calientes()
+        if not res:
+            log.warning("ejecutar_calientes_auto: sin datos de Binance")
+            return
+        _marcar_calientes_enviado(dia)   # con datos válidos, no se repite hoy (ni tras un redeploy)
+        if not res["calientes"]:
+            log.info("ejecutar_calientes_auto: hoy no hay monedas que cumplan el filtro; no se envía nada")
+            return
+        img = chart_calientes(res).getvalue()
+        caption = texto_calientes(res, con_aviso=True)[:1020]
+        for cid in destinatarios:
+            try:
+                bot.send_photo(cid, io.BytesIO(img), caption=caption, disable_notification=False)
+            except Exception as e:
+                log.warning(f"calientes auto -> {cid}: {e}")
+            time.sleep(0.05)
+    except Exception as e:
+        log.error(f"ejecutar_calientes_auto: {e}")
+
 def _scheduler_loop():
-    global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_aviso_cad_key
+    global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_aviso_cad_key, _ultimo_calientes_key
     log.info("Scheduler de difusión automática arrancado")
     _n_check = 0
     while True:
@@ -2822,10 +3105,15 @@ def _scheduler_loop():
                 if clave_cad != _ultimo_aviso_cad_key:
                     _ultimo_aviso_cad_key = clave_cad
                     revisar_caducidades()
+            if ahora.hour == CALIENTES_HORA and ahora.minute < 15:
+                clave_cal = ahora.strftime("%Y-%m-%d")
+                if clave_cal != _ultimo_calientes_key and not _calientes_ya_enviado(clave_cal):
+                    _ultimo_calientes_key = clave_cal
+                    log.info(f"Ejecutando /calientes automático ({clave_cal})")
+                    ejecutar_calientes_auto(clave_cal)
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
-
 # ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
 # Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
 # Reutiliza la misma lógica de "meses desde el halving" que ya usa
@@ -3870,7 +4158,10 @@ Curva de tipos EEUU (10 años vs 2 años) — indicador de recesión más vigila
 Correlación BTC vs Nasdaq — mide si cripto se mueve pegado a las tech (risk-on/risk-off).
 
 ━━━ /fuerza ━━━
-Compara 100 criptos contra BTC en 3 plazos: 24 horas, 7 días y ~200 días — detecta cuáles lideran solo hoy o esta semana vs cuáles llevan meses haciéndolo (señal más sólida). No predice el futuro, describe divergencias ya en marcha.""",
+Compara 100 criptos contra BTC en 3 plazos: 24 horas, 7 días y ~200 días — detecta cuáles lideran solo hoy o esta semana vs cuáles llevan meses haciéndolo (señal más sólida). No predice el futuro, describe divergencias ya en marcha.
+
+━━━ /calientes ━━━
+Criptos de Binance con volumen de las últimas 24h muy por encima de lo normal (mediana de los 20 días previos) Y con compras agresivas dominantes. Gráfico de barras: la longitud es cuántas veces el volumen normal, el verde más intenso es más compra, y el panel de la derecha reparte compra (verde) y venta (rojo). También llega solo cada día a la hora indicada en /start. Es volumen, no una recomendación de compra.""",
 
 """📖 GUÍA DE COMANDOS (3/3) — Noticias y automatizaciones
 
@@ -3883,6 +4174,7 @@ Resumen visual al momento de ~30 activos (cripto, acciones, ETFs, índices, oro)
 ━━━ Automatizaciones (sin comando) ━━━
 • Cada 2h (9-21h): mismo resumen visual de /ticker, automático
 • Cada mañana 8h: resumen diario (BTC, Fear&Greed, titulares)
+• Cada día por la tarde: /calientes automático
 • Alertas de noticias muy relevantes, cuando la IA las detecta
 
 ━━━ Suscripción ━━━
@@ -4226,6 +4518,7 @@ MENU_COMANDOS = [
     ("curva", "Curva de tipos EEUU (10 años vs 2 años)"),
     ("correlacion", "Correlación BTC vs Nasdaq"),
     ("fuerza", "Fuerza relativa de 100 criptos vs BTC (24h, 7d, 200d)"),
+    ("calientes", "Criptos con volumen inusual y compras dominantes"),
     ("noticias", "Noticias de bolsa, economía y cripto"),
     ("ticker", "Resumen de mercados al momento"),
 ]
@@ -4246,4 +4539,5 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
 
