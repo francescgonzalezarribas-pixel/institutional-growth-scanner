@@ -1056,7 +1056,6 @@ def cmd_fundamental(msg):
             f"1. ¿Es buena inversión a largo plazo?\n2. Principal riesgo del sector\n"
             f"3. Ventaja competitiva (moat)\n4. Veredicto con precio objetivo")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
 # ═══ /HALVINGBTC ═════════════════════════════════════════════
 
 def chart_halving():
@@ -1514,6 +1513,7 @@ def cmd_mistatus(msg):
         f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'N/D'}\n"
         f"Días restantes: {dias}\n\n"
         f"{'⚠️ Renueva pronto con /premium' if dias<5 else '✅ Acceso activo'}")
+
 # ═══ /CARTERA — Carteras de grandes inversores (13F oficial SEC) ═
 # Fuente: filings 13F-HR presentados obligatoriamente ante la SEC cada
 # trimestre. No dependemos de Dataroma ni de ningún scraper de terceros
@@ -2397,8 +2397,6 @@ def cmd_macro(msg):
               "sentimiento del mercado ahora mismo?\n"
               "3. Qué vigilar en las próximas semanas")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
-
 # ═══ DIFUSIÓN AUTOMÁTICA — resumen cada hora (9:00-22:00) + alertas ═
 # de noticias relevantes. A diferencia de todo lo demás en este bot (que
 # solo responde cuando el usuario escribe un comando), esto corre en
@@ -3549,6 +3547,29 @@ def _scheduler_loop():
                 if clave != _ultimo_broadcast_key:
                     _ultimo_broadcast_key = clave
                     log.info(f"Ejecutando broadcast automático ({clave})")
+                    ejecutar_broadcast_hora()
+            if _debe_emitir_resumen_diario(ahora):
+                clave_dia = ahora.strftime("%Y-%m-%d")
+                if clave_dia != _ultimo_resumen_diario_key:
+                    _ultimo_resumen_diario_key = clave_dia
+                    log.info(f"Ejecutando resumen diario ({clave_dia})")
+                    ejecutar_resumen_diario()
+            if 9 <= ahora.hour <= 21 and ahora.minute < 15:
+                clave_cad = ahora.strftime("%Y-%m-%d %H")
+                if clave_cad != _ultimo_aviso_cad_key:
+                    _ultimo_aviso_cad_key = clave_cad
+                    revisar_caducidades()
+            if ahora.hour == CALIENTES_HORA and ahora.minute < 15:
+                clave_cal = ahora.strftime("%Y-%m-%d")
+                if clave_cal != _ultimo_calientes_key and not _calientes_ya_enviado(clave_cal):
+                    _ultimo_calientes_key = clave_cal
+                    log.info(f"Ejecutando /calientes automático ({clave_cal})")
+                    ejecutar_calientes_auto(clave_cal)
+        except Exception as e:
+            log.error(f"_scheduler_loop: {e}")
+        time.sleep(60)
+
+
 # ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
 # Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
 # Reutiliza la misma lógica de "meses desde el halving" que ya usa
@@ -3711,8 +3732,6 @@ def cmd_ciclo(msg):
               "2. ¿Qué señales confirmarían el paso a la siguiente fase?\n"
               "3. Estrategia razonable dado este punto del ciclo")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
-
 # ═══ /SUELO — Triple Suelo de Sentimiento (VIX + AAII + Fear & Greed) ═
 # Metodología: alineación de tres métricas de pánico desde ángulos
 # distintos. El NAAIM (gestores activos) hubiera sido el tercer ángulo
@@ -4978,4 +4997,8 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-            
+
+
+
+
+
