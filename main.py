@@ -1073,6 +1073,7 @@ def cmd_fundamental(msg):
             f"1. ¿Es buena inversión a largo plazo?\n2. Principal riesgo del sector\n"
             f"3. Ventaja competitiva (moat)\n4. Veredicto con precio objetivo")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 # ═══ /HALVINGBTC ═════════════════════════════════════════════
 
 def chart_halving():
@@ -3699,6 +3700,106 @@ def _fut_klines(symbol, periodo, dias):
             break
     return kl or None
 
+def _bybit_get(path, params):
+    """Una petición a Bybit con reintentos. Devuelve la lista 'result.list' o None si falla."""
+    def _do():
+        r = requests.get(f"https://api.bybit.com{path}", params=params, timeout=12)
+        try:
+            j = r.json()
+        except Exception:
+            raise RuntimeError(f"HTTP {r.status_code}: respuesta no es JSON")
+        if r.status_code != 200 or j.get("retCode") not in (0, None):
+            raise RuntimeError(f"HTTP {r.status_code} retCode={j.get('retCode')} {str(j.get('retMsg'))[:80]}")
+        return (j.get("result") or {}).get("list") or []
+    return with_retry(_do, tries=2, base_delay=1.5, what=f"bybit {path}")
+
+def _bybit_paginado_1h(path, extra_params, dias):
+    """Pagina hacia atrás en el tiempo (Bybit no garantiza el orden) hasta cubrir 'dias' días a 1h,
+    o hasta 20 páginas como tope de seguridad."""
+    HORA_MS = 3600_000
+    fin_total = int(time.time() * 1000)
+    ini_total = fin_total - dias * 86400_000
+    out, cursor_end, vistas = {}, fin_total, set()
+    for _ in range(20):
+        lote = _bybit_get(path, {**extra_params, "startTime": ini_total, "endTime": cursor_end, "limit": 200})
+        if not lote:
+            break
+        tss = []
+        for d in lote:
+            ts = int(d["timestamp"]); tss.append(ts)
+            out[ts // HORA_MS] = d
+        nuevo_end = min(tss) - 1
+        if nuevo_end >= cursor_end or nuevo_end in vistas or nuevo_end <= ini_total:
+            break
+        vistas.add(nuevo_end); cursor_end = nuevo_end
+        if len(lote) < 200:
+            break
+        time.sleep(0.15)
+    return out
+
+def fetch_bybit_oi_ls_1h(dias=LIQ_DIAS):
+    """Interés abierto (en BTC) y proporción de cuentas en largo de Bybit BTCUSDT lineal, cada hora.
+    Best-effort: cualquier fallo (símbolo, formato, límite de peticiones) hace que se devuelva None y el
+    modelo siga solo con Binance, como hacía antes de tener esta fuente."""
+    ck = f"bybit_oi_ls_1h:{dias}"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    try:
+        oi_raw = _bybit_paginado_1h("/v5/market/open-interest",
+                                    {"category": "linear", "symbol": "BTCUSDT", "intervalTime": "1h"}, dias)
+        if len(oi_raw) < dias * 12:       # menos de la mitad de las horas esperadas: no nos fiamos
+            log.warning(f"fetch_bybit_oi_ls_1h: solo {len(oi_raw)} horas de {dias*24} esperadas, se descarta")
+            return None
+        ls_raw = _bybit_paginado_1h("/v5/market/account-ratio",
+                                    {"category": "linear", "symbol": "BTCUSDT", "period": "1h"}, dias)
+        oi = {h: float(d["openInterest"]) for h, d in oi_raw.items()}
+        ls = {h: float(d["buyRatio"]) for h, d in ls_raw.items()} if ls_raw else {}
+        res = {"oi_btc": oi, "long_share": ls}
+        cache_set(ck, res)
+        return res
+    except Exception as e:
+        log.warning(f"fetch_bybit_oi_ls_1h: {e}")
+        return None
+
+def _forward_fill_por_hora(dic, horas, default=np.nan):
+    """Para cada hora pedida, el último valor conocido en o antes de esa hora (relleno hacia delante).
+    'horas' son claves de hora entera (timestamp // 3600)."""
+    if not dic:
+        return np.full(len(horas), default, dtype=float)
+    claves = np.array(sorted(dic.keys()))
+    valores = np.array([dic[k] for k in claves], dtype=float)
+    idx = np.searchsorted(claves, horas, side="right") - 1
+    return np.where(idx >= 0, valores[np.clip(idx, 0, len(valores) - 1)], default)
+
+def _enriquecer_con_bybit(d):
+    """Suma el interés abierto de Bybit (pasado a USD con el precio de Binance) al de Binance, y
+    recalcula la proporción de largos como media ponderada por el interés abierto de cada exchange.
+    Si Bybit falla o llega incompleto, 'd' se devuelve sin tocar: el modelo sigue solo con Binance,
+    exactamente como antes de tener esta fuente."""
+    d["fuentes"] = ["Binance"]
+    try:
+        by = fetch_bybit_oi_ls_1h()
+        if not by or not by["oi_btc"]:
+            return d
+        horas = (d["t"] // 3600).astype(np.int64)
+        oi_btc = _forward_fill_por_hora(by["oi_btc"], horas)
+        ls_by = _forward_fill_por_hora(by["long_share"], horas, default=0.5)
+        cobertura = float(np.mean(~np.isnan(oi_btc)))
+        if cobertura < 0.5:               # menos de la mitad de las velas tienen dato de Bybit: se descarta
+            log.warning(f"_enriquecer_con_bybit: cobertura {cobertura*100:.0f}%, se descarta")
+            return d
+        oi_usd = np.nan_to_num(oi_btc, nan=0.0) * d["c"]
+        ls_by = np.nan_to_num(ls_by, nan=0.5)
+        total = d["oi"] + oi_usd
+        d["long_share"] = np.where(total > 0, (d["oi"] * d["long_share"] + oi_usd * ls_by) / total,
+                                   d["long_share"])
+        d["oi"] = total
+        d["fuentes"].append("Bybit")
+    except Exception as e:
+        log.warning(f"_enriquecer_con_bybit: {e}")
+    return d
+
 def _liq_datos(symbol, periodo):
     """Descarga y alinea por vela: precios, interés abierto (USD) y proporción de largos."""
     paso = LIQ_PASOS_MS[periodo]
@@ -3726,9 +3827,10 @@ def _liq_datos(symbol, periodo):
     if ok is None:
         return None
     sl = slice(ok, None)                  # empezamos donde hay dato de interés abierto
-    return {"t": np.array(claves[sl]) * (paso // 1000), "o": o[sl], "h": h[sl], "l": lo[sl], "c": c[sl],
-            "oi": np.array(oi_v[sl], dtype=float), "long_share": np.array(ls_v[sl], dtype=float),
-            "paso_min": paso // 60000}
+    d = {"t": np.array(claves[sl]) * (paso // 1000), "o": o[sl], "h": h[sl], "l": lo[sl], "c": c[sl],
+         "oi": np.array(oi_v[sl], dtype=float), "long_share": np.array(ls_v[sl], dtype=float),
+         "paso_min": paso // 60000}
+    return _enriquecer_con_bybit(d)
 
 def _semilla(p):
     """Precios de entrada (y pesos) de las posiciones que ya existían al empezar la ventana."""
@@ -3834,7 +3936,7 @@ def calcular_liquidaciones(symbol="BTCUSDT"):
            "o": d["o"], "h": d["h"], "l": d["l"], "c": d["c"], "close": d["c"],
            "Lm": Lm, "Sm": Sm, "Pm": Pm, "L": L, "S": S,
            "previo_pct": (prev10 / tot10 * 100) if tot10 > 0 else 0.0,
-           "oi": float(d["oi"][-1]), "long_share": float(d["long_share"][-1]),
+           "oi": float(d["oi"][-1]), "long_share": float(d["long_share"][-1]), "fuentes": d["fuentes"],
            "cortos_5": suma(S, precio, precio * 1.05), "cortos_10": suma(S, precio, precio * 1.10),
            "largos_5": suma(L, precio * 0.95, precio), "largos_10": suma(L, precio * 0.90, precio),
            "picos_cortos": _picos(np.where(centros > precio, Sn, 0), centros),
@@ -4023,13 +4125,18 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
     buf.seek(0)
     return buf
 
+def _texto_fuentes(fuentes):
+    if len(fuentes) > 1:
+        return " + ".join(fuentes) + " Futures"
+    return f"{fuentes[0]} Futures (Bybit no disponible esta vez)"
+
 def chart_liquidaciones_zoom(res):
     """Zoom de 24 h: velas de la resolución del modelo (15 min si Binance la da)."""
     paso = res["paso_min"]
     return _grafico_bloques(
         res, horas=24, vela_min=paso, pad_pct=0.018, agrup_bins=1, ext=8, pcts=[86, 94, 98.2, 99.7],
         titulo=f"BTC — LIQUIDACIONES ESTIMADAS · ZOOM 24 H (velas de {paso} min)",
-        subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de Binance Futures",
+        subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de {_texto_fuentes(res['fuentes'])}",
         aclaracion="Cada bloque es un nivel de liquidación estimado que el precio todavía no ha tocado. "
                    "Se prolonga a la derecha hasta que lo toque.",
         fmt_x=lambda dt_: dt_.strftime("%H:%M"), cada_velas=max(1, 180 // paso), resumen=False, calentamiento=False,
@@ -4040,7 +4147,7 @@ def chart_liquidaciones(res):
     return _grafico_bloques(
         res, horas=24 * LIQ_DIAS, vela_min=240, pad_pct=0.03, agrup_bins=3, ext=12, pcts=[88, 95, 98.5, 99.7],
         titulo="BTC — LIQUIDACIONES ESTIMADAS · 30 DÍAS (velas de 4 h)",
-        subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de Binance Futures",
+        subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de {_texto_fuentes(res['fuentes'])}",
         aclaracion="Cada bloque es un nivel de liquidación estimado que el precio todavía no ha tocado. "
                    "Se prolonga a la derecha hasta que lo toque.",
         fmt_x=lambda dt_: dt_.strftime("%d %b"), cada_velas=30, resumen=True, calentamiento=True, tf_txt="4h")
@@ -4053,6 +4160,10 @@ def texto_liquidaciones(res):
          "VENDE, así que las zonas con muchas liquidaciones pueden acelerar el movimiento… o quedarse en nada.\n",
          f"🖼 Imagen 1: zoom de 24 h con velas de {res['paso_min']} min; cada bloque es un nivel aún sin tocar y se "
          "prolonga a la derecha. Imagen 2: los 30 días con el mismo estilo (velas de 4 h).\n",
+        (f"Fuentes: {' + '.join(res['fuentes'])}. Bybit solo se actualiza cada hora (Binance cada "
+         f"{res['paso_min']} min), así que entre horas se usa su último dato conocido.\n"
+         if len(res["fuentes"]) > 1 else
+         "Fuente: solo Binance — Bybit no ha podido consultarse esta vez.\n"),
          f"📊 AHORA — BTC ${p:,.0f}"]
     if res["picos_cortos"]:
         a = ", ".join(f"${x:,.0f} ({(x/p-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_cortos"])
@@ -4119,6 +4230,7 @@ def cmd_liquidaciones(msg):
               f"últimos 30 días, no datos reales de liquidaciones). BTC ${res['precio']:,.0f}.\n"
               f"Zonas con más liquidaciones estimadas de CORTOS por encima del precio: {pc}.\n"
               f"Zonas con más liquidaciones estimadas de LARGOS por debajo: {pl}.\n"
+              f"Interés abierto combinado de {' + '.join(res['fuentes'])}.\n"
               f"Dentro de ±5%: cortos {_usd(res['cortos_5'])}, largos {_usd(res['largos_5'])}. "
               f"Dentro de ±10%: cortos {_usd(res['cortos_10'])}, largos {_usd(res['largos_10'])}. De eso, un "
               f"{res['previo_pct']:.0f}% son posiciones previas a la ventana de 30 días, de ubicación incierta.\n\n"
@@ -5600,7 +5712,6 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
 
 
 
