@@ -223,6 +223,9 @@ def ask_ai(prompt, max_chars=2500):
                       {"role":"user","content":prompt}],
             max_tokens=1024, temperature=0.7)
         t = (r.choices[0].message.content or "").strip()
+        # El bot envía texto plano: Telegram mostraría los ** de negrita y los # de títulos tal cual.
+        t = t.replace("**", "").replace("__", "")
+        t = re.sub(r"^\s*#{1,6}\s*", "", t, flags=re.M)
         if not t:
             log.warning("ask_ai: respuesta vacía")
             return "IA no disponible."
@@ -1073,7 +1076,6 @@ def cmd_fundamental(msg):
             f"1. ¿Es buena inversión a largo plazo?\n2. Principal riesgo del sector\n"
             f"3. Ventaja competitiva (moat)\n4. Veredicto con precio objetivo")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
 # ═══ /HALVINGBTC ═════════════════════════════════════════════
 
 def chart_halving():
@@ -4246,7 +4248,6 @@ def cmd_liquidaciones(msg):
               "2. ¿Qué NO se puede afirmar con un modelo estimado como este?\n"
               "3. ¿Qué otras señales conviene mirar junto a este mapa (interés abierto, funding, volumen)?")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
 # ═══ /ROTACION — Mapa de rotación de mercado (tipo RRG) ═══
 # Aproximación propia del Relative Rotation Graph (Julius de Kempenaer; su fórmula exacta no es
 # pública). Cada activo se compara contra el S&P 500 (SPY) con datos SEMANALES:
@@ -4265,6 +4266,28 @@ ROT_ACTIVOS = [
     ("XLU", "Utilities"), ("XLRE", "Inmobiliario"), ("GLD", "Oro"), ("SLV", "Plata"),
     ("TLT", "Bonos EEUU 20a"), ("BTC", "Bitcoin"),
 ]
+ROT_CORTO = {"XLK": "Tecnología", "SMH": "Semiconductores", "XLC": "Comunicaciones",
+             "XLY": "Cons. discrecional", "XLF": "Financiero", "XLI": "Industria", "XLE": "Energía",
+             "XLB": "Materiales", "XLV": "Salud", "XLP": "Cons. básico", "XLU": "Utilities",
+             "XLRE": "Inmobiliario", "GLD": "Oro", "SLV": "Plata", "TLT": "Bonos 20a", "BTC": "Bitcoin"}
+
+# Ciclo económico clásico (patrón histórico, no una regla): sectores que SUELEN ir mejor en cada fase.
+# BTC no entra: no forma parte del modelo clásico de rotación sectorial.
+ROT_FASES = [
+    {"nombre": "Recuperación", "sub": "desde el valle", "color": "#16a34a",
+     "macro": ["PIB: empieza a crecer", "Inflación: baja", "Tipos: bajos"],
+     "sectores": ["XLF", "XLI", "XLY", "XLRE"]},
+    {"nombre": "Expansión", "sub": "crecimiento fuerte", "color": "#2563eb",
+     "macro": ["PIB: crece con fuerza", "Inflación: en aumento", "Tipos: suben"],
+     "sectores": ["XLK", "SMH", "XLC", "XLF", "XLI"]},
+    {"nombre": "Desaceleración", "sub": "el crecimiento se enfría", "color": "#ea580c",
+     "macro": ["PIB: se frena", "Inflación: alta", "Tipos: altos"],
+     "sectores": ["XLE", "XLB", "XLV", "GLD", "SLV"]},
+    {"nombre": "Recesión", "sub": "contracción", "color": "#dc2626",
+     "macro": ["PIB: se contrae", "Inflación: baja", "Tipos: bajan"],
+     "sectores": ["XLP", "XLV", "XLU", "TLT", "GLD"]},
+]
+ROT_PUNTOS = {"Liderando": 2, "Mejorando": 1, "Perdiendo fuerza": 0, "Rezagado": -1}
 ROT_VENTANA = 14            # semanas para normalizar (valor habitual en las aproximaciones públicas)
 ROT_COLA = 5                # semanas de "cola" dibujadas
 ROT_CACHE_H = 6
@@ -4415,17 +4438,81 @@ def calcular_rotacion():
         return None
     semana = max(bench.keys())
     return {"filas": filas, "sin_datos": sin_datos, "semana": semana, "fuentes": fuentes,
-            "hora": datetime.now(MADRID).strftime("%d/%m %H:%M")}
+            "hora": datetime.now(MADRID).strftime("%d/%m %H:%M"), "ciclo": encaje_ciclo(filas)}
+
+def encaje_ciclo(filas):
+    """Para cada fase del ciclo clásico, media de puntos de sus sectores según su cuadrante actual
+    (Liderando 2, Mejorando 1, Perdiendo fuerza 0, Rezagado -1). No dice en qué fase ESTAMOS: dice a qué
+    fase se PARECE el reparto actual de fuerza entre sectores."""
+    cuad = {f["sym"]: f["cuad"] for f in filas}
+    fases = []
+    for fz in ROT_FASES:
+        pts = [ROT_PUNTOS[cuad[s]] for s in fz["sectores"] if s in cuad]
+        fases.append({**fz, "score": (sum(pts) / len(pts)) if pts else None, "n": len(pts)})
+    validas = sorted([f for f in fases if f["score"] is not None], key=lambda f: -f["score"])
+    if not validas:
+        return {"fases": fases, "claro": False, "mejor": None, "segunda": None}
+    mejor = validas[0]; segunda = validas[1] if len(validas) > 1 else None
+    claro = mejor["score"] >= 0.8 and (segunda is None or mejor["score"] - segunda["score"] >= 0.4)
+    return {"fases": fases, "claro": claro, "mejor": mejor["nombre"],
+            "segunda": segunda["nombre"] if segunda else None}
+
+def _colocar_etiquetas(ax, fig, puntos):
+    """Coloca cada etiqueta en la primera posición libre alrededor de su punto (sin pisar otras etiquetas
+    ni otros puntos). Si se aleja mucho, dibuja una línea fina hasta el punto."""
+    fig.canvas.draw()
+    rend = fig.canvas.get_renderer()
+    ocupadas = []
+    trans = ax.transData
+    for (_, x, y, _t, _c) in puntos:                     # los propios puntos también ocupan sitio
+        px, py = trans.transform((x, y))
+        ocupadas.append((px - 9, py - 9, px + 9, py + 9))
+    caja_ax = ax.get_window_extent(rend)
+    candidatos = [(8, 5, 'left', 'bottom'), (8, -5, 'left', 'top'), (-8, 5, 'right', 'bottom'),
+                  (-8, -5, 'right', 'top'), (0, 12, 'center', 'bottom'), (0, -12, 'center', 'top'),
+                  (14, 18, 'left', 'bottom'), (14, -18, 'left', 'top'), (-14, 18, 'right', 'bottom'),
+                  (-14, -18, 'right', 'top'), (0, 28, 'center', 'bottom'), (0, -28, 'center', 'top'),
+                  (24, 32, 'left', 'bottom'), (24, -32, 'left', 'top'), (-24, 32, 'right', 'bottom'),
+                  (-24, -32, 'right', 'top'), (0, 44, 'center', 'bottom'), (0, -44, 'center', 'top')]
+    dpi = fig.dpi / 72.0
+    for (sym, x, y, texto, col) in sorted(puntos, key=lambda p: -p[2]):
+        elegido = None
+        for dx, dy, ha, va in candidatos:
+            t = ax.annotate(texto, (x, y), xytext=(dx, dy), textcoords='offset points', ha=ha, va=va,
+                            fontsize=11, fontweight='bold', color='white', zorder=6,
+                            bbox=dict(boxstyle='round,pad=0.18', facecolor='#0d1117', edgecolor=col,
+                                      linewidth=0.8, alpha=0.85))
+            bb = t.get_window_extent(rend)
+            b = (bb.x0 - 2, bb.y0 - 2, bb.x1 + 2, bb.y1 + 2)
+            dentro = b[0] >= caja_ax.x0 and b[2] <= caja_ax.x1 and b[1] >= caja_ax.y0 and b[3] <= caja_ax.y1
+            choca = any(not (b[2] < o[0] or b[0] > o[2] or b[3] < o[1] or b[1] > o[3]) for o in ocupadas)
+            if dentro and not choca:
+                elegido = (t, b, dx, dy)
+                break
+            t.remove()
+        if elegido is None:                               # sin hueco: la primera opción, aunque roce
+            dx, dy, ha, va = candidatos[0]
+            t = ax.annotate(texto, (x, y), xytext=(dx, dy), textcoords='offset points', ha=ha, va=va,
+                            fontsize=11, fontweight='bold', color='white', zorder=6,
+                            bbox=dict(boxstyle='round,pad=0.18', facecolor='#0d1117', edgecolor=col,
+                                      linewidth=0.8, alpha=0.85))
+            bb = t.get_window_extent(rend)
+            elegido = (t, (bb.x0, bb.y0, bb.x1, bb.y1), dx, dy)
+        t, b, dx, dy = elegido
+        if abs(dx) + abs(dy) > 20:
+            ax.annotate("", (x, y), xytext=(dx, dy), textcoords='offset points',
+                        arrowprops=dict(arrowstyle='-', color=col, lw=0.8, alpha=0.8), zorder=4)
+        ocupadas.append(b)
 
 def chart_rotacion(res):
     filas = res["filas"]
     fig = plt.figure(figsize=(11, 12))
     fig.patch.set_facecolor('#0d1117')
-    ax = fig.add_axes([0.09, 0.08, 0.86, 0.78])
+    ax = fig.add_axes([0.09, 0.07, 0.86, 0.81])
     ax.set_facecolor('#0d1117')
     xs = [v for f in filas for v in f["cola_x"]]; ys = [v for f in filas for v in f["cola_y"]]
-    rx = max(abs(min(xs) - 100), abs(max(xs) - 100), 1.0) * 1.18
-    ry = max(abs(min(ys) - 100), abs(max(ys) - 100), 1.0) * 1.18
+    rx = max(abs(min(xs) - 100), abs(max(xs) - 100), 1.0) * 1.22
+    ry = max(abs(min(ys) - 100), abs(max(ys) - 100), 1.0) * 1.22
     ax.set_xlim(100 - rx, 100 + rx); ax.set_ylim(100 - ry, 100 + ry)
     for (x0, x1, y0, y1, c) in ((100, 100 + rx, 100, 100 + ry, ROT_COLOR["Liderando"]),
                                 (100, 100 + rx, 100 - ry, 100, ROT_COLOR["Perdiendo fuerza"]),
@@ -4438,31 +4525,106 @@ def chart_rotacion(res):
     for nombre, (tx, ty, ha, va) in esq.items():
         ax.text(tx, ty, nombre.upper(), transform=ax.transAxes, ha=ha, va=va, fontsize=15,
                 fontweight='bold', color=ROT_COLOR[nombre], alpha=0.85)
+    puntos = []
     for f in filas:
         col = ROT_COLOR[f["cuad"]]
         n = len(f["cola_x"])
-        ax.plot(f["cola_x"], f["cola_y"], color=col, linewidth=1.6, alpha=0.55, zorder=2)
+        ax.plot(f["cola_x"], f["cola_y"], color=col, linewidth=1.6, alpha=0.5, zorder=2)
         for i in range(n - 1):
             ax.plot(f["cola_x"][i], f["cola_y"][i], 'o', color=col, markersize=3 + i, alpha=0.25 + 0.12 * i, zorder=3)
-        ax.plot(f["x"], f["y"], 'o', color=col, markersize=13, markeredgecolor='white', markeredgewidth=1.5, zorder=5)
-        ax.annotate(f["sym"] if f["sym"] != "BTC" else "BTC", (f["x"], f["y"]), xytext=(7, 6), textcoords='offset points',
-                    fontsize=11.5, fontweight='bold', color='white', zorder=6,
-                    bbox=dict(boxstyle='round,pad=0.15', facecolor='#0d1117', edgecolor='none', alpha=0.7))
-    ax.set_xlabel("Fuerza relativa vs S&P 500 (RS-Ratio)  →  más fuerte", color='#AAAAAA', fontsize=11)
-    ax.set_ylabel("Momentum de esa fuerza (RS-Momentum)  →  acelerando", color='#AAAAAA', fontsize=11)
+        ax.plot(f["x"], f["y"], 'o', color=col, markersize=12, markeredgecolor='white', markeredgewidth=1.5, zorder=5)
+        puntos.append((f["sym"], f["x"], f["y"], ROT_CORTO.get(f["sym"], f["sym"]), col))
+    ax.set_xlabel("Fuerza relativa vs S&P 500  →  más fuerte que el índice", color='#AAAAAA', fontsize=11)
+    ax.set_ylabel("Momentum de esa fuerza  →  acelerando", color='#AAAAAA', fontsize=11)
     ax.tick_params(colors='#777777', labelsize=9)
     for sp in ax.spines.values(): sp.set_color('#333333')
     ax.grid(color='#1f2330', linestyle='--', linewidth=0.6, zorder=0)
-    fig.text(0.5, 0.965, "ROTACIÓN DE MERCADO — sectores, metales, bonos y BTC vs S&P 500", ha='center',
+    fig.text(0.5, 0.968, "ROTACIÓN DE MERCADO — sectores, metales, bonos y BTC vs S&P 500", ha='center',
              color='white', fontsize=17, fontweight='bold')
-    fig.text(0.5, 0.937, f"{res['hora']} (Madrid)  ·  datos semanales  ·  cola = últimas {ROT_COLA} semanas (el punto grande es ahora)",
+    fig.text(0.5, 0.940, f"{res['hora']} (Madrid)  ·  datos semanales  ·  cola = últimas {ROT_COLA} semanas (el punto grande es ahora)",
              ha='center', color='#FFB84D', fontsize=11)
-    fig.text(0.5, 0.912, "Giro habitual: Mejorando → Liderando → Perdiendo fuerza → Rezagado. "
+    fig.text(0.5, 0.914, "Giro habitual: Mejorando → Liderando → Perdiendo fuerza → Rezagado. "
              "Aproximación propia del RRG: describe, no predice.", ha='center', color='#999999', fontsize=10)
-    fig.text(0.5, 0.886, "  ".join(f"{f['sym']}={f['nombre']}" for f in filas[:8]), ha='center', color='#777777', fontsize=8.5)
-    fig.text(0.5, 0.870, "  ".join(f"{f['sym']}={f['nombre']}" for f in filas[8:]), ha='center', color='#777777', fontsize=8.5)
+    _colocar_etiquetas(ax, fig, puntos)
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+def chart_ciclo(res):
+    """Ciclo económico clásico y qué sectores suelen ir mejor en cada fase, con cada sector marcado según
+    su cuadrante ACTUAL en el mapa de rotación y la fase a la que más se parece hoy."""
+    cic = res["ciclo"]
+    cuad = {f["sym"]: f["cuad"] for f in res["filas"]}
+    fig = plt.figure(figsize=(12, 12.5))
+    fig.patch.set_facecolor('#0d1117')
+    fig.text(0.5, 0.968, "CICLO ECONÓMICO Y ROTACIÓN SECTORIAL", ha='center', color='white',
+             fontsize=20, fontweight='bold')
+    fig.text(0.5, 0.942, "Qué sectores suelen ir mejor en cada fase (patrón histórico) y cómo están HOY en el mapa",
+             ha='center', color='#FFB84D', fontsize=11.5)
+    # Curva del ciclo
+    axc = fig.add_axes([0.04, 0.70, 0.92, 0.20]); axc.set_facecolor('#0d1117'); axc.axis('off')
+    xs = np.linspace(0, 4, 400); ys = -np.cos((xs - 0.5) * np.pi / 2)
+    for i, fz in enumerate(ROT_FASES):
+        m = (xs >= i) & (xs <= i + 1)
+        axc.plot(xs[m], ys[m], color=fz["color"], linewidth=5, solid_capstyle='round')
+        destacada = fz["nombre"] == cic["mejor"] or (not cic["claro"] and fz["nombre"] == cic["segunda"])
+        axc.axvspan(i, i + 1, color=fz["color"], alpha=0.16 if destacada else 0.05, zorder=0)
+        axc.text(i + 0.5, 1.55, f"{i + 1}. {fz['nombre'].upper()}", ha='center', va='center', color=fz["color"],
+                 fontsize=14, fontweight='bold')
+        axc.text(i + 0.5, 1.22, f"({fz['sub']})", ha='center', va='center', color='#999999', fontsize=10)
+    axc.annotate("", xy=(4.0, ys[-1] + 0.35), xytext=(3.75, ys[-1] - 0.1),
+                 arrowprops=dict(arrowstyle='->', color='#dc2626', lw=2.5))
+    axc.set_xlim(0, 4); axc.set_ylim(-1.3, 1.8)
+    # Columnas
+    ancho = 0.92 / 4
+    for i, fz in enumerate(cic["fases"]):
+        x0 = 0.04 + i * ancho
+        ax = fig.add_axes([x0 + 0.004, 0.10, ancho - 0.008, 0.585]); ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        destacada = fz["nombre"] == cic["mejor"] or (not cic["claro"] and fz["nombre"] == cic["segunda"])
+        ax.set_facecolor('#121826')
+        for sp in ax.spines.values():
+            sp.set_color(fz["color"] if destacada else '#2a2e39'); sp.set_linewidth(3 if destacada else 1)
+        ax.set_xticks([]); ax.set_yticks([])
+        y = 0.965
+        for linea in fz["macro"]:
+            ax.text(0.06, y, linea, ha='left', va='top', color='#CCCCCC', fontsize=10.5); y -= 0.05
+        y -= 0.02
+        ax.plot([0.05, 0.95], [y, y], color='#2a2e39', linewidth=1); y -= 0.035
+        ax.text(0.06, y, "Suelen ir mejor:", ha='left', va='top', color=fz["color"], fontsize=11.5, fontweight='bold')
+        y -= 0.065
+        for sym in fz["sectores"]:
+            q = cuad.get(sym)
+            col = ROT_COLOR.get(q, '#555555')
+            ax.plot(0.09, y - 0.018, 'o', color=col, markersize=11, markeredgecolor='white', markeredgewidth=1)
+            ax.text(0.17, y, ROT_CORTO.get(sym, sym), ha='left', va='top', color='white', fontsize=11.5, fontweight='bold')
+            ax.text(0.17, y - 0.036, (q or "sin datos").lower(), ha='left', va='top', color=col, fontsize=9.5)
+            y -= 0.1
+        sc = fz["score"]
+        ax.text(0.5, 0.07, "Encaje hoy" if sc is not None else "", ha='center', va='bottom', color='#999999', fontsize=10)
+        ax.text(0.5, 0.02, f"{sc:+.1f}" if sc is not None else "—", ha='center', va='bottom',
+                color=fz["color"], fontsize=17, fontweight='bold')
+        if destacada:
+            ax.text(0.5, 0.18, "◆ SE PARECE MÁS" if cic["claro"] else "◆ MEZCLA", ha='center', va='bottom',
+                    color=fz["color"], fontsize=11, fontweight='bold')
+    # Conclusión y leyenda
+    if cic["mejor"] is None:
+        concl = "Sin datos suficientes para compararlo con el ciclo."
+    elif cic["claro"]:
+        concl = f"Lo que lidera ahora se parece más a la fase de {cic['mejor'].upper()}."
+    else:
+        concl = (f"Lo que lidera ahora no encaja claramente con una sola fase: mezcla de "
+                 f"{cic['mejor'].upper()} y {cic['segunda'].upper()}.")
+    fig.text(0.5, 0.068, concl, ha='center', color='white', fontsize=13, fontweight='bold')
+    ley = "   ".join(f"● {q.lower()}" for q in ROT_ORDEN)
+    fig.text(0.5, 0.045, "Color del punto = cuadrante actual en el mapa de rotación:", ha='center', color='#999999', fontsize=10)
+    for k, q in enumerate(ROT_ORDEN):
+        fig.text(0.24 + k * 0.155, 0.024, f"● {q}", ha='left', color=ROT_COLOR[q], fontsize=10.5, fontweight='bold')
+    fig.text(0.5, 0.004, "Encaje: media de Liderando +2, Mejorando +1, Perdiendo fuerza 0, Rezagado −1. "
+             "Patrón histórico, no una regla ni una recomendación.", ha='center', color='#777777', fontsize=8.8)
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=115, facecolor='#0d1117')
     plt.close()
     buf.seek(0)
     return buf
@@ -4486,6 +4648,19 @@ def texto_rotacion(res):
         L.append("\n🔄 Cambios de cuadrante en las últimas 4 semanas:")
         for f in cambios:
             L.append(f"• {f['nombre']}: {f['cuad_antes']} → {f['cuad']}")
+    cic = res.get("ciclo") or {}
+    if cic.get("mejor"):
+        L.append("\n🧭 ¿A QUÉ FASE DEL CICLO SE PARECE? (imagen 2)")
+        for fz in cic["fases"]:
+            if fz["score"] is not None:
+                L.append(f"• {fz['nombre']}: {fz['score']:+.1f}")
+        if cic["claro"]:
+            L.append(f"Los sectores que lideran ahora se parecen más a los que suelen ir bien en {cic['mejor']}.")
+        else:
+            L.append(f"No encaja claramente con una sola fase: mezcla de {cic['mejor']} y {cic['segunda']}. "
+                     "Es habitual: el mercado no siempre sigue el ciclo de libro.")
+        L.append("Es un patrón histórico, no dice en qué fase está la economía. Para eso mira también /macro "
+                 "(tipos, inflación, paro).")
     if res["sin_datos"]:
         L.append(f"\nSin datos esta vez: {', '.join(res['sin_datos'])}.")
     L.append("\n⚠️ Describe qué ha liderado estas semanas, no qué va a liderar. Las rotaciones se ven con "
@@ -4518,18 +4693,36 @@ def cmd_rotacion(msg):
     except Exception as e:
         log.warning(f"chart_rotacion: {e}")
         safe_send(msg.chat.id, caption, message_id=m.message_id)
+    try:
+        bot.send_photo(msg.chat.id, chart_ciclo(res))
+    except Exception as e:
+        log.warning(f"chart_ciclo: {e}")
     safe_send(msg.chat.id, texto_rotacion(res))
-    resumen = "; ".join(f"{f['nombre']}: {f['cuad']} (hace 4 semanas: {f['cuad_antes']})" for f in res["filas"])
+    grupos = "\n".join(f"- {q.upper()}: " + (", ".join(f["nombre"] for f in res["filas"] if f["cuad"] == q) or "ninguno")
+                       for q in ROT_ORDEN)
+    cambios = "\n".join(f"- {f['nombre']}: {f['cuad_antes']} → {f['cuad']}"
+                        for f in res["filas"] if f["cuad"] != f["cuad_antes"]) or "- ninguno"
+    cic = res.get("ciclo") or {}
+    if cic.get("mejor"):
+        ciclo_txt = (f"Se parece más a la fase de {cic['mejor']}." if cic["claro"] else
+                     f"No encaja claramente con una sola fase: mezcla de {cic['mejor']} y {cic['segunda']}.")
+    else:
+        ciclo_txt = "Sin datos suficientes."
     prompt = ("Mapa de rotación de mercado (aproximación propia del Relative Rotation Graph, datos semanales, "
-              f"todo comparado con el S&P 500). Situación de cada activo: {resumen}.\n\n"
+              "todo comparado con el S&P 500).\n\n"
+              f"ACTIVOS EN CADA CUADRANTE (datos definitivos):\n{grupos}\n\n"
+              f"CAMBIOS DE CUADRANTE EN LAS ÚLTIMAS 4 SEMANAS (lista completa):\n{cambios}\n\n"
+              f"COMPARACIÓN CON EL CICLO ECONÓMICO CLÁSICO: {ciclo_txt}\n\n"
               "Cuadrantes: Liderando = más fuerte que el índice y acelerando; Perdiendo fuerza = más fuerte pero "
               "frenando; Rezagado = más débil y empeorando; Mejorando = más débil pero recuperando.\n"
-              "Reglas: NO des recomendaciones de operativa (comprar, vender, rotar la cartera, stops, objetivos). "
-              "NO inventes noticias ni causas concretas; si mencionas posibles motivos, preséntalos como hipótesis "
-              "generales. No digas qué sector 'va a' liderar.\n\n"
+              "Reglas estrictas: usa EXACTAMENTE los cuadrantes de arriba; no muevas ningún activo de cuadrante ni lo "
+              "cambies de nombre. Si mencionas un cambio de cuadrante, cita solo los de la lista de cambios, tal cual. "
+              "NO des recomendaciones de operativa (comprar, vender, rotar la cartera, stops, objetivos). NO inventes "
+              "noticias ni causas concretas; si mencionas motivos, que sean hipótesis generales. No digas qué sector "
+              "'va a' liderar. Sin negritas ni formato markdown.\n\n"
               "1. ¿Qué dice este mapa sobre dónde está el liderazgo del mercado ahora mismo?\n"
-              "2. ¿Qué rotaciones parecen estar en marcha según los cambios de cuadrante?\n"
-              "3. Limitaciones de leer la rotación de mercado con este tipo de gráfico")
+              "2. ¿Qué rotaciones parecen estar en marcha según los cambios de cuadrante, y cómo encaja con el ciclo?\n"
+              "3. Limitaciones de leer la rotación de mercado y el ciclo con este tipo de gráfico")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 def _scheduler_loop():
@@ -5625,7 +5818,7 @@ Mide lo estrecho que está el rango de precio de BTC en los últimos 30 días fr
 Mapa de calor ESTIMADO de dónde se liquidarían más posiciones apalancadas de BTC (cortos por encima del precio, largos por debajo), con un zoom de 24 h estilo TradingView (velas y un bloque por nivel sin tocar) y la visión de 30 días. Es un modelo propio con el interés abierto de Binance Futures: no son liquidaciones reales y no coincide con Glassnode o Coinglass.
 
 ━━━ /rotacion ━━━
-Mapa de rotación de mercado: sectores del S&P 500, oro, plata, bonos y BTC comparados con el índice, semana a semana. Cuatro cuadrantes: Liderando, Perdiendo fuerza, Rezagado y Mejorando. Describe qué ha liderado, no qué va a liderar.""",
+Mapa de rotación de mercado: sectores del S&P 500, oro, plata, bonos y BTC comparados con el índice, semana a semana. Cuatro cuadrantes: Liderando, Perdiendo fuerza, Rezagado y Mejorando. Segunda imagen: el ciclo económico clásico (Recuperación, Expansión, Desaceleración, Recesión) y a qué fase se parece lo que lidera hoy. Describe qué ha liderado, no qué va a liderar.""",
 
 """📖 GUÍA DE COMANDOS (3/3) — Noticias y automatizaciones
 
@@ -6006,6 +6199,8 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
+
 
 
 
