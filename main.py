@@ -1073,7 +1073,6 @@ def cmd_fundamental(msg):
             f"1. ¿Es buena inversión a largo plazo?\n2. Principal riesgo del sector\n"
             f"3. Ventaja competitiva (moat)\n4. Veredicto con precio objetivo")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
 # ═══ /HALVINGBTC ═════════════════════════════════════════════
 
 def chart_halving():
@@ -4054,7 +4053,7 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
     hb = paso_bin * agrup_bins * 0.72
     fig = plt.figure(figsize=(12, 10 if resumen else 9.5))
     fig.patch.set_facecolor('#131722')
-    top = 0.765 if resumen else 0.83
+    top = 0.735 if resumen else 0.83
     ax = fig.add_axes([0.08, 0.13, 0.76, top - 0.13])
     ax.set_facecolor('#131722')
     for sp in ax.spines.values(): sp.set_color('#2a2e39')
@@ -4070,7 +4069,7 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
         colp = COL[int(idx[-1, kk])] if idx[-1, kk] else GRIS
         for j in range(nc, nc + ext):
             proy.append(Rectangle((j + 0.12, cen_v[kk] - hb / 2), 0.76, hb)); pcols.append(colp)
-    ax.add_collection(PatchCollection(proy, facecolors=pcols, edgecolors='none', alpha=0.30, zorder=2))
+    ax.add_collection(PatchCollection(proy, facecolors=pcols, edgecolors='none', alpha=0.48, zorder=2))
     ancho_v = 0.64 if nc <= 120 else 0.72
     for j in range(nc):                                       # velas
         col = '#26a69a' if c[j] >= o[j] else '#ef5350'
@@ -4091,15 +4090,6 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
     ax.tick_params(axis='y', colors='#AAAAAA', labelsize=11)
     ax.yaxis.set_major_formatter(lambda x, _: f"{x:,.0f}")
     ax.grid(color='#1f2330', linestyle='-', linewidth=0.6, zorder=0)
-    chg = float(c[-1] - c[-2]) if nc > 1 else 0.0
-    pct = chg / float(c[-2]) * 100 if nc > 1 and c[-2] else 0.0
-    # Una sola cadena (evita medir el ancho de la primera para colocar la segunda, que se desajustaba
-    # por el relleno del recuadro y las dejaba pegadas). Los signos +/- ya dan suficiente contraste de color.
-    cab = (f"BTC/USDT · {tf_txt}   O {o[-1]:,.1f}   H {h[-1]:,.1f}   L {l[-1]:,.1f}   C {c[-1]:,.1f}   "
-           f"{chg:+,.1f} ({pct:+.2f}%)")
-    ax.text(0.006, 0.988, cab, transform=ax.transAxes, va='top', ha='left', fontsize=10.5,
-            family='DejaVu Sans Mono', color=('#26a69a' if chg >= 0 else '#ef5350'), zorder=8,
-            bbox=dict(boxstyle='round,pad=0.3', facecolor='#131722', edgecolor='none', alpha=0.9))
     ax.text(nc + ext - 0.3, p + p * 0.0022, _e(f"AHORA ${p:,.0f}"), color='#26a69a', fontsize=10.5, fontweight='bold',
             va='bottom', ha='right', zorder=6,
             bbox=dict(boxstyle='round,pad=0.2', facecolor='#131722', edgecolor='none', alpha=0.85))
@@ -4108,6 +4098,14 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
     fig.text(0.5, 0.900, aclaracion, ha='center', color='#AAAAAA', fontsize=10)
     fig.text(0.5, 0.874, "El color es la intensidad RELATIVA dentro de esta ventana, no dólares absolutos.",
              ha='center', color='#777777', fontsize=9.5)
+    # Cabecera de precio en su propia franja, ENCIMA del eje: dentro del eje pisaba la etiqueta de precio
+    # más alta del eje Y (quedaba tapada por el fondo de este recuadro).
+    chg = float(c[-1] - c[-2]) if nc > 1 else 0.0
+    pct = chg / float(c[-2]) * 100 if nc > 1 and c[-2] else 0.0
+    cab = (f"BTC/USDT · {tf_txt}   O {o[-1]:,.1f}   H {h[-1]:,.1f}   L {l[-1]:,.1f}   C {c[-1]:,.1f}   "
+           f"{chg:+,.1f} ({pct:+.2f}%)")
+    fig.text(0.5, top + 0.018, cab, ha='center', va='bottom', fontsize=10.5, family='DejaVu Sans Mono',
+             color=('#26a69a' if chg >= 0 else '#ef5350'))
     if resumen:
         fig.text(0.5, 0.842, _e(f"Cortos por encima (se liquidan comprando): hasta +5% {_usd(res['cortos_5'])}  ·  hasta +10% {_usd(res['cortos_10'])}"),
                  ha='center', color='#FF9999', fontsize=11.5, fontweight='bold')
@@ -5712,6 +5710,7 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
 
 
 
