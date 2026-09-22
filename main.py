@@ -1073,6 +1073,7 @@ def cmd_fundamental(msg):
             f"1. ¿Es buena inversión a largo plazo?\n2. Principal riesgo del sector\n"
             f"3. Ventaja competitiva (moat)\n4. Veredicto con precio objetivo")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 # ═══ /HALVINGBTC ═════════════════════════════════════════════
 
 def chart_halving():
@@ -1248,7 +1249,8 @@ def cmd_start(msg):
             "/fuerza — Qué criptos aguantan o suben más que BTC (fuerza relativa)\n"
             "/calientes — Criptos con volumen inusual y compras dominantes\n"
             "/compresion — Compresión de precio de BTC (volatilidad 30 días)\n"
-            "/liquidaciones — Mapa de calor de liquidaciones estimado de BTC\n\n"
+            "/liquidaciones — Mapa de calor de liquidaciones estimado de BTC\n"
+            "/rotacion — Mapa de rotación: qué sectores lideran vs el S&P 500\n\n"
             "/guia — Explicación completa de cada comando\n"
             "/dyor — Aviso legal (léelo antes de usar el bot para decidir)\n\n"
             "Además, cada 2h (9-21h) recibes un resumen automático de mercados, "
@@ -4245,6 +4247,291 @@ def cmd_liquidaciones(msg):
               "3. ¿Qué otras señales conviene mirar junto a este mapa (interés abierto, funding, volumen)?")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
+# ═══ /ROTACION — Mapa de rotación de mercado (tipo RRG) ═══
+# Aproximación propia del Relative Rotation Graph (Julius de Kempenaer; su fórmula exacta no es
+# pública). Cada activo se compara contra el S&P 500 (SPY) con datos SEMANALES:
+#   · RS-Ratio  (eje X): fuerza relativa frente al S&P 500, normalizada (100 = en línea con el índice).
+#   · RS-Momentum (eje Y): si esa fuerza relativa está acelerando (>100) o frenando (<100).
+# Cuatro cuadrantes: Liderando (arriba-dcha) → Perdiendo fuerza (abajo-dcha) → Rezagado (abajo-izq)
+# → Mejorando (arriba-izq). Describe qué ha liderado, NO qué liderará.
+# Datos: Yahoo (API de gráficos, sin clave) como fuente principal por velocidad; Twelve Data de respaldo
+# (el plan gratuito solo permite 8 peticiones/min); BTC desde Binance. Caché de 6 h en memoria y disco.
+
+ROT_BENCH = "SPY"
+ROT_ACTIVOS = [
+    ("XLK", "Tecnología"), ("SMH", "Semiconductores"), ("XLC", "Comunicaciones"),
+    ("XLY", "Consumo discrecional"), ("XLF", "Financiero"), ("XLI", "Industria"),
+    ("XLE", "Energía"), ("XLB", "Materiales"), ("XLV", "Salud"), ("XLP", "Consumo básico"),
+    ("XLU", "Utilities"), ("XLRE", "Inmobiliario"), ("GLD", "Oro"), ("SLV", "Plata"),
+    ("TLT", "Bonos EEUU 20a"), ("BTC", "Bitcoin"),
+]
+ROT_VENTANA = 14            # semanas para normalizar (valor habitual en las aproximaciones públicas)
+ROT_COLA = 5                # semanas de "cola" dibujadas
+ROT_CACHE_H = 6
+ROT_CACHE_FILE = os.environ.get("ROTACION_CACHE_FILE", _p("rotacion_cache.json"))
+_ROT_MEM = {"ts": 0, "series": None}
+_ROT_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+
+def _semana(ts_seg):
+    """Clave de semana (lunes, 'YYYY-MM-DD') para alinear fuentes distintas."""
+    d = datetime.utcfromtimestamp(int(ts_seg)).date()
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+def _rot_yahoo(sym, n=0):
+    host = "query1" if n % 2 == 0 else "query2"
+    def _do():
+        r = requests.get(f"https://{host}.finance.yahoo.com/v8/finance/chart/{sym}",
+                         params={"range": "2y", "interval": "1wk"}, headers=_ROT_UA, timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"Yahoo HTTP {r.status_code}")
+        res = ((r.json().get("chart") or {}).get("result") or [None])[0]
+        if not res or not res.get("timestamp"):
+            raise RuntimeError("Yahoo: sin datos")
+        ind = res.get("indicators") or {}
+        adj = ((ind.get("adjclose") or [{}])[0] or {}).get("adjclose")
+        cl = adj or ((ind.get("quote") or [{}])[0] or {}).get("close") or []
+        out = {}
+        for ts, v in zip(res["timestamp"], cl):
+            if v is not None:
+                out[_semana(ts)] = float(v)
+        if len(out) < 40:
+            raise RuntimeError(f"Yahoo: solo {len(out)} semanas")
+        return out
+    return with_retry(_do, tries=2, base_delay=1.5, what=f"rotacion yahoo {sym}")
+
+def _rot_twelvedata(sym):
+    if not TWELVEDATA_API_KEY:
+        return None
+    def _do():
+        _throttle_twelvedata()
+        r = requests.get("https://api.twelvedata.com/time_series",
+                         params={"symbol": sym, "interval": "1week", "outputsize": 104,
+                                 "apikey": TWELVEDATA_API_KEY}, timeout=12)
+        j = r.json()
+        if j.get("status") == "error" or "values" not in j:
+            raise RuntimeError(f"Twelve Data: {str(j.get('message', 'sin datos'))[:80]}")
+        out = {}
+        for v in j["values"]:
+            d = datetime.strptime(v["datetime"][:10], "%Y-%m-%d").date()
+            out[(d - timedelta(days=d.weekday())).isoformat()] = float(v["close"])
+        if len(out) < 40:
+            raise RuntimeError(f"Twelve Data: solo {len(out)} semanas")
+        return out
+    return with_retry(_do, tries=2, base_delay=2, what=f"rotacion twelvedata {sym}")
+
+def _rot_binance_btc():
+    def _do():
+        r = requests.get("https://api.binance.com/api/v3/klines",
+                         params={"symbol": "BTCUSDT", "interval": "1w", "limit": 110}, timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"Binance HTTP {r.status_code}")
+        return {_semana(int(k[0]) // 1000): float(k[4]) for k in r.json()}
+    return with_retry(_do, tries=2, base_delay=1.5, what="rotacion binance BTC")
+
+def _rot_descargar():
+    """Series semanales {simbolo: {semana: cierre}}. Usa caché de 6 h (memoria y disco)."""
+    ahora = time.time()
+    if _ROT_MEM["series"] and ahora - _ROT_MEM["ts"] < ROT_CACHE_H * 3600:
+        return _ROT_MEM["series"], _ROT_MEM.get("fuentes", {})
+    try:
+        with open(ROT_CACHE_FILE, "r") as f:
+            disco = json.load(f)
+        if ahora - disco.get("ts", 0) < ROT_CACHE_H * 3600 and disco.get("series"):
+            _ROT_MEM.update(disco)
+            return disco["series"], disco.get("fuentes", {})
+    except Exception:
+        pass
+    series, fuentes = {}, {}
+    simbolos = [ROT_BENCH] + [s for s, _ in ROT_ACTIVOS]
+    for n, sym in enumerate(simbolos):
+        d = src = None
+        if sym == "BTC":
+            d, src = _rot_binance_btc(), "Binance"
+        else:
+            d, src = _rot_yahoo(sym, n), "Yahoo"
+            if not d:
+                d, src = _rot_twelvedata(sym), "Twelve Data"
+            time.sleep(0.25)
+        if d:
+            series[sym], fuentes[sym] = d, src
+        else:
+            log.warning(f"rotacion: sin datos para {sym}")
+    if ROT_BENCH not in series:
+        return None, {}
+    paquete = {"ts": ahora, "series": series, "fuentes": fuentes}
+    _ROT_MEM.update(paquete)
+    try:
+        tmp = ROT_CACHE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(paquete, f)
+        os.replace(tmp, ROT_CACHE_FILE)
+    except Exception as e:
+        log.warning(f"rotacion cache disco: {e}")
+    return series, fuentes
+
+def _rrg(activo, bench, w=ROT_VENTANA):
+    """RS-Ratio y RS-Momentum (aproximación pública habitual del RRG), alineados por semana."""
+    df = pd.concat([pd.Series(activo), pd.Series(bench)], axis=1, keys=["a", "b"]).dropna().sort_index()
+    if len(df) < 2 * w + ROT_COLA + 2:
+        return None
+    # Suavizado exponencial antes y después de normalizar: sin él, con datos semanales las colas
+    # saltan de un cuadrante a otro por ruido y el gráfico no se puede leer (los RRG reales también suavizan).
+    rs = (100 * df["a"] / df["b"]).ewm(span=4, adjust=False).mean()
+    rsr = 100 + (rs - rs.rolling(w).mean()) / rs.rolling(w).std(ddof=0)
+    roc = 100 * (rsr / rsr.shift(1) - 1)
+    rsm = (100 + (roc - roc.rolling(w).mean()) / roc.rolling(w).std(ddof=0)).ewm(span=3, adjust=False).mean()
+    out = pd.concat([rsr, rsm], axis=1, keys=["x", "y"]).replace([np.inf, -np.inf], np.nan).dropna()
+    return out if len(out) >= ROT_COLA + 1 else None
+
+def _cuadrante(x, y):
+    if x >= 100 and y >= 100: return "Liderando"
+    if x >= 100: return "Perdiendo fuerza"
+    if y < 100: return "Rezagado"
+    return "Mejorando"
+
+ROT_COLOR = {"Liderando": "#22c55e", "Perdiendo fuerza": "#eab308", "Rezagado": "#ef4444", "Mejorando": "#3b82f6"}
+ROT_ORDEN = ["Liderando", "Mejorando", "Perdiendo fuerza", "Rezagado"]
+
+def calcular_rotacion():
+    series, fuentes = _rot_descargar()
+    if not series:
+        return None
+    bench = series[ROT_BENCH]
+    filas, sin_datos = [], []
+    for sym, nombre in ROT_ACTIVOS:
+        if sym not in series:
+            sin_datos.append(nombre); continue
+        r = _rrg(series[sym], bench)
+        if r is None:
+            sin_datos.append(nombre); continue
+        cola = r.iloc[-ROT_COLA:]
+        x, y = float(cola["x"].iloc[-1]), float(cola["y"].iloc[-1])
+        x4, y4 = float(r["x"].iloc[-5]), float(r["y"].iloc[-5])     # hace 4 semanas (len(r) >= 6 garantizado)
+        filas.append({"sym": sym, "nombre": nombre, "x": x, "y": y,
+                      "cola_x": [float(v) for v in cola["x"]], "cola_y": [float(v) for v in cola["y"]],
+                      "cuad": _cuadrante(x, y), "cuad_antes": _cuadrante(x4, y4)})
+    if not filas:
+        return None
+    semana = max(bench.keys())
+    return {"filas": filas, "sin_datos": sin_datos, "semana": semana, "fuentes": fuentes,
+            "hora": datetime.now(MADRID).strftime("%d/%m %H:%M")}
+
+def chart_rotacion(res):
+    filas = res["filas"]
+    fig = plt.figure(figsize=(11, 12))
+    fig.patch.set_facecolor('#0d1117')
+    ax = fig.add_axes([0.09, 0.08, 0.86, 0.78])
+    ax.set_facecolor('#0d1117')
+    xs = [v for f in filas for v in f["cola_x"]]; ys = [v for f in filas for v in f["cola_y"]]
+    rx = max(abs(min(xs) - 100), abs(max(xs) - 100), 1.0) * 1.18
+    ry = max(abs(min(ys) - 100), abs(max(ys) - 100), 1.0) * 1.18
+    ax.set_xlim(100 - rx, 100 + rx); ax.set_ylim(100 - ry, 100 + ry)
+    for (x0, x1, y0, y1, c) in ((100, 100 + rx, 100, 100 + ry, ROT_COLOR["Liderando"]),
+                                (100, 100 + rx, 100 - ry, 100, ROT_COLOR["Perdiendo fuerza"]),
+                                (100 - rx, 100, 100 - ry, 100, ROT_COLOR["Rezagado"]),
+                                (100 - rx, 100, 100, 100 + ry, ROT_COLOR["Mejorando"])):
+        ax.fill_between([x0, x1], y0, y1, color=c, alpha=0.07, zorder=0)
+    ax.axhline(100, color='#555555', linewidth=1, zorder=1); ax.axvline(100, color='#555555', linewidth=1, zorder=1)
+    esq = {"Liderando": (0.98, 0.98, 'right', 'top'), "Perdiendo fuerza": (0.98, 0.02, 'right', 'bottom'),
+           "Rezagado": (0.02, 0.02, 'left', 'bottom'), "Mejorando": (0.02, 0.98, 'left', 'top')}
+    for nombre, (tx, ty, ha, va) in esq.items():
+        ax.text(tx, ty, nombre.upper(), transform=ax.transAxes, ha=ha, va=va, fontsize=15,
+                fontweight='bold', color=ROT_COLOR[nombre], alpha=0.85)
+    for f in filas:
+        col = ROT_COLOR[f["cuad"]]
+        n = len(f["cola_x"])
+        ax.plot(f["cola_x"], f["cola_y"], color=col, linewidth=1.6, alpha=0.55, zorder=2)
+        for i in range(n - 1):
+            ax.plot(f["cola_x"][i], f["cola_y"][i], 'o', color=col, markersize=3 + i, alpha=0.25 + 0.12 * i, zorder=3)
+        ax.plot(f["x"], f["y"], 'o', color=col, markersize=13, markeredgecolor='white', markeredgewidth=1.5, zorder=5)
+        ax.annotate(f["sym"] if f["sym"] != "BTC" else "BTC", (f["x"], f["y"]), xytext=(7, 6), textcoords='offset points',
+                    fontsize=11.5, fontweight='bold', color='white', zorder=6,
+                    bbox=dict(boxstyle='round,pad=0.15', facecolor='#0d1117', edgecolor='none', alpha=0.7))
+    ax.set_xlabel("Fuerza relativa vs S&P 500 (RS-Ratio)  →  más fuerte", color='#AAAAAA', fontsize=11)
+    ax.set_ylabel("Momentum de esa fuerza (RS-Momentum)  →  acelerando", color='#AAAAAA', fontsize=11)
+    ax.tick_params(colors='#777777', labelsize=9)
+    for sp in ax.spines.values(): sp.set_color('#333333')
+    ax.grid(color='#1f2330', linestyle='--', linewidth=0.6, zorder=0)
+    fig.text(0.5, 0.965, "ROTACIÓN DE MERCADO — sectores, metales, bonos y BTC vs S&P 500", ha='center',
+             color='white', fontsize=17, fontweight='bold')
+    fig.text(0.5, 0.937, f"{res['hora']} (Madrid)  ·  datos semanales  ·  cola = últimas {ROT_COLA} semanas (el punto grande es ahora)",
+             ha='center', color='#FFB84D', fontsize=11)
+    fig.text(0.5, 0.912, "Giro habitual: Mejorando → Liderando → Perdiendo fuerza → Rezagado. "
+             "Aproximación propia del RRG: describe, no predice.", ha='center', color='#999999', fontsize=10)
+    fig.text(0.5, 0.886, "  ".join(f"{f['sym']}={f['nombre']}" for f in filas[:8]), ha='center', color='#777777', fontsize=8.5)
+    fig.text(0.5, 0.870, "  ".join(f"{f['sym']}={f['nombre']}" for f in filas[8:]), ha='center', color='#777777', fontsize=8.5)
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+def texto_rotacion(res):
+    L = ["📖 QUÉ ES ESTE MAPA\n",
+         "Compara cada sector (y oro, plata, bonos y BTC) con el S&P 500, semana a semana. "
+         "Eje horizontal: ¿lo está haciendo mejor o peor que el índice? Eje vertical: ¿esa ventaja o desventaja "
+         "está creciendo o menguando? La cola muestra el recorrido de las últimas semanas.\n"]
+    emoji = {"Liderando": "🟢", "Mejorando": "🔵", "Perdiendo fuerza": "🟡", "Rezagado": "🔴"}
+    desc = {"Liderando": "más fuerte que el índice y ganando fuerza",
+            "Mejorando": "aún por detrás del índice, pero recuperando",
+            "Perdiendo fuerza": "por delante del índice, pero frenando",
+            "Rezagado": "por detrás del índice y perdiendo"}
+    for q in ROT_ORDEN:
+        nombres = [f["nombre"] for f in res["filas"] if f["cuad"] == q]
+        if nombres:
+            L.append(f"{emoji[q]} {q.upper()} ({desc[q]}): {', '.join(nombres)}")
+    cambios = [f for f in res["filas"] if f["cuad"] != f["cuad_antes"]]
+    if cambios:
+        L.append("\n🔄 Cambios de cuadrante en las últimas 4 semanas:")
+        for f in cambios:
+            L.append(f"• {f['nombre']}: {f['cuad_antes']} → {f['cuad']}")
+    if res["sin_datos"]:
+        L.append(f"\nSin datos esta vez: {', '.join(res['sin_datos'])}.")
+    L.append("\n⚠️ Describe qué ha liderado estas semanas, no qué va a liderar. Las rotaciones se ven con "
+             "retraso y a veces se dan la vuelta sin completar el giro. No es una señal de compra ni de venta.")
+    return "\n".join(L)
+
+@bot.message_handler(commands=["rotacion"])
+@con_dyor
+def cmd_rotacion(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Calculando la rotación de mercado... (la primera vez del día puede tardar ~30 s)")
+    try:
+        res = calcular_rotacion()
+    except Exception as e:
+        log.warning(f"calcular_rotacion: {e}")
+        res = None
+    if not res:
+        safe_send(msg.chat.id, "No he podido obtener los datos ahora mismo. Reintenta en un rato.",
+                  message_id=m.message_id)
+        return
+    lider = [f["nombre"] for f in res["filas"] if f["cuad"] == "Liderando"]
+    caption = ("🔄 ROTACIÓN DE MERCADO (vs S&P 500, semanal)\n"
+               f"Liderando: {', '.join(lider) if lider else 'ninguno'}")
+    try:
+        img = chart_rotacion(res)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, img, caption=caption[:1020])
+    except Exception as e:
+        log.warning(f"chart_rotacion: {e}")
+        safe_send(msg.chat.id, caption, message_id=m.message_id)
+    safe_send(msg.chat.id, texto_rotacion(res))
+    resumen = "; ".join(f"{f['nombre']}: {f['cuad']} (hace 4 semanas: {f['cuad_antes']})" for f in res["filas"])
+    prompt = ("Mapa de rotación de mercado (aproximación propia del Relative Rotation Graph, datos semanales, "
+              f"todo comparado con el S&P 500). Situación de cada activo: {resumen}.\n\n"
+              "Cuadrantes: Liderando = más fuerte que el índice y acelerando; Perdiendo fuerza = más fuerte pero "
+              "frenando; Rezagado = más débil y empeorando; Mejorando = más débil pero recuperando.\n"
+              "Reglas: NO des recomendaciones de operativa (comprar, vender, rotar la cartera, stops, objetivos). "
+              "NO inventes noticias ni causas concretas; si mencionas posibles motivos, preséntalos como hipótesis "
+              "generales. No digas qué sector 'va a' liderar.\n\n"
+              "1. ¿Qué dice este mapa sobre dónde está el liderazgo del mercado ahora mismo?\n"
+              "2. ¿Qué rotaciones parecen estar en marcha según los cambios de cuadrante?\n"
+              "3. Limitaciones de leer la rotación de mercado con este tipo de gráfico")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 def _scheduler_loop():
     global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_aviso_cad_key, _ultimo_calientes_key
     log.info("Scheduler de difusión automática arrancado")
@@ -5335,7 +5622,10 @@ Criptos de Binance con volumen de las últimas 24h muy por encima de lo normal (
 Mide lo estrecho que está el rango de precio de BTC en los últimos 30 días frente a los últimos 12 meses, con un velocímetro (0% expandido, 100% compresión extrema), dónde está el precio dentro del rango y la historia. Una compresión alta suele anteceder a un movimiento fuerte, pero no dice hacia dónde. Aproximación propia con datos de Binance, no coincide exactamente con CryptoQuant.
 
 ━━━ /liquidaciones ━━━
-Mapa de calor ESTIMADO de dónde se liquidarían más posiciones apalancadas de BTC (cortos por encima del precio, largos por debajo), con un zoom de 24 h estilo TradingView (velas y un bloque por nivel sin tocar) y la visión de 30 días. Es un modelo propio con el interés abierto de Binance Futures: no son liquidaciones reales y no coincide con Glassnode o Coinglass.""",
+Mapa de calor ESTIMADO de dónde se liquidarían más posiciones apalancadas de BTC (cortos por encima del precio, largos por debajo), con un zoom de 24 h estilo TradingView (velas y un bloque por nivel sin tocar) y la visión de 30 días. Es un modelo propio con el interés abierto de Binance Futures: no son liquidaciones reales y no coincide con Glassnode o Coinglass.
+
+━━━ /rotacion ━━━
+Mapa de rotación de mercado: sectores del S&P 500, oro, plata, bonos y BTC comparados con el índice, semana a semana. Cuatro cuadrantes: Liderando, Perdiendo fuerza, Rezagado y Mejorando. Describe qué ha liderado, no qué va a liderar.""",
 
 """📖 GUÍA DE COMANDOS (3/3) — Noticias y automatizaciones
 
@@ -5695,6 +5985,7 @@ MENU_COMANDOS = [
     ("calientes", "Criptos con volumen inusual y compras dominantes"),
     ("compresion", "Compresión de precio de BTC (volatilidad 30 días)"),
     ("liquidaciones", "Mapa de liquidaciones estimado de BTC"),
+    ("rotacion", "Mapa de rotación de mercado (sectores vs S&P 500)"),
     ("noticias", "Noticias de bolsa, economía y cripto"),
     ("ticker", "Resumen de mercados al momento"),
 ]
@@ -5715,7 +6006,6 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
 
 
 
