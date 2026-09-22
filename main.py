@@ -1291,8 +1291,13 @@ def cmd_trial(msg):
     safe_send(chat_id,
         f"✅ TRIAL ACTIVADO — 7 días gratis\n\n"
         f"Expira: {expiry.strftime('%d/%m/%Y')}\n\n"
-        "Comandos disponibles:\n"
-        "/valor BTC-USD\n/fundamental NVDA\n/halvingbtc\n\n"
+        "Tienes acceso a TODOS los comandos, no solo a unos pocos. Algunos para empezar:\n"
+        "/valor BTC-USD — índice barato/caro\n"
+        "/liquidaciones — mapa de liquidaciones de BTC\n"
+        "/calientes — criptos con volumen y compras inusuales\n"
+        "/suelo — indicadores de pánico del mercado\n\n"
+        "/start — ver la lista completa\n"
+        "/guia — explicación de cada comando\n\n"
         f"Al terminar el trial: /premium ({PRECIO_MENSUAL}€/mes)")
 
 @bot.message_handler(commands=["premium"])
