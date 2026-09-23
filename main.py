@@ -11,7 +11,7 @@ import matplotlib.dates as mdates
 import telebot
 from groq import Groq
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
@@ -4774,6 +4774,7 @@ SP500_TICKERS = [
     'WAB', 'WMT', 'DIS', 'WBD', 'WM', 'WAT', 'WEC', 'WFC', 'WELL', 'WST', 'WDC', 'WY',
     'WSM', 'WMB', 'WTW', 'WDAY', 'WYNN', 'XEL', 'XYL', 'YUM', 'ZBRA', 'ZBH', 'ZTS',
 ]
+
 # ═══ /RSIMINIMOS — Activos tocando mínimos de RSI semanal (cripto + S&P 500) ═══
 # "Tocando mínimos" = el RSI semanal ACTUAL está muy cerca del RSI más bajo que ese mismo activo
 # ha tenido en los últimos RSIMIN_VENTANA_SEM (2 años). No es un umbral fijo tipo "RSI < 30": un
@@ -4790,6 +4791,23 @@ RSIMIN_CACHE_H = 6
 RSIMIN_CACHE_FILE = os.environ.get("RSIMIN_CACHE_FILE", _p("rsiminimos_cache.json"))
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
+
+# Con 6 peticiones a la vez (ThreadPoolExecutor) Alpaca devolvía 429 en casi todas: el límite real
+# (o al menos el que aguanta en ráfaga) es más estricto que las 200/min anunciadas. Con este candado
+# TODAS las peticiones, vengan del hilo que vengan, se espacian contra el mismo cupo compartido.
+_ALPACA_LOCK = threading.Lock()
+_ALPACA_CALL_TIMES = []
+_ALPACA_MAX_PER_MIN = 150       # por debajo de lo anunciado, con margen de sobra
+
+def _throttle_alpaca():
+    with _ALPACA_LOCK:
+        while True:
+            now = time.time()
+            _ALPACA_CALL_TIMES[:] = [t for t in _ALPACA_CALL_TIMES if now - t < 60]
+            if len(_ALPACA_CALL_TIMES) < _ALPACA_MAX_PER_MIN:
+                _ALPACA_CALL_TIMES.append(now)
+                return
+            time.sleep(max(60 - (now - _ALPACA_CALL_TIMES[0]) + 0.05, 0.05))
 
 def _rsimin_universo_cripto():
     """Las monedas más líquidas de Binance (mismo filtro de liquidez que /calientes), como lista
@@ -4838,6 +4856,7 @@ def _rsimin_rsi_cripto(symbol):
 
 def _alpaca_get(path, params):
     def _do():
+        _throttle_alpaca()
         r = requests.get(f"https://data.alpaca.markets{path}", params=params,
                          headers={"APCA-API-KEY-ID": ALPACA_API_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY},
                          timeout=12)
@@ -4851,7 +4870,7 @@ def _rsimin_rsi_accion(ticker):
     no tiene clave configurada, o no hay suficiente historial."""
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         return None
-    desde = (datetime.utcnow() - timedelta(days=int(RSIMIN_VENTANA_SEM * 7 * 1.15))).strftime("%Y-%m-%d")
+    desde = (datetime.now(timezone.utc) - timedelta(days=int(RSIMIN_VENTANA_SEM * 7 * 1.15))).strftime("%Y-%m-%d")
     barras, cursor = [], None
     for _ in range(6):                    # tope de seguridad: nunca deberían hacer falta tantas páginas
         params = {"timeframe": "1Day", "start": desde, "limit": 1000, "feed": "iex", "adjustment": "split"}
@@ -4917,7 +4936,7 @@ def calcular_rsiminimos():
                 log.warning(f"rsiminimos accion {ticker}: {e}")
                 return None
             return _rsimin_evaluar(ticker, "acción", serie)
-        with ThreadPoolExecutor(max_workers=6) as ex:
+        with ThreadPoolExecutor(max_workers=3) as ex:
             for r in ex.map(_job_accion, SP500_TICKERS):
                 if r:
                     filas.append(r)
@@ -6536,7 +6555,6 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
 
 
 
