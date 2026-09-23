@@ -1252,7 +1252,8 @@ def cmd_start(msg):
             "/calientes — Criptos con volumen inusual y compras dominantes\n"
             "/compresion — Compresión de precio de BTC (volatilidad 30 días)\n"
             "/liquidaciones — Mapa de calor de liquidaciones estimado de BTC\n"
-            "/rotacion — Mapa de rotación: qué sectores lideran vs el S&P 500\n\n"
+            "/rotacion — Mapa de rotación: qué sectores lideran vs el S&P 500\n"
+            "/rsiminimos — Cripto y acciones cerca de su mínimo de RSI en 2 años\n\n"
             "/guia — Explicación completa de cada comando\n"
             "/dyor — Aviso legal (léelo antes de usar el bot para decidir)\n\n"
             "Además, cada 2h (9-21h) recibes un resumen automático de mercados, "
@@ -4725,6 +4726,338 @@ def cmd_rotacion(msg):
               "3. Limitaciones de leer la rotación de mercado y el ciclo con este tipo de gráfico")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
+# Lista de símbolos del S&P 500 (constituyentes reales, sacados de la tabla pública de Wikipedia
+# el 23/09/2026 — https://en.wikipedia.org/wiki/List_of_S%26P_500_companies). El índice cambia
+# unos pocos valores al año (fusiones, exclusiones); esta lista puede quedar desactualizada en
+# alguno de esos casos, no se actualiza sola.
+SP500_TICKERS = [
+    'MMM', 'AOS', 'ABT', 'ABBV', 'ACN', 'ADBE', 'AMD', 'AES', 'AFL', 'A', 'APD', 'ABNB',
+    'AKAM', 'ALB', 'ARE', 'ALGN', 'ALLE', 'LNT', 'ALL', 'GOOGL', 'GOOG', 'MO', 'AMZN', 'AMCR',
+    'AEE', 'AEP', 'AXP', 'AIG', 'AMT', 'AWK', 'AMP', 'AME', 'AMGN', 'APH', 'ADI', 'AON',
+    'APA', 'APO', 'AAPL', 'AMAT', 'APP', 'APTV', 'ACGL', 'ADM', 'ARES', 'ANET', 'AJG', 'AIZ',
+    'T', 'ATO', 'ADSK', 'ADP', 'AZO', 'AVB', 'AVY', 'AXON', 'BKR', 'BALL', 'BAC', 'BAX',
+    'BDX', 'BRK.B', 'BBY', 'TECH', 'BIIB', 'BLK', 'BX', 'XYZ', 'BNY', 'BA', 'BKNG', 'BSX',
+    'BMY', 'AVGO', 'BR', 'BRO', 'BF.B', 'BLDR', 'BG', 'BXP', 'CHRW', 'CDNS', 'CPT', 'COF',
+    'CAH', 'CCL', 'CARR', 'CVNA', 'CASY', 'CAT', 'CBOE', 'CBRE', 'CDW', 'COR', 'CNC', 'CNP',
+    'CF', 'CRL', 'SCHW', 'CHTR', 'CVX', 'CMG', 'CB', 'CHD', 'CIEN', 'CI', 'CINF', 'CTAS',
+    'CSCO', 'C', 'CFG', 'CLX', 'CME', 'CMS', 'KO', 'CTSH', 'COHR', 'COIN', 'CL', 'CMCSA',
+    'FIX', 'COP', 'ED', 'STZ', 'CEG', 'COO', 'CPRT', 'GLW', 'CPAY', 'CTVA', 'CSGP', 'COST',
+    'CRH', 'CRWD', 'CCI', 'CSX', 'CMI', 'CVS', 'DHR', 'DRI', 'DDOG', 'DVA', 'DECK', 'DE',
+    'DELL', 'DAL', 'DVN', 'DXCM', 'FANG', 'DLR', 'DG', 'DLTR', 'D', 'DPZ', 'DASH', 'DOV',
+    'DOW', 'DHI', 'DTE', 'DUK', 'DD', 'ETN', 'EBAY', 'ECHO', 'ECL', 'EIX', 'EW', 'EA',
+    'ELV', 'EME', 'EMR', 'ETR', 'EOG', 'EQT', 'EFX', 'EQIX', 'EQR', 'ERIE', 'ESS', 'EL',
+    'EG', 'EVRG', 'ES', 'EXC', 'EXE', 'EXPE', 'EXPD', 'EXR', 'XOM', 'FFIV', 'FDS', 'FICO',
+    'FAST', 'FRT', 'FDX', 'FDXF', 'FIS', 'FITB', 'FSLR', 'FE', 'FISV', 'FLEX', 'F', 'FTNT',
+    'FTV', 'FOXA', 'FOX', 'BEN', 'FCX', 'GRMN', 'IT', 'GE', 'GEHC', 'GEV', 'GEN', 'GNRC',
+    'GD', 'GIS', 'GM', 'GPC', 'GILD', 'GPN', 'GL', 'GDDY', 'GS', 'HAL', 'HIG', 'HAS',
+    'HCA', 'DOC', 'HSIC', 'HSY', 'HPE', 'HLT', 'HD', 'HONA', 'HON', 'HRL', 'HST', 'HWM',
+    'HPQ', 'HUBB', 'HUM', 'HBAN', 'HII', 'IBM', 'IEX', 'IDXX', 'ITW', 'INCY', 'IR', 'PODD',
+    'INTC', 'IBKR', 'ICE', 'IFF', 'IP', 'INTU', 'ISRG', 'IVZ', 'INVH', 'IQV', 'IRM', 'JBHT',
+    'JBL', 'JKHY', 'J', 'JNJ', 'JCI', 'JPM', 'KVUE', 'KDP', 'KEY', 'KEYS', 'KMB', 'KIM',
+    'KMI', 'KKR', 'KLAC', 'KHC', 'KR', 'LHX', 'LH', 'LRCX', 'LVS', 'LDOS', 'LEN', 'LII',
+    'LLY', 'LIN', 'LYV', 'LMT', 'L', 'LOW', 'LULU', 'LITE', 'LYB', 'MTB', 'MPC', 'MAR',
+    'MRSH', 'MLM', 'MRVL', 'MAS', 'MA', 'MKC', 'MCD', 'MCK', 'MDT', 'MRK', 'META', 'MET',
+    'MTD', 'MGM', 'MCHP', 'MU', 'MSFT', 'MAA', 'MRNA', 'TAP', 'MDLZ', 'MPWR', 'MNST', 'MCO',
+    'MS', 'MOS', 'MSI', 'MSCI', 'NDAQ', 'NTAP', 'NFLX', 'NEM', 'NWSA', 'NWS', 'NEE', 'NKE',
+    'NI', 'NDSN', 'NSC', 'NTRS', 'NOC', 'NCLH', 'NRG', 'NUE', 'NVDA', 'NVR', 'NXPI', 'ORLY',
+    'OXY', 'ODFL', 'OMC', 'ON', 'OKE', 'ORCL', 'OTIS', 'PCAR', 'PKG', 'PLTR', 'PANW', 'PSKY',
+    'PH', 'PAYX', 'PYPL', 'PNR', 'PEP', 'PFE', 'PCG', 'PM', 'PSX', 'PNW', 'PNC', 'PPG',
+    'PPL', 'PFG', 'PG', 'PGR', 'PLD', 'PRU', 'PEG', 'PTC', 'PSA', 'PHM', 'PWR', 'QCOM',
+    'DGX', 'Q', 'RL', 'RJF', 'RTX', 'O', 'REG', 'REGN', 'RF', 'RSG', 'RMD', 'RVTY',
+    'HOOD', 'ROK', 'ROL', 'ROP', 'ROST', 'RCL', 'SPGI', 'CRM', 'SNDK', 'SBAC', 'SLB', 'STX',
+    'SRE', 'NOW', 'SHW', 'SPG', 'SWKS', 'SJM', 'SW', 'SNA', 'SOLV', 'SO', 'LUV', 'SWK',
+    'SBUX', 'STT', 'STLD', 'STE', 'SYK', 'SMCI', 'SYF', 'SNPS', 'SYY', 'TMUS', 'TROW', 'TTWO',
+    'TPR', 'TRGP', 'TGT', 'TEL', 'TDY', 'TER', 'TSLA', 'TXN', 'TPL', 'TXT', 'TMO', 'TJX',
+    'TKO', 'TTD', 'TSCO', 'TT', 'TDG', 'TRV', 'TRMB', 'TFC', 'TYL', 'TSN', 'USB', 'UBER',
+    'UDR', 'ULTA', 'UNP', 'UAL', 'UPS', 'URI', 'UNH', 'UHS', 'VLO', 'VEEV', 'VTR', 'VLTO',
+    'VRSN', 'VRSK', 'VZ', 'VRTX', 'VRT', 'VTRS', 'VICI', 'V', 'VST', 'VMC', 'WRB', 'GWW',
+    'WAB', 'WMT', 'DIS', 'WBD', 'WM', 'WAT', 'WEC', 'WFC', 'WELL', 'WST', 'WDC', 'WY',
+    'WSM', 'WMB', 'WTW', 'WDAY', 'WYNN', 'XEL', 'XYL', 'YUM', 'ZBRA', 'ZBH', 'ZTS',
+]
+# ═══ /RSIMINIMOS — Activos tocando mínimos de RSI semanal (cripto + S&P 500) ═══
+# "Tocando mínimos" = el RSI semanal ACTUAL está muy cerca del RSI más bajo que ese mismo activo
+# ha tenido en los últimos RSIMIN_VENTANA_SEM (2 años). No es un umbral fijo tipo "RSI < 30": un
+# activo puede llevar RSI 45 y aun así estar en su peor lectura en 2 años si nunca baja de ahí.
+# Fuentes: Binance (velas semanales, cripto, sin clave) y Alpaca Markets (velas diarias del S&P
+# 500 real, agregadas a semanales aquí — Alpaca no cobra por esto en su plan gratuito, feed IEX).
+# Ni Binance ni Alpaca necesitan estar de acuerdo en nada: cada universo se calcula por separado
+# y se combinan solo al final, en la clasificación.
+
+RSIMIN_VENTANA_SEM = 104        # 2 años de velas semanales para buscar el mínimo propio de cada activo
+RSIMIN_MIN_SEMANAS = 60         # por debajo de esto (activo muy nuevo) no se usa: RSI poco fiable
+RSIMIN_TOP = 20                 # cuántos activos entran en el gráfico
+RSIMIN_CACHE_H = 6
+RSIMIN_CACHE_FILE = os.environ.get("RSIMIN_CACHE_FILE", _p("rsiminimos_cache.json"))
+ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
+
+def _rsimin_universo_cripto():
+    """Las monedas más líquidas de Binance (mismo filtro de liquidez que /calientes), como lista
+    de (symbol Binance, ticker corto)."""
+    def _tickers():
+        r = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=15)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return r.json()
+    tk = with_retry(_tickers, tries=2, base_delay=2, what="ticker 24hr Binance (rsiminimos)")
+    if not tk:
+        return []
+    cands = []
+    for t in tk:
+        s = t.get("symbol", "")
+        if not s.endswith("USDT"):
+            continue
+        base = s[:-4]
+        if base.lower() in _CALIENTES_EXCLUIR:
+            continue
+        try:
+            qv = float(t.get("quoteVolume") or 0)
+        except (ValueError, TypeError):
+            continue
+        if qv >= CALIENTES_MIN_USDT:
+            cands.append((s, base, qv))
+    cands.sort(key=lambda x: -x[2])
+    return [(s, base) for s, base, _ in cands[:CALIENTES_UNIVERSO]]
+
+def _rsimin_rsi_cripto(symbol):
+    """RSI semanal (serie) de una moneda de Binance, últimas ~2,3 años."""
+    def _do():
+        r = requests.get("https://api.binance.com/api/v3/klines",
+                         params={"symbol": symbol, "interval": "1w", "limit": RSIMIN_VENTANA_SEM + 20},
+                         timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return r.json()
+    kl = with_retry(_do, tries=2, base_delay=1.5, what=f"rsiminimos binance {symbol}")
+    if not kl or len(kl) < RSIMIN_MIN_SEMANAS + 14:
+        return None
+    if kl[-1][6] > int(time.time() * 1000):
+        kl = kl[:-1]                      # fuera la vela semanal en curso, incompleta
+    cierres = pd.Series([float(k[4]) for k in kl])
+    return calc_rsi(cierres, 14)
+
+def _alpaca_get(path, params):
+    def _do():
+        r = requests.get(f"https://data.alpaca.markets{path}", params=params,
+                         headers={"APCA-API-KEY-ID": ALPACA_API_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY},
+                         timeout=12)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:100]}")
+        return r.json()
+    return with_retry(_do, tries=2, base_delay=1.5, what=f"alpaca {path}")
+
+def _rsimin_rsi_accion(ticker):
+    """RSI semanal (serie) de una acción, agregando velas diarias de Alpaca. None si Alpaca falla,
+    no tiene clave configurada, o no hay suficiente historial."""
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        return None
+    desde = (datetime.utcnow() - timedelta(days=int(RSIMIN_VENTANA_SEM * 7 * 1.15))).strftime("%Y-%m-%d")
+    barras, cursor = [], None
+    for _ in range(6):                    # tope de seguridad: nunca deberían hacer falta tantas páginas
+        params = {"timeframe": "1Day", "start": desde, "limit": 1000, "feed": "iex", "adjustment": "split"}
+        if cursor:
+            params["page_token"] = cursor
+        j = _alpaca_get(f"/v2/stocks/{ticker}/bars", params)
+        if j is None:
+            return None
+        barras += j.get("bars") or []
+        cursor = j.get("next_page_token")
+        if not cursor:
+            break
+    if len(barras) < RSIMIN_MIN_SEMANAS * 5:      # ~5 sesiones por semana
+        return None
+    diarios = pd.Series([float(b["c"]) for b in barras],
+                        index=pd.to_datetime([b["t"] for b in barras]))
+    semanal = diarios.resample("W-FRI").last().dropna()
+    if len(semanal) < RSIMIN_MIN_SEMANAS + 14:
+        return None
+    return calc_rsi(semanal, 14)
+
+def calcular_rsiminimos():
+    ck = "rsiminimos"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    ahora = time.time()
+    if not _RSIMIN_MEM["filas"] is None and ahora - _RSIMIN_MEM["ts"] < RSIMIN_CACHE_H * 3600:
+        cache_set(ck, _RSIMIN_MEM["res"])
+        return _RSIMIN_MEM["res"]
+    try:
+        with open(RSIMIN_CACHE_FILE, "r") as f:
+            disco = json.load(f)
+        if ahora - disco.get("ts", 0) < RSIMIN_CACHE_H * 3600 and disco.get("res"):
+            _RSIMIN_MEM.update(ts=disco["ts"], filas=disco["res"]["filas"], res=disco["res"])
+            cache_set(ck, disco["res"])
+            return disco["res"]
+    except Exception:
+        pass
+
+    from concurrent.futures import ThreadPoolExecutor
+    filas, sin_alpaca = [], not (ALPACA_API_KEY and ALPACA_SECRET_KEY)
+
+    cripto = _rsimin_universo_cripto()
+    def _job_cripto(par):
+        symbol, base = par
+        try:
+            serie = _rsimin_rsi_cripto(symbol)
+        except Exception as e:
+            log.warning(f"rsiminimos cripto {symbol}: {e}")
+            return None
+        return _rsimin_evaluar(base, "cripto", serie)
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        for r in ex.map(_job_cripto, cripto):
+            if r:
+                filas.append(r)
+
+    if not sin_alpaca:
+        def _job_accion(ticker):
+            try:
+                serie = _rsimin_rsi_accion(ticker)
+            except Exception as e:
+                log.warning(f"rsiminimos accion {ticker}: {e}")
+                return None
+            return _rsimin_evaluar(ticker, "acción", serie)
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for r in ex.map(_job_accion, SP500_TICKERS):
+                if r:
+                    filas.append(r)
+
+    if not filas:
+        return None
+    filas.sort(key=lambda f: f["dist"])
+    res = {"filas": filas, "top": filas[:RSIMIN_TOP], "n_cripto": sum(1 for f in filas if f["tipo"] == "cripto"),
+           "n_acciones": sum(1 for f in filas if f["tipo"] == "acción"), "sin_alpaca": sin_alpaca,
+           "universo_cripto": len(cripto), "universo_acciones": len(SP500_TICKERS) if not sin_alpaca else 0,
+           "hora": datetime.now(MADRID).strftime("%d/%m %H:%M")}
+    _RSIMIN_MEM.update(ts=ahora, filas=filas, res=res)
+    try:
+        tmp = RSIMIN_CACHE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"ts": ahora, "res": res}, f)
+        os.replace(tmp, RSIMIN_CACHE_FILE)
+    except Exception as e:
+        log.warning(f"rsiminimos cache disco: {e}")
+    cache_set(ck, res)
+    return res
+
+_RSIMIN_MEM = {"ts": 0, "filas": None, "res": None}
+
+def _rsimin_evaluar(nombre, tipo, serie):
+    if serie is None:
+        return None
+    v = serie.dropna()
+    if len(v) < RSIMIN_MIN_SEMANAS:
+        return None
+    ventana = v.iloc[-RSIMIN_VENTANA_SEM:] if len(v) > RSIMIN_VENTANA_SEM else v
+    actual = float(ventana.iloc[-1])
+    idx_min = int(np.argmin(ventana.values))
+    minimo = float(ventana.iloc[idx_min])
+    maximo = float(ventana.max())
+    semanas_desde_min = len(ventana) - 1 - idx_min
+    return {"nombre": nombre, "tipo": tipo, "actual": actual, "minimo": minimo, "maximo": maximo,
+            "dist": actual - minimo, "semanas_desde_min": semanas_desde_min, "n_semanas": len(ventana)}
+
+def chart_rsiminimos(res):
+    filas = list(reversed(res["top"]))          # el más cerca de su mínimo, arriba
+    n = len(filas)
+    fig = plt.figure(figsize=(11, max(6, 1.6 + n * 0.42)))
+    fig.patch.set_facecolor('#0d1117')
+    ax = fig.add_axes([0.24, 0.10, 0.70, 0.78])
+    ax.set_facecolor('#0d1117')
+    COL = {"cripto": "#f0b90b", "acción": "#3b82f6"}
+    ys = np.arange(n)
+    for y, f in zip(ys, filas):
+        col = COL[f["tipo"]]
+        ax.plot([f["minimo"], f["maximo"]], [y, y], color=col, alpha=0.35, linewidth=4, solid_capstyle='round', zorder=2)
+        ax.plot(f["minimo"], y, '|', color=col, markersize=10, markeredgewidth=2, zorder=3)
+        ax.plot(f["maximo"], y, '|', color=col, markersize=10, markeredgewidth=2, zorder=3)
+        ax.plot(f["actual"], y, 'v', color=col, markersize=15, markeredgecolor='white', markeredgewidth=1.3, zorder=5)
+        ax.text(-2, y, f["nombre"], ha='right', va='center', color='white', fontsize=10.5, fontweight='bold')
+        ax.text(102, y, f"{f['actual']:.0f}", ha='left', va='center', color=col, fontsize=10.5, fontweight='bold')
+    ax.axvline(30, color='#ef4444', linestyle=':', linewidth=1, alpha=0.6, zorder=1)
+    ax.text(30, n - 0.3, ' 30', color='#ef4444', fontsize=8.5, va='bottom', ha='left', alpha=0.8)
+    ax.set_xlim(0, 100); ax.set_ylim(-1, n)
+    ax.set_yticks([])
+    ax.set_xlabel("RSI semanal", color='#AAAAAA', fontsize=10.5)
+    ax.tick_params(axis='x', colors='#777777', labelsize=9)
+    for sp in ax.spines.values(): sp.set_color('#333333')
+    ax.grid(axis='x', color='#1f2330', linestyle='--', linewidth=0.6, zorder=0)
+    fig.text(0.5, 0.965, "RSI SEMANAL — MÁS CERCA DE SU MÍNIMO DE 2 AÑOS", ha='center', color='white',
+             fontsize=16, fontweight='bold')
+    fig.text(0.5, 0.938, f"{res['hora']} (Madrid)  ·  ▼ = RSI actual  ·  la barra es su rango de 2 años (mín–máx)",
+             ha='center', color='#FFB84D', fontsize=10.5)
+    fig.text(0.5, 0.915, f"Cripto: {res['n_cripto']} de {res['universo_cripto']} analizadas (Binance)  ·  "
+             f"Acciones: {res['n_acciones']} de {res['universo_acciones']} (S&P 500, Alpaca)",
+             ha='center', color='#999999', fontsize=9.5)
+    ax.plot([], [], color=COL["cripto"], linewidth=4, label='Cripto')
+    ax.plot([], [], color=COL["acción"], linewidth=4, label='Acción (S&P 500)')
+    ax.legend(loc='lower right', frameon=False, labelcolor='#CCCCCC', fontsize=9.5)
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+def texto_rsiminimos(res):
+    L = ["📖 QUÉ ES ESTE LISTADO\n",
+         "Para cada activo, calcula el RSI semanal (14 semanas) y lo compara con el rango que ese "
+         "mismo activo ha tenido en las últimas 2 años. No es un umbral fijo: un activo puede llevar "
+         "RSI 45 y aun así estar en su peor lectura de los últimos 2 años, si nunca ha bajado de ahí. "
+         "Los de arriba del gráfico son los que ahora mismo están más cerca de su propio mínimo.\n"]
+    for f in res["top"][:10]:
+        pos = ("en su mínimo de 2 años" if f["semanas_desde_min"] == 0 else
+               f"su mínimo fue hace {f['semanas_desde_min']} semanas")
+        L.append(f"• {f['nombre']} ({f['tipo']}): RSI {f['actual']:.0f} — {pos} "
+                 f"(rango 2a: {f['minimo']:.0f}-{f['maximo']:.0f})")
+    if res["sin_alpaca"]:
+        L.append("\n⚠️ No hay clave de Alpaca configurada: solo se ha podido analizar cripto, sin acciones.")
+    L.append("\n⚠️ Cómo leerlo con cabeza:\n"
+             "• Un RSI en mínimos no significa que vaya a rebotar. A veces se queda ahí semanas o "
+             "meses porque el activo sigue cayendo (lo que se llama quedarse 'pegado' a sobreventa).\n"
+             "• Es una lectura técnica sobre el pasado reciente, no una predicción ni una señal de compra.\n"
+             "• El RSI de las acciones se calcula agregando velas diarias a semanales; el de las "
+             "criptos usa velas semanales directas de Binance.")
+    return "\n".join(L)
+
+@bot.message_handler(commands=["rsiminimos"])
+@con_dyor
+def cmd_rsiminimos(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    m = bot.send_message(msg.chat.id, "Escaneando cripto y el S&P 500 en busca de mínimos de RSI... "
+                                      "(la primera vez del día puede tardar 2-3 min)")
+    try:
+        res = calcular_rsiminimos()
+    except Exception as e:
+        log.warning(f"calcular_rsiminimos: {e}")
+        res = None
+    if not res:
+        safe_send(msg.chat.id, "No he podido calcularlo ahora mismo. Reintenta en un rato.",
+                  message_id=m.message_id)
+        return
+    top3 = ", ".join(f"{f['nombre']} (RSI {f['actual']:.0f})" for f in res["top"][:3])
+    caption = f"📉 RSI SEMANAL EN MÍNIMOS\nMás cerca de su mínimo de 2 años: {top3}"
+    try:
+        img = chart_rsiminimos(res)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, img, caption=caption[:1020])
+    except Exception as e:
+        log.warning(f"chart_rsiminimos: {e}")
+        safe_send(msg.chat.id, caption, message_id=m.message_id)
+    safe_send(msg.chat.id, texto_rsiminimos(res))
+    lista = "\n".join(f"- {f['nombre']} ({f['tipo']}): RSI {f['actual']:.0f}, rango 2a {f['minimo']:.0f}-{f['maximo']:.0f}, "
+                      f"mínimo hace {f['semanas_desde_min']} semanas" for f in res["top"])
+    prompt = ("Listado de activos (cripto y acciones del S&P 500) cuyo RSI SEMANAL está ahora mismo "
+              f"más cerca de su propio mínimo de los últimos 2 años:\n{lista}\n\n"
+              "Datos ya calculados, úsalos tal cual, no inventes cifras ni noticias. Reglas: NO des "
+              "recomendaciones de operativa (comprar, vender, entradas, stops, objetivos). No afirmes "
+              "que vayan a rebotar. Sin negritas ni formato markdown.\n\n"
+              "1. ¿Qué tienen en común, si algo, los activos que aparecen en esta lista?\n"
+              "2. ¿Por qué un RSI en mínimos no implica que el precio vaya a girar?\n"
+              "3. ¿Qué otras señales conviene mirar junto a esto antes de sacar conclusiones?")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 def _scheduler_loop():
     global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_aviso_cad_key, _ultimo_calientes_key
     log.info("Scheduler de difusión automática arrancado")
@@ -5818,7 +6151,10 @@ Mide lo estrecho que está el rango de precio de BTC en los últimos 30 días fr
 Mapa de calor ESTIMADO de dónde se liquidarían más posiciones apalancadas de BTC (cortos por encima del precio, largos por debajo), con un zoom de 24 h estilo TradingView (velas y un bloque por nivel sin tocar) y la visión de 30 días. Es un modelo propio con el interés abierto de Binance Futures: no son liquidaciones reales y no coincide con Glassnode o Coinglass.
 
 ━━━ /rotacion ━━━
-Mapa de rotación de mercado: sectores del S&P 500, oro, plata, bonos y BTC comparados con el índice, semana a semana. Cuatro cuadrantes: Liderando, Perdiendo fuerza, Rezagado y Mejorando. Segunda imagen: el ciclo económico clásico (Recuperación, Expansión, Desaceleración, Recesión) y a qué fase se parece lo que lidera hoy. Describe qué ha liderado, no qué va a liderar.""",
+Mapa de rotación de mercado: sectores del S&P 500, oro, plata, bonos y BTC comparados con el índice, semana a semana. Cuatro cuadrantes: Liderando, Perdiendo fuerza, Rezagado y Mejorando. Segunda imagen: el ciclo económico clásico (Recuperación, Expansión, Desaceleración, Recesión) y a qué fase se parece lo que lidera hoy. Describe qué ha liderado, no qué va a liderar.
+
+━━━ /rsiminimos ━━━
+Cripto (Binance) y acciones del S&P 500 (Alpaca) cuyo RSI semanal está más cerca de su propio mínimo de los últimos 2 años. No es un umbral fijo: compara cada activo con su propio rango. Un RSI en mínimos no implica que vaya a rebotar.""",
 
 """📖 GUÍA DE COMANDOS (3/3) — Noticias y automatizaciones
 
@@ -6179,6 +6515,7 @@ MENU_COMANDOS = [
     ("compresion", "Compresión de precio de BTC (volatilidad 30 días)"),
     ("liquidaciones", "Mapa de liquidaciones estimado de BTC"),
     ("rotacion", "Mapa de rotación de mercado (sectores vs S&P 500)"),
+    ("rsiminimos", "Cripto y acciones del S&P 500 cerca de su mínimo de RSI (2 años)"),
     ("noticias", "Noticias de bolsa, economía y cripto"),
     ("ticker", "Resumen de mercados al momento"),
 ]
@@ -6199,6 +6536,7 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
 
 
 
