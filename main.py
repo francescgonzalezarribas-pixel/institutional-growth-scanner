@@ -243,9 +243,15 @@ def ask_ai(prompt, max_chars=2500):
         return "IA no disponible."
 
 def calc_rsi(s, period=14):
+    # Suavizado de Wilder (el que usa TradingView y prácticamente todas las plataformas), no una
+    # media simple de las últimas 'period' velas. La media simple "olvida" de golpe cada vela en
+    # cuanto sale de la ventana; Wilder arrastra memoria de todo lo anterior, cada vez más diluida.
+    # Con ewm(adjust=False) el arranque no es matemáticamente idéntico al de Wilder (que empieza con
+    # una media simple de las primeras 'period' velas), pero para el resto de la serie converge al
+    # mismo resultado: con 60+ semanas de por medio, como usamos aquí, la diferencia es despreciable.
     d = s.diff()
-    g = d.clip(lower=0).rolling(period).mean()
-    l = (-d.clip(upper=0)).rolling(period).mean()
+    g = d.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
+    l = (-d.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
     rs = g / l.replace(0, 1e-10)
     return 100 - 100 / (1 + rs)
 
@@ -2256,7 +2262,6 @@ def cmd_ballenas(msg):
               "2. ¿Qué estrategia de entrada/salida sugieren estos muros?\n"
               "3. Riesgo de que sean órdenes 'trampa' (spoofing) que se cancelan antes de ejecutarse")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
 # ═══ /NOTICIAS — Agregador de noticias financieras y cripto ═════
 # Varias fuentes distintas vía RSS (gratis, sin API key, sin límite de
 # peticiones): Investing.com (bolsa/economía/cripto), Cointelegraph en
@@ -6579,6 +6584,7 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
 
 
 
