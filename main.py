@@ -1260,21 +1260,14 @@ def cmd_start(msg):
             "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n"
             "/ticker — Resumen de mercados al momento (bajo demanda)\n"
             "/ciclo — Fase actual de BTC en el ciclo de mercado\n"
-            "/suelo — Triple Suelo de Sentimiento (VIX + AAII + Fear&Greed)\n"
-            "/curva — Curva de tipos EEUU (10 años vs 2 años)\n"
             "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
-            "/correlacion — Correlación BTC vs Nasdaq (risk-on/risk-off)\n"
-            "/fuerza — Qué criptos aguantan o suben más que BTC (fuerza relativa)\n"
-            "/calientes — Criptos con volumen inusual y compras dominantes\n"
             "/compresion — Compresión de precio de BTC (volatilidad 30 días)\n"
             "/liquidaciones — Mapa de calor de liquidaciones estimado de BTC\n"
-            "/rotacion — Mapa de rotación: qué sectores lideran vs el S&P 500\n"
             "/rsiminimos — Cripto y acciones cerca de su mínimo de RSI en 2 años\n\n"
             "/guia — Explicación completa de cada comando\n"
             "/dyor — Aviso legal (léelo antes de usar el bot para decidir)\n\n"
-            "Además, cada 2h (9-21h) recibes un resumen automático de mercados, "
-            "cada mañana a las 8h un resumen diario con Fear & Greed y noticias destacadas, "
-            f"y a las {CALIENTES_HORA}h el /calientes del día.\n\n"
+            "Además, cada 2h (9-21h) recibes un resumen automático de mercados y "
+            "cada mañana a las 8h un resumen diario con Fear & Greed y noticias destacadas.\n\n"
             "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
             "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
             "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
@@ -1315,8 +1308,7 @@ def cmd_trial(msg):
         "Tienes acceso a TODOS los comandos, no solo a unos pocos. Algunos para empezar:\n"
         "/valor BTC-USD — índice barato/caro\n"
         "/liquidaciones — mapa de liquidaciones de BTC\n"
-        "/calientes — criptos con volumen y compras inusuales\n"
-        "/suelo — indicadores de pánico del mercado\n\n"
+        "/rsiminimos — cripto y acciones cerca de su mínimo de RSI\n\n"
         "/start — ver la lista completa\n"
         "/guia — explicación de cada comando\n\n"
         f"Al terminar el trial: /premium ({PRECIO_MENSUAL}€/mes)")
@@ -2262,6 +2254,7 @@ def cmd_ballenas(msg):
               "2. ¿Qué estrategia de entrada/salida sugieren estos muros?\n"
               "3. Riesgo de que sean órdenes 'trampa' (spoofing) que se cancelan antes de ejecutarse")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 # ═══ /NOTICIAS — Agregador de noticias financieras y cripto ═════
 # Varias fuentes distintas vía RSS (gratis, sin API key, sin límite de
 # peticiones): Investing.com (bolsa/economía/cripto), Cointelegraph en
@@ -2502,10 +2495,9 @@ BROADCAST_COMMODITIES = {
 }
 BROADCAST_FALLBACK = {"^IXIC": "QQQ", "^GSPC": "SPY"}  # mismo fix que ya vimos con /mercados
 
-# Límite compartido para TODAS las llamadas a CoinGecko (HYPE/PURR en el
-# resumen automático + /fuerza pidiendo 100 monedas) — sin esto se pisan
-# entre sí y revientan el rate-limit gratuito de CoinGecko (mismo problema
-# que ya vimos con Twelve Data, mismo tipo de arreglo).
+# Límite para las llamadas a CoinGecko (HYPE/PURR en el resumen automático) —
+# evita reventar el rate-limit gratuito de CoinGecko (mismo tipo de arreglo
+# que ya vimos con Twelve Data).
 _CG_CALL_TIMES = []
 _CG_MAX_PER_MIN = 8
 
@@ -3091,358 +3083,12 @@ def revisar_caducidades():
 
 _ultimo_aviso_cad_key = None
 
-# ═══ /CALIENTES — Volumen inusual con compras dominantes (Binance) ═══
-# Para cada moneda líquida de Binance se compara el volumen de las últimas 24h
-# (móviles, en USDT) con la mediana de los 20 periodos de 24h anteriores, y se
-# mide qué parte de ese volumen fue COMPRA agresiva (órdenes a mercado del
-# comprador) según el dato "taker buy" que Binance da en cada vela. Todo con la
-# API pública, sin claves. Sale solo lo que tiene volumen ≥1.5x lo normal y
-# compras ≥52%; lo de volumen alto pero dominado por ventas se lista aparte.
-# Envío automático diario a CALIENTES_HORA (Madrid), cuando ya hay sesión de EEUU.
-
-CALIENTES_HORA = int(os.environ.get("CALIENTES_HORA", 18))
-CALIENTES_FILE = os.environ.get("CALIENTES_ENVIADO_FILE", _p("calientes_enviado.json"))
+# Estas tres constantes las usa /rsiminimos para su universo de cripto (mismo filtro de
+# liquidez que tenía /calientes, ya retirado).
 CALIENTES_MIN_USDT = 10_000_000   # liquidez mínima 24h: evita monedas pequeñas, fáciles de manipular
 CALIENTES_UNIVERSO = 120          # cuántas monedas (las más líquidas) se analizan
-CALIENTES_RATIO_MIN = 1.5
-CALIENTES_COMPRAS_MIN = 0.52
-CALIENTES_VENTAS_MAX = 0.45
-CALIENTES_TOP = 10
-CALIENTES_CLARA = 0.60           # desde aquí las compras son 'claras'; entre el mínimo y esto, 'ligeras'
-CALIENTES_CASI_TOP = 5
-CALIENTES_RATIO_ANOMALO = 20      # más allá de ×20 no es comparable (listado, campaña...): se aparta
 _CALIENTES_EXCLUIR = {"usdc", "fdusd", "tusd", "usde", "usds", "usdp", "busd", "dai", "eur",
                       "eurc", "bfusd", "xusd", "usd1", "rlusd", "pyusd", "paxg", "xaut"}
-_ultimo_calientes_key = None
-
-def _fetch_klines_horarias(symbol):
-    def _do():
-        r = requests.get("https://api.binance.com/api/v3/klines",
-                         params={"symbol": symbol, "interval": "1h", "limit": 500}, timeout=10)
-        if r.status_code != 200:
-            raise RuntimeError(f"HTTP {r.status_code}")
-        return r.json()
-    return with_retry(_do, tries=3, base_delay=2, what=f"klines 1h {symbol}")
-
-def _analizar_volumen_compras(symbol):
-    kl = _fetch_klines_horarias(symbol)
-    if not kl:
-        return "ERR"                      # Binance no contestó (límite de peticiones, red...)
-    if kl[-1][6] > int(time.time() * 1000):
-        kl = kl[:-1]                      # fuera la vela de la hora en curso (incompleta)
-    n_ventanas = len(kl) // 24
-    if n_ventanas < 8:
-        return None                       # listada hace poco: sin base fiable
-    ventanas = []                         # ventanas[0] = últimas 24h; el resto, días anteriores
-    for i in range(min(n_ventanas, 21)):
-        trozo = kl[len(kl) - 24 * (i + 1): len(kl) - 24 * i]
-        ventanas.append(sum(float(k[7]) for k in trozo))     # k[7] = volumen en USDT
-    base = float(np.median(ventanas[1:]))
-    actual = ventanas[0]
-    if base <= 0 or actual <= 0:
-        return None
-    ult = kl[-24:]
-    compras = sum(float(k[10]) for k in ult) / actual        # k[10] = compra agresiva en USDT
-    p_ini, p_fin = float(ult[0][1]), float(ult[-1][4])
-    cambio = (p_fin - p_ini) / p_ini * 100 if p_ini > 0 else 0.0
-    return {"ratio": actual / base, "compras": compras, "cambio": cambio, "vol_usdt": actual}
-
-def calcular_calientes():
-    ck = "calientes"
-    cached = cache_get(ck)
-    if cached is not None:
-        return cached
-    def _tickers():
-        r = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=15)
-        if r.status_code != 200:
-            raise RuntimeError(f"HTTP {r.status_code}")
-        return r.json()
-    tk = with_retry(_tickers, tries=2, base_delay=2, what="ticker 24hr Binance")
-    if not tk:
-        return None
-    cands = []
-    for t in tk:
-        s = t.get("symbol", "")
-        if not s.endswith("USDT"):
-            continue
-        base = s[:-4]
-        if base.lower() in _CALIENTES_EXCLUIR:
-            continue
-        try:
-            qv = float(t.get("quoteVolume") or 0)
-        except (ValueError, TypeError):
-            continue
-        if qv >= CALIENTES_MIN_USDT:
-            cands.append((s, base, qv))
-    cands.sort(key=lambda x: -x[2])
-    cands = cands[:CALIENTES_UNIVERSO]
-    from concurrent.futures import ThreadPoolExecutor
-    def _job(c):
-        try:
-            d = _analizar_volumen_compras(c[0])
-        except Exception as e:
-            log.warning(f"calientes {c[0]}: {e}")
-            return "ERR"
-        if isinstance(d, dict):
-            d["simbolo"] = c[1]
-        return d
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        resultados = list(ex.map(_job, cands))
-    datos = [d for d in resultados if isinstance(d, dict)]
-    fallidas = [c for c, d in zip(cands, resultados) if isinstance(d, str)]
-    n_err = 0
-    for c in fallidas:                    # segunda pasada en serie y con pausa
-        time.sleep(0.4)
-        d = _job(c)
-        if isinstance(d, dict):
-            datos.append(d)
-        elif isinstance(d, str):
-            n_err += 1
-    log.info(f"calientes: {len(cands)} candidatas, {len(datos)} analizadas, "
-             f"{len(fallidas)} fallaron a la primera, {n_err} siguen sin datos")
-    if not datos:
-        return None
-    anomalos = sorted([d for d in datos if d["ratio"] > CALIENTES_RATIO_ANOMALO],
-                      key=lambda d: -d["ratio"])[:3]
-    normales = [d for d in datos if d["ratio"] <= CALIENTES_RATIO_ANOMALO]
-    def _cumple(d):
-        return d["ratio"] >= CALIENTES_RATIO_MIN and d["compras"] >= CALIENTES_COMPRAS_MIN
-    # Orden por calidad de la señal: volumen (veces lo normal) x exceso de compras sobre el 50%.
-    # Así un 65% de compras con ×2.9 pasa por delante de un 52% con ×3.0.
-    calientes = sorted([d for d in normales if _cumple(d)],
-                       key=lambda d: -(d["ratio"] * (d["compras"] - 0.5)))[:CALIENTES_TOP]
-    vendedores = sorted([d for d in normales if d["ratio"] >= CALIENTES_RATIO_MIN
-                         and d["compras"] <= CALIENTES_VENTAS_MAX],
-                        key=lambda d: -d["ratio"])[:5]
-    def _distancia(d):                    # cuánto le falta para cumplir (0 = cumple)
-        return (0.5 * max(0.0, 1 - d["ratio"] / CALIENTES_RATIO_MIN)
-                + 0.5 * max(0.0, 1 - d["compras"] / CALIENTES_COMPRAS_MIN))
-    casi = sorted([d for d in normales if not _cumple(d) and d["ratio"] >= 1.0 and d["compras"] >= 0.50],
-                  key=_distancia)[:CALIENTES_CASI_TOP]
-    res = {"hora": datetime.now(MADRID).strftime("%d/%m %H:%M"),
-           "calientes": calientes, "vendedores": vendedores, "casi": casi, "anomalos": anomalos,
-           "n_analizadas": len(datos), "n_candidatas": len(cands), "n_errores": n_err}
-    cache_set(ck, res)
-    return res
-
-def _color_compras(p):
-    if p >= 0.70: return '#00E060'
-    if p >= 0.65: return '#00CC44'
-    if p >= 0.60: return '#66CC33'
-    return '#B8C92A'
-
-def chart_calientes(res):
-    modo_casi = not res["calientes"]
-    filas = res["casi"] if modo_casi else res["calientes"]
-    n = len(filas)
-    fig = plt.figure(figsize=(12, 2.9 + n * 0.62))
-    fig.patch.set_facecolor('#0d1117')
-    gs = fig.add_gridspec(1, 2, width_ratios=[3, 2], left=0.11, right=0.90,
-                          top=0.80, bottom=0.11, wspace=0.06)
-    ax1 = fig.add_subplot(gs[0])
-    ax2 = fig.add_subplot(gs[1], sharey=ax1)
-    for ax in (ax1, ax2):
-        ax.set_facecolor('#0d1117')
-        for spine in ax.spines.values():
-            spine.set_color('#333333')
-    ys = list(range(n))
-
-    # Panel 1: cuántas veces el volumen normal (el color = cuánta compra hubo)
-    ratios = [f["ratio"] for f in filas]
-    ax1.barh(ys, ratios, height=0.62, color=[_color_compras(f["compras"]) for f in filas],
-             alpha=(0.55 if modo_casi else 1.0), zorder=3)
-    ax1.axvline(1, color='#888888', linestyle='--', linewidth=1, zorder=2)
-    ax1.axvline(CALIENTES_RATIO_MIN, color='#555555', linestyle=':', linewidth=1, zorder=2)
-    xmax = max(ratios) * 1.28
-    ax1.set_xlim(0, xmax)
-    for i, f in enumerate(filas):
-        ax1.text(f["ratio"] + xmax * 0.015, i, f"×{f['ratio']:.1f}", va='center', ha='left',
-                 color='white', fontsize=13, fontweight='bold')
-    ax1.set_yticks(ys)
-    ax1.set_yticklabels([f["simbolo"] for f in filas], color='white', fontsize=13, fontweight='bold')
-    ax1.invert_yaxis()
-    ax1.set_xticks([])
-    ax1.tick_params(left=False)
-    ax1.set_title("Volumen vs lo normal", color='#AAAAAA', fontsize=11, loc='left')
-    ax1.text(1, -0.02, "normal", transform=ax1.get_xaxis_transform(), color='#888888',
-             fontsize=9, ha='center', va='top')
-
-    # Panel 2: reparto compra / venta agresiva del volumen
-    for i, f in enumerate(filas):
-        c = f["compras"] * 100
-        ax2.barh(i, c, height=0.62, color='#00AA44', alpha=0.9, zorder=3)
-        ax2.barh(i, 100 - c, left=c, height=0.62, color='#CC3333', alpha=0.75, zorder=3)
-        etiqueta = f"{c:.0f}%"
-        if not modo_casi:
-            etiqueta += " · clara" if f["compras"] >= CALIENTES_CLARA else " · ligera"
-        ax2.text(c / 2, i, etiqueta, va='center', ha='center', color='white',
-                 fontsize=12, fontweight='bold', zorder=5)
-        flecha = "▲" if f["cambio"] >= 0 else "▼"
-        col = '#00CC44' if f["cambio"] >= 0 else '#FF4444'
-        ax2.text(1.04, i, f"{flecha} {f['cambio']:+.1f}%", transform=ax2.get_yaxis_transform(),
-                 va='center', ha='left', color=col, fontsize=12, fontweight='bold', clip_on=False)
-    ax2.axvline(50, color='white', linestyle='--', linewidth=1, zorder=4)
-    ax2.set_xlim(0, 100)
-    ax2.set_xticks([])
-    ax2.tick_params(left=False, labelleft=False)
-    ax2.set_title("Compra (verde) vs venta (rojo)", color='#AAAAAA', fontsize=11, loc='left')
-    ax2.text(1.04, 1.02, "Precio 24h", transform=ax2.transAxes, color='#888888',
-             fontsize=10, ha='left', va='bottom')
-
-    if modo_casi:
-        fig.text(0.5, 0.955, "CALIENTES — hoy ninguna cumple el filtro", ha='center', color='white',
-                 fontsize=17, fontweight='bold')
-        fig.text(0.5, 0.905, f"{res['hora']} (Madrid)  ·  estas son las que MÁS SE ACERCAN (no llegan a "
-                 f"×{CALIENTES_RATIO_MIN} de volumen y {CALIENTES_COMPRAS_MIN*100:.0f}% de compras)",
-                 ha='center', color='#FFB84D', fontsize=10)
-    else:
-        fig.text(0.5, 0.955, "CALIENTES — volumen inusual con compras dominantes",
-                 ha='center', color='white', fontsize=17, fontweight='bold')
-        fig.text(0.5, 0.905, f"{res['hora']} (Madrid)  ·  últimas 24h vs mediana de ~20 días previos  ·  "
-                 f"filtro: volumen ≥ ×{CALIENTES_RATIO_MIN} y compras ≥ {CALIENTES_COMPRAS_MIN*100:.0f}%",
-                 ha='center', color='#999999', fontsize=10)
-        fig.text(0.5, 0.868, "Ordenadas de más a menos señal (volumen × exceso de compras sobre el 50%)",
-                 ha='center', color='#777777', fontsize=9)
-    fig.text(0.5, 0.03, "Barra de la izquierda: más verde intenso = más compras agresivas. "
-             "Volumen alto no es una recomendación de compra.", ha='center', color='#777777', fontsize=9)
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-def texto_calientes(res, con_aviso=False):
-    lineas = [f"🔥 CALIENTES — {res['hora']} (Madrid)"]
-    if res["calientes"]:
-        lineas.append("Volumen de las últimas 24h muy por encima de lo normal, con compras agresivas "
-                      "dominantes. Ordenadas de más a menos señal.")
-        claras = [f for f in res["calientes"] if f["compras"] >= CALIENTES_CLARA]
-        ligeras = [f for f in res["calientes"] if f["compras"] < CALIENTES_CLARA]
-        if claras:
-            c = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f} ({f['compras']*100:.0f}%)" for f in claras)
-            lineas.append(f"\n🟢 Compras claras (≥{CALIENTES_CLARA*100:.0f}%): {c}")
-        else:
-            lineas.append(f"\nNinguna con compras claras (≥{CALIENTES_CLARA*100:.0f}%) hoy: solo compras ligeras.")
-        if ligeras:
-            l = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f} ({f['compras']*100:.0f}%)" for f in ligeras)
-            lineas.append(f"\n🟡 Compras ligeras ({CALIENTES_COMPRAS_MIN*100:.0f}-{CALIENTES_CLARA*100-1:.0f}%, "
-                          f"casi equilibrio): {l}")
-    else:
-        lineas.append(f"Hoy ninguna moneda cumple el filtro (volumen ≥ ×{CALIENTES_RATIO_MIN} lo normal "
-                      f"y compras ≥ {CALIENTES_COMPRAS_MIN*100:.0f}%).")
-        if res["casi"]:
-            c = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f} ({f['compras']*100:.0f}% compra)"
-                          for f in res["casi"][:5])
-            lineas.append(f"\nLas que más se acercan: {c}")
-    if res["vendedores"]:
-        v = ", ".join(f"{f['simbolo']} ×{f['ratio']:.1f} ({f['compras']*100:.0f}% compra)"
-                      for f in res["vendedores"][:5])
-        lineas.append(f"\n⚠️ Volumen inusual pero dominado por VENTAS (descartadas): {v}")
-    if res["anomalos"]:
-        a = ", ".join(f"{f['simbolo']} ×{f['ratio']:.0f} ({f['compras']*100:.0f}% compra)"
-                      for f in res["anomalos"])
-        lineas.append(f"\n🔎 Salto de volumen fuera de escala (más de ×{CALIENTES_RATIO_ANOMALO}): {a} — "
-                      "suele ser un listado o una campaña; no es comparable con el resto.")
-    lineas.append(f"\n({res['n_analizadas']} de {res['n_candidatas']} monedas analizadas, "
-                  f"con más de ${CALIENTES_MIN_USDT/1e6:.0f}M de volumen diario)")
-    if res["n_candidatas"] and res["n_errores"] > 0.25 * res["n_candidatas"]:
-        lineas.append("⚠️ Binance limitó parte de las consultas: resultado parcial.")
-    if con_aviso:
-        lineas.append(AVISO_DYOR)
-    return "\n".join(lineas)
-
-@bot.message_handler(commands=["calientes", "caliente"])
-@con_dyor
-def cmd_calientes(msg):
-    if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
-        return
-    m = bot.send_message(msg.chat.id, "Buscando monedas con volumen inusual y compras dominantes... (15-25s)")
-    res = calcular_calientes()
-    if not res:
-        safe_send(msg.chat.id, "No he podido obtener datos de Binance ahora mismo. Reintenta en un momento.",
-                  message_id=m.message_id)
-        return
-    try:
-        bot.delete_message(msg.chat.id, m.message_id)
-    except Exception:
-        pass
-    texto = texto_calientes(res)
-    if res["calientes"] or res["casi"]:
-        try:
-            bot.send_photo(msg.chat.id, chart_calientes(res), caption=texto[:1020])
-        except Exception as e:
-            log.warning(f"chart_calientes: {e}")
-            safe_send(msg.chat.id, texto)
-    else:
-        safe_send(msg.chat.id, texto)
-    if not res["calientes"]:
-        return                            # sin monedas que cumplan no hay nada que analizar con IA
-    def _calidad(f):
-        if f["compras"] >= CALIENTES_CLARA:
-            return "compras CLARAS"
-        return "compras LIGERAS (apenas por encima del equilibrio del 50%: señal débil)"
-    filas = "\n".join(f"{f['simbolo']}: volumen ×{f['ratio']:.1f} lo normal, compras {f['compras']*100:.0f}% "
-                      f"del volumen → {_calidad(f)}, precio 24h {f['cambio']:+.1f}%" for f in res["calientes"])
-    vend = ", ".join(f"{f['simbolo']} (×{f['ratio']:.1f}, {f['compras']*100:.0f}% compra)"
-                     for f in res["vendedores"]) or "ninguna"
-    prompt = (f"Monedas cripto (Binance) ordenadas de más a menos señal. Su volumen de las últimas 24h supera "
-              f"{CALIENTES_RATIO_MIN} veces lo normal y las compras agresivas (órdenes a mercado del comprador) "
-              f"son mayoría del volumen:\n{filas}\n\n"
-              f"Con volumen inusual pero dominado por ventas: {vend}\n\n"
-              "Datos ya interpretados, úsalos tal cual: 'compras CLARAS' = 60% o más del volumen fue compra "
-              "agresiva; 'compras LIGERAS' = entre 52% y 59%, casi equilibrio, señal débil.\n"
-              "Reglas: NO trates el grupo como si fuera homogéneo; distingue expresamente las de compras claras "
-              "de las ligeras y no exageres las ligeras. NO asignes sectores ni categorías a las monedas "
-              "(por ejemplo 'DeFi' o 'IA') salvo que estés seguro. NO inventes noticias ni catalizadores: si no "
-              "sabes por qué se mueve una moneda, dilo. NO des recomendaciones de operativa (stops, objetivos, "
-              "toma de beneficios, tamaño de posición, 'compre' o 'venda').\n\n"
-              "1. ¿Qué se puede afirmar de verdad con estos datos, separando claras de ligeras?\n"
-              "2. ¿Qué diferencia hay entre volumen alto con el precio subiendo y volumen alto con compras "
-              "dominantes pero el precio plano o cayendo?\n"
-              "3. Riesgos de usar esta señal sola (volumen inflado, liquidaciones, falsas rupturas)")
-    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
-def _calientes_ya_enviado(dia):
-    try:
-        with open(CALIENTES_FILE, "r") as f:
-            return json.load(f).get("dia") == dia
-    except Exception:
-        return False
-
-def _marcar_calientes_enviado(dia):
-    try:
-        tmp = CALIENTES_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump({"dia": dia}, f)
-        os.replace(tmp, CALIENTES_FILE)
-    except Exception as e:
-        log.warning(f"_marcar_calientes_enviado: {e}")
-
-def ejecutar_calientes_auto(dia):
-    destinatarios = _lista_suscriptores_activos()
-    if not destinatarios:
-        log.info("ejecutar_calientes_auto: sin suscriptores activos")
-        return
-    try:
-        res = calcular_calientes()
-        if not res:
-            log.warning("ejecutar_calientes_auto: sin datos de Binance")
-            return
-        _marcar_calientes_enviado(dia)   # con datos válidos, no se repite hoy (ni tras un redeploy)
-        if not res["calientes"]:
-            log.info("ejecutar_calientes_auto: hoy no hay monedas que cumplan el filtro; no se envía nada")
-            return
-        img = chart_calientes(res).getvalue()
-        caption = texto_calientes(res, con_aviso=True)[:1020]
-        for cid in destinatarios:
-            try:
-                bot.send_photo(cid, io.BytesIO(img), caption=caption, disable_notification=False)
-            except Exception as e:
-                log.warning(f"calientes auto -> {cid}: {e}")
-            time.sleep(0.05)
-    except Exception as e:
-        log.error(f"ejecutar_calientes_auto: {e}")
 # ═══ /COMPRESION — Compresión de precio de BTC (30 días) ═══
 # Aproximación propia, con datos de Binance, de indicadores tipo "Price Compression
 # Score" (CryptoQuant): mide lo ESTRECHO que está el rango de precio de los últimos 30
@@ -3825,12 +3471,12 @@ def _enriquecer_con_bybit(d):
         log.warning(f"_enriquecer_con_bybit: {e}")
     return d
 
-def _liq_datos(symbol, periodo):
+def _liq_datos(symbol, periodo, dias=LIQ_DIAS):
     """Descarga y alinea por vela: precios, interés abierto (USD) y proporción de largos."""
     paso = LIQ_PASOS_MS[periodo]
-    kl = _fut_klines(symbol, periodo, LIQ_DIAS)
-    oi = _fut_hist_paginado("/futures/data/openInterestHist", symbol, LIQ_DIAS, periodo)
-    ls = _fut_hist_paginado("/futures/data/globalLongShortAccountRatio", symbol, LIQ_DIAS, periodo)
+    kl = _fut_klines(symbol, periodo, dias)
+    oi = _fut_hist_paginado("/futures/data/openInterestHist", symbol, dias, periodo)
+    ls = _fut_hist_paginado("/futures/data/globalLongShortAccountRatio", symbol, dias, periodo)
     if not kl or not oi or len(kl) < 100:
         return None
     claves = [int(k[0]) // paso for k in kl]
@@ -4041,6 +3687,55 @@ def chart_liquidaciones_calor(res):
     buf.seek(0)
     return buf
 
+
+LIQ_CORTO_DIAS = 3               # 48h de calentamiento + ~24h limpias para el zoom corto
+LIQ_CORTO_HORAS_ZOOM = 8         # cuántas horas finales se muestran en el zoom corto
+
+def calcular_liquidaciones_corto(symbol="BTCUSDT"):
+    """Igual que calcular_liquidaciones pero solo con velas de 5 minutos y una ventana corta
+    (3 días), para un mapa más fino y concentrado en lo más reciente. Si Binance no da datos de
+    interés abierto a 5 minutos (o llegan incompletos), devuelve None sin afectar a las otras
+    dos vistas de /liquidaciones, que siguen calculándose por separado."""
+    ck = f"liqcorto:{symbol}"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    d = _liq_datos(symbol, "5m", dias=LIQ_CORTO_DIAS)
+    if not d or len(d["oi"]) < (LIQ_CALENTAMIENTO_H + 6) * 60 // 5:
+        return None
+    precio = float(d["c"][-1])
+    bins = np.linspace(precio * 0.85, precio * 1.15, LIQ_NBINS + 1)   # rango más estrecho: movimientos de pocos días
+    Lm, Sm, Pm, pl_fin, ps_fin = modelo_liquidaciones(d, bins)
+    centros = (bins[:-1] + bins[1:]) / 2
+    L, S = _suavizar(Lm[-1:], 1)[0], _suavizar(Sm[-1:], 1)[0]
+    PL, PS = _suavizar(pl_fin[None, :], 1)[0], _suavizar(ps_fin[None, :], 1)[0]
+    Ln, Sn = np.maximum(L - PL, 0), np.maximum(S - PS, 0)
+    def suma(vec, a, b):
+        return float(vec[(centros >= a) & (centros <= b)].sum())
+    res = {"precio": precio, "bins": bins, "centros": centros, "t": d["t"], "paso_min": d["paso_min"],
+           "o": d["o"], "h": d["h"], "l": d["l"], "c": d["c"], "close": d["c"],
+           "Lm": Lm, "Sm": Sm, "Pm": Pm, "L": L, "S": S, "fuentes": d["fuentes"],
+           "cortos_5": suma(S, precio, precio * 1.05), "largos_5": suma(L, precio * 0.95, precio),
+           "picos_cortos": _picos(np.where(centros > precio, Sn, 0), centros),
+           "picos_largos": _picos(np.where(centros < precio, Ln, 0), centros),
+           "hora": datetime.now(MADRID).strftime("%d/%m %H:%M")}
+    cache_set(ck, res)
+    return res
+
+def chart_liquidaciones_corto(res):
+    """Zoom corto plazo: últimas LIQ_CORTO_HORAS_ZOOM horas con velas de 5 min, el mismo estilo
+    que el zoom de 24h pero mucho más concentrado."""
+    paso = res["paso_min"]
+    return _grafico_bloques(
+        res, horas=LIQ_CORTO_HORAS_ZOOM, vela_min=paso, pad_pct=0.010, agrup_bins=1, ext=10,
+        pcts=[86, 94, 98.2, 99.7],
+        titulo=f"BTC — LIQUIDACIONES ESTIMADAS · CORTO PLAZO ({LIQ_CORTO_HORAS_ZOOM} H, velas de {paso} min)",
+        subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de {_texto_fuentes(res['fuentes'])}",
+        aclaracion="Mismo modelo, con más detalle: interés abierto cada 5 min en vez de cada 15. "
+                   "Cada bloque es un nivel sin tocar; se prolonga a la derecha hasta que lo toque.",
+        fmt_x=lambda dt_: dt_.strftime("%H:%M"), cada_velas=max(1, 30 // paso), resumen=False,
+        calentamiento=False, tf_txt=f"{paso}m")
+
 def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titulo, subtitulo, aclaracion,
                      fmt_x, cada_velas, resumen, calentamiento, tf_txt):
     """Velas + un bloque por vela y nivel de liquidación estimado que sigue sin tocar (estilo TradingView).
@@ -4176,14 +3871,20 @@ def chart_liquidaciones(res):
                    "Se prolonga a la derecha hasta que lo toque.",
         fmt_x=lambda dt_: dt_.strftime("%d %b"), cada_velas=30, resumen=True, calentamiento=True, tf_txt="4h")
 
-def texto_liquidaciones(res):
+def texto_liquidaciones(res, res_corto=None):
     p = res["precio"]
+    if res_corto:
+        intro_img = (f"🖼 Imagen 1: corto plazo ({LIQ_CORTO_HORAS_ZOOM} h, velas de {res_corto['paso_min']} min, "
+                     f"el más fino de los tres). Imagen 2: zoom de 24 h (velas de {res['paso_min']} min). "
+                     "Imagen 3: los 30 días (velas de 4 h).\n")
+    else:
+        intro_img = (f"🖼 Imagen 1: zoom de 24 h con velas de {res['paso_min']} min; cada bloque es un nivel aún sin "
+                     "tocar y se prolonga a la derecha. Imagen 2: los 30 días con el mismo estilo (velas de 4 h).\n")
     L = ["📖 QUÉ ES ESTE MAPA\n",
          "Estima en qué precios se liquidarían más posiciones apalancadas de BTC si el precio llegase hasta allí. "
          "Al liquidarse, el exchange cierra la posición a la fuerza: un corto liquidado COMPRA y un largo liquidado "
          "VENDE, así que las zonas con muchas liquidaciones pueden acelerar el movimiento… o quedarse en nada.\n",
-         f"🖼 Imagen 1: zoom de 24 h con velas de {res['paso_min']} min; cada bloque es un nivel aún sin tocar y se "
-         "prolonga a la derecha. Imagen 2: los 30 días con el mismo estilo (velas de 4 h).\n",
+         intro_img,
         (f"Fuentes: {' + '.join(res['fuentes'])}. Bybit solo se actualiza cada hora (Binance cada "
          f"{res['paso_min']} min), así que entre horas se usa su último dato conocido.\n"
          if len(res["fuentes"]) > 1 else
@@ -4229,16 +3930,27 @@ def cmd_liquidaciones(msg):
         safe_send(msg.chat.id, "No he podido obtener los datos de Binance Futures ahora mismo. Reintenta en un momento.",
                   message_id=m.message_id)
         return
+    try:
+        res_corto = calcular_liquidaciones_corto()
+    except Exception as e:
+        log.warning(f"calcular_liquidaciones_corto: {e}")
+        res_corto = None
+    n_img = 3 if res_corto else 2
     caption = (f"🔥 LIQUIDACIONES ESTIMADAS — BTC\nBTC ${res['precio']:,.0f}\n"
                f"Cortos hasta +5%: {_usd(res['cortos_5'])} · Largos hasta −5%: {_usd(res['largos_5'])}\n"
-               "Zoom de 24 h (imagen 1) y visión de 30 días (imagen 2)")
+               + (f"Corto plazo ({LIQ_CORTO_HORAS_ZOOM} h, imagen 1), zoom 24 h (imagen 2) y 30 días (imagen 3)"
+                  if res_corto else "Zoom de 24 h (imagen 1) y visión de 30 días (imagen 2)"))
     try:
         bot.delete_message(msg.chat.id, m.message_id)
     except Exception:
         pass
-    for nombre, fn, cap in (("zoom 24h", chart_liquidaciones_zoom, caption), ("30 días", chart_liquidaciones, None)):
+    imagenes = [("zoom 24h", chart_liquidaciones_zoom, res, caption), ("30 días", chart_liquidaciones, res, None)]
+    if res_corto:
+        imagenes.insert(0, ("corto plazo", chart_liquidaciones_corto, res_corto, caption))
+        imagenes[1] = ("zoom 24h", chart_liquidaciones_zoom, res, None)
+    for nombre, fn, res_img, cap in imagenes:
         try:
-            img = fn(res)
+            img = fn(res_img)
             if cap:
                 bot.send_photo(msg.chat.id, img, caption=cap[:1020])
             else:
@@ -4247,7 +3959,7 @@ def cmd_liquidaciones(msg):
             log.warning(f"chart_liquidaciones ({nombre}): {e}")
             if cap:
                 safe_send(msg.chat.id, cap)
-    safe_send(msg.chat.id, texto_liquidaciones(res))
+    safe_send(msg.chat.id, texto_liquidaciones(res, res_corto))
     pc = ", ".join(f"${x:,.0f} ({(x/res['precio']-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_cortos"]) or "ninguna"
     pl = ", ".join(f"${x:,.0f} ({(x/res['precio']-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_largos"]) or "ninguna"
     prompt = (f"Mapa de liquidaciones ESTIMADO de BTC (modelo propio con interés abierto de Binance Futures de los "
@@ -4264,482 +3976,6 @@ def cmd_liquidaciones(msg):
               "1. ¿Qué significan estas zonas y por qué las liquidaciones pueden acelerar un movimiento?\n"
               "2. ¿Qué NO se puede afirmar con un modelo estimado como este?\n"
               "3. ¿Qué otras señales conviene mirar junto a este mapa (interés abierto, funding, volumen)?")
-    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-# ═══ /ROTACION — Mapa de rotación de mercado (tipo RRG) ═══
-# Aproximación propia del Relative Rotation Graph (Julius de Kempenaer; su fórmula exacta no es
-# pública). Cada activo se compara contra el S&P 500 (SPY) con datos SEMANALES:
-#   · RS-Ratio  (eje X): fuerza relativa frente al S&P 500, normalizada (100 = en línea con el índice).
-#   · RS-Momentum (eje Y): si esa fuerza relativa está acelerando (>100) o frenando (<100).
-# Cuatro cuadrantes: Liderando (arriba-dcha) → Perdiendo fuerza (abajo-dcha) → Rezagado (abajo-izq)
-# → Mejorando (arriba-izq). Describe qué ha liderado, NO qué liderará.
-# Datos: Yahoo (API de gráficos, sin clave) como fuente principal por velocidad; Twelve Data de respaldo
-# (el plan gratuito solo permite 8 peticiones/min); BTC desde Binance. Caché de 6 h en memoria y disco.
-
-ROT_BENCH = "SPY"
-ROT_ACTIVOS = [
-    ("XLK", "Tecnología"), ("SMH", "Semiconductores"), ("XLC", "Comunicaciones"),
-    ("XLY", "Consumo discrecional"), ("XLF", "Financiero"), ("XLI", "Industria"),
-    ("XLE", "Energía"), ("XLB", "Materiales"), ("XLV", "Salud"), ("XLP", "Consumo básico"),
-    ("XLU", "Utilities"), ("XLRE", "Inmobiliario"), ("GLD", "Oro"), ("SLV", "Plata"),
-    ("TLT", "Bonos EEUU 20a"), ("BTC", "Bitcoin"),
-]
-ROT_CORTO = {"XLK": "Tecnología", "SMH": "Semiconductores", "XLC": "Comunicaciones",
-             "XLY": "Cons. discrecional", "XLF": "Financiero", "XLI": "Industria", "XLE": "Energía",
-             "XLB": "Materiales", "XLV": "Salud", "XLP": "Cons. básico", "XLU": "Utilities",
-             "XLRE": "Inmobiliario", "GLD": "Oro", "SLV": "Plata", "TLT": "Bonos 20a", "BTC": "Bitcoin"}
-
-# Ciclo económico clásico (patrón histórico, no una regla): sectores que SUELEN ir mejor en cada fase.
-# BTC no entra: no forma parte del modelo clásico de rotación sectorial.
-ROT_FASES = [
-    {"nombre": "Recuperación", "sub": "desde el valle", "color": "#16a34a",
-     "macro": ["PIB: empieza a crecer", "Inflación: baja", "Tipos: bajos"],
-     "sectores": ["XLF", "XLI", "XLY", "XLRE"]},
-    {"nombre": "Expansión", "sub": "crecimiento fuerte", "color": "#2563eb",
-     "macro": ["PIB: crece con fuerza", "Inflación: en aumento", "Tipos: suben"],
-     "sectores": ["XLK", "SMH", "XLC", "XLF", "XLI"]},
-    {"nombre": "Desaceleración", "sub": "el crecimiento se enfría", "color": "#ea580c",
-     "macro": ["PIB: se frena", "Inflación: alta", "Tipos: altos"],
-     "sectores": ["XLE", "XLB", "XLV", "GLD", "SLV"]},
-    {"nombre": "Recesión", "sub": "contracción", "color": "#dc2626",
-     "macro": ["PIB: se contrae", "Inflación: baja", "Tipos: bajan"],
-     "sectores": ["XLP", "XLV", "XLU", "TLT", "GLD"]},
-]
-ROT_PUNTOS = {"Liderando": 2, "Mejorando": 1, "Perdiendo fuerza": 0, "Rezagado": -1}
-ROT_VENTANA = 14            # semanas para normalizar (valor habitual en las aproximaciones públicas)
-ROT_COLA = 5                # semanas de "cola" dibujadas
-ROT_CACHE_H = 6
-ROT_CACHE_FILE = os.environ.get("ROTACION_CACHE_FILE", _p("rotacion_cache.json"))
-_ROT_MEM = {"ts": 0, "series": None}
-_ROT_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
-
-def _semana(ts_seg):
-    """Clave de semana (lunes, 'YYYY-MM-DD') para alinear fuentes distintas."""
-    d = datetime.utcfromtimestamp(int(ts_seg)).date()
-    return (d - timedelta(days=d.weekday())).isoformat()
-
-def _rot_yahoo(sym, n=0):
-    host = "query1" if n % 2 == 0 else "query2"
-    def _do():
-        r = requests.get(f"https://{host}.finance.yahoo.com/v8/finance/chart/{sym}",
-                         params={"range": "2y", "interval": "1wk"}, headers=_ROT_UA, timeout=10)
-        if r.status_code != 200:
-            raise RuntimeError(f"Yahoo HTTP {r.status_code}")
-        res = ((r.json().get("chart") or {}).get("result") or [None])[0]
-        if not res or not res.get("timestamp"):
-            raise RuntimeError("Yahoo: sin datos")
-        ind = res.get("indicators") or {}
-        adj = ((ind.get("adjclose") or [{}])[0] or {}).get("adjclose")
-        cl = adj or ((ind.get("quote") or [{}])[0] or {}).get("close") or []
-        out = {}
-        for ts, v in zip(res["timestamp"], cl):
-            if v is not None:
-                out[_semana(ts)] = float(v)
-        if len(out) < 40:
-            raise RuntimeError(f"Yahoo: solo {len(out)} semanas")
-        return out
-    return with_retry(_do, tries=2, base_delay=1.5, what=f"rotacion yahoo {sym}")
-
-def _rot_twelvedata(sym):
-    if not TWELVEDATA_API_KEY:
-        return None
-    def _do():
-        _throttle_twelvedata()
-        r = requests.get("https://api.twelvedata.com/time_series",
-                         params={"symbol": sym, "interval": "1week", "outputsize": 104,
-                                 "apikey": TWELVEDATA_API_KEY}, timeout=12)
-        j = r.json()
-        if j.get("status") == "error" or "values" not in j:
-            raise RuntimeError(f"Twelve Data: {str(j.get('message', 'sin datos'))[:80]}")
-        out = {}
-        for v in j["values"]:
-            d = datetime.strptime(v["datetime"][:10], "%Y-%m-%d").date()
-            out[(d - timedelta(days=d.weekday())).isoformat()] = float(v["close"])
-        if len(out) < 40:
-            raise RuntimeError(f"Twelve Data: solo {len(out)} semanas")
-        return out
-    return with_retry(_do, tries=2, base_delay=2, what=f"rotacion twelvedata {sym}")
-
-def _rot_binance_btc():
-    def _do():
-        r = requests.get("https://api.binance.com/api/v3/klines",
-                         params={"symbol": "BTCUSDT", "interval": "1w", "limit": 110}, timeout=10)
-        if r.status_code != 200:
-            raise RuntimeError(f"Binance HTTP {r.status_code}")
-        return {_semana(int(k[0]) // 1000): float(k[4]) for k in r.json()}
-    return with_retry(_do, tries=2, base_delay=1.5, what="rotacion binance BTC")
-
-def _rot_descargar():
-    """Series semanales {simbolo: {semana: cierre}}. Usa caché de 6 h (memoria y disco)."""
-    ahora = time.time()
-    if _ROT_MEM["series"] and ahora - _ROT_MEM["ts"] < ROT_CACHE_H * 3600:
-        return _ROT_MEM["series"], _ROT_MEM.get("fuentes", {})
-    try:
-        with open(ROT_CACHE_FILE, "r") as f:
-            disco = json.load(f)
-        if ahora - disco.get("ts", 0) < ROT_CACHE_H * 3600 and disco.get("series"):
-            _ROT_MEM.update(disco)
-            return disco["series"], disco.get("fuentes", {})
-    except Exception:
-        pass
-    series, fuentes = {}, {}
-    simbolos = [ROT_BENCH] + [s for s, _ in ROT_ACTIVOS]
-    for n, sym in enumerate(simbolos):
-        d = src = None
-        if sym == "BTC":
-            d, src = _rot_binance_btc(), "Binance"
-        else:
-            d, src = _rot_yahoo(sym, n), "Yahoo"
-            if not d:
-                d, src = _rot_twelvedata(sym), "Twelve Data"
-            time.sleep(0.25)
-        if d:
-            series[sym], fuentes[sym] = d, src
-        else:
-            log.warning(f"rotacion: sin datos para {sym}")
-    if ROT_BENCH not in series:
-        return None, {}
-    paquete = {"ts": ahora, "series": series, "fuentes": fuentes}
-    _ROT_MEM.update(paquete)
-    try:
-        tmp = ROT_CACHE_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(paquete, f)
-        os.replace(tmp, ROT_CACHE_FILE)
-    except Exception as e:
-        log.warning(f"rotacion cache disco: {e}")
-    return series, fuentes
-
-def _rrg(activo, bench, w=ROT_VENTANA):
-    """RS-Ratio y RS-Momentum (aproximación pública habitual del RRG), alineados por semana."""
-    df = pd.concat([pd.Series(activo), pd.Series(bench)], axis=1, keys=["a", "b"]).dropna().sort_index()
-    if len(df) < 2 * w + ROT_COLA + 2:
-        return None
-    # Suavizado exponencial antes y después de normalizar: sin él, con datos semanales las colas
-    # saltan de un cuadrante a otro por ruido y el gráfico no se puede leer (los RRG reales también suavizan).
-    rs = (100 * df["a"] / df["b"]).ewm(span=4, adjust=False).mean()
-    rsr = 100 + (rs - rs.rolling(w).mean()) / rs.rolling(w).std(ddof=0)
-    roc = 100 * (rsr / rsr.shift(1) - 1)
-    rsm = (100 + (roc - roc.rolling(w).mean()) / roc.rolling(w).std(ddof=0)).ewm(span=3, adjust=False).mean()
-    out = pd.concat([rsr, rsm], axis=1, keys=["x", "y"]).replace([np.inf, -np.inf], np.nan).dropna()
-    return out if len(out) >= ROT_COLA + 1 else None
-
-def _cuadrante(x, y):
-    if x >= 100 and y >= 100: return "Liderando"
-    if x >= 100: return "Perdiendo fuerza"
-    if y < 100: return "Rezagado"
-    return "Mejorando"
-
-ROT_COLOR = {"Liderando": "#22c55e", "Perdiendo fuerza": "#eab308", "Rezagado": "#ef4444", "Mejorando": "#3b82f6"}
-ROT_ORDEN = ["Liderando", "Mejorando", "Perdiendo fuerza", "Rezagado"]
-
-def calcular_rotacion():
-    series, fuentes = _rot_descargar()
-    if not series:
-        return None
-    bench = series[ROT_BENCH]
-    filas, sin_datos = [], []
-    for sym, nombre in ROT_ACTIVOS:
-        if sym not in series:
-            sin_datos.append(nombre); continue
-        r = _rrg(series[sym], bench)
-        if r is None:
-            sin_datos.append(nombre); continue
-        cola = r.iloc[-ROT_COLA:]
-        x, y = float(cola["x"].iloc[-1]), float(cola["y"].iloc[-1])
-        x4, y4 = float(r["x"].iloc[-5]), float(r["y"].iloc[-5])     # hace 4 semanas (len(r) >= 6 garantizado)
-        filas.append({"sym": sym, "nombre": nombre, "x": x, "y": y,
-                      "cola_x": [float(v) for v in cola["x"]], "cola_y": [float(v) for v in cola["y"]],
-                      "cuad": _cuadrante(x, y), "cuad_antes": _cuadrante(x4, y4)})
-    if not filas:
-        return None
-    semana = max(bench.keys())
-    return {"filas": filas, "sin_datos": sin_datos, "semana": semana, "fuentes": fuentes,
-            "hora": datetime.now(MADRID).strftime("%d/%m %H:%M"), "ciclo": encaje_ciclo(filas)}
-
-def encaje_ciclo(filas):
-    """Para cada fase del ciclo clásico, media de puntos de sus sectores según su cuadrante actual
-    (Liderando 2, Mejorando 1, Perdiendo fuerza 0, Rezagado -1). No dice en qué fase ESTAMOS: dice a qué
-    fase se PARECE el reparto actual de fuerza entre sectores."""
-    cuad = {f["sym"]: f["cuad"] for f in filas}
-    fases = []
-    for fz in ROT_FASES:
-        pts = [ROT_PUNTOS[cuad[s]] for s in fz["sectores"] if s in cuad]
-        fases.append({**fz, "score": (sum(pts) / len(pts)) if pts else None, "n": len(pts)})
-    validas = sorted([f for f in fases if f["score"] is not None], key=lambda f: -f["score"])
-    if not validas:
-        return {"fases": fases, "claro": False, "mejor": None, "segunda": None}
-    mejor = validas[0]; segunda = validas[1] if len(validas) > 1 else None
-    claro = mejor["score"] >= 0.8 and (segunda is None or mejor["score"] - segunda["score"] >= 0.4)
-    return {"fases": fases, "claro": claro, "mejor": mejor["nombre"],
-            "segunda": segunda["nombre"] if segunda else None}
-
-def _colocar_etiquetas(ax, fig, puntos):
-    """Coloca cada etiqueta en la primera posición libre alrededor de su punto (sin pisar otras etiquetas
-    ni otros puntos). Si se aleja mucho, dibuja una línea fina hasta el punto."""
-    fig.canvas.draw()
-    rend = fig.canvas.get_renderer()
-    ocupadas = []
-    trans = ax.transData
-    for (_, x, y, _t, _c) in puntos:                     # los propios puntos también ocupan sitio
-        px, py = trans.transform((x, y))
-        ocupadas.append((px - 9, py - 9, px + 9, py + 9))
-    caja_ax = ax.get_window_extent(rend)
-    candidatos = [(8, 5, 'left', 'bottom'), (8, -5, 'left', 'top'), (-8, 5, 'right', 'bottom'),
-                  (-8, -5, 'right', 'top'), (0, 12, 'center', 'bottom'), (0, -12, 'center', 'top'),
-                  (14, 18, 'left', 'bottom'), (14, -18, 'left', 'top'), (-14, 18, 'right', 'bottom'),
-                  (-14, -18, 'right', 'top'), (0, 28, 'center', 'bottom'), (0, -28, 'center', 'top'),
-                  (24, 32, 'left', 'bottom'), (24, -32, 'left', 'top'), (-24, 32, 'right', 'bottom'),
-                  (-24, -32, 'right', 'top'), (0, 44, 'center', 'bottom'), (0, -44, 'center', 'top')]
-    dpi = fig.dpi / 72.0
-    for (sym, x, y, texto, col) in sorted(puntos, key=lambda p: -p[2]):
-        elegido = None
-        for dx, dy, ha, va in candidatos:
-            t = ax.annotate(texto, (x, y), xytext=(dx, dy), textcoords='offset points', ha=ha, va=va,
-                            fontsize=11, fontweight='bold', color='white', zorder=6,
-                            bbox=dict(boxstyle='round,pad=0.18', facecolor='#0d1117', edgecolor=col,
-                                      linewidth=0.8, alpha=0.85))
-            bb = t.get_window_extent(rend)
-            b = (bb.x0 - 2, bb.y0 - 2, bb.x1 + 2, bb.y1 + 2)
-            dentro = b[0] >= caja_ax.x0 and b[2] <= caja_ax.x1 and b[1] >= caja_ax.y0 and b[3] <= caja_ax.y1
-            choca = any(not (b[2] < o[0] or b[0] > o[2] or b[3] < o[1] or b[1] > o[3]) for o in ocupadas)
-            if dentro and not choca:
-                elegido = (t, b, dx, dy)
-                break
-            t.remove()
-        if elegido is None:                               # sin hueco: la primera opción, aunque roce
-            dx, dy, ha, va = candidatos[0]
-            t = ax.annotate(texto, (x, y), xytext=(dx, dy), textcoords='offset points', ha=ha, va=va,
-                            fontsize=11, fontweight='bold', color='white', zorder=6,
-                            bbox=dict(boxstyle='round,pad=0.18', facecolor='#0d1117', edgecolor=col,
-                                      linewidth=0.8, alpha=0.85))
-            bb = t.get_window_extent(rend)
-            elegido = (t, (bb.x0, bb.y0, bb.x1, bb.y1), dx, dy)
-        t, b, dx, dy = elegido
-        if abs(dx) + abs(dy) > 20:
-            ax.annotate("", (x, y), xytext=(dx, dy), textcoords='offset points',
-                        arrowprops=dict(arrowstyle='-', color=col, lw=0.8, alpha=0.8), zorder=4)
-        ocupadas.append(b)
-
-def chart_rotacion(res):
-    filas = res["filas"]
-    fig = plt.figure(figsize=(11, 12))
-    fig.patch.set_facecolor('#0d1117')
-    ax = fig.add_axes([0.09, 0.07, 0.86, 0.81])
-    ax.set_facecolor('#0d1117')
-    xs = [v for f in filas for v in f["cola_x"]]; ys = [v for f in filas for v in f["cola_y"]]
-    rx = max(abs(min(xs) - 100), abs(max(xs) - 100), 1.0) * 1.22
-    ry = max(abs(min(ys) - 100), abs(max(ys) - 100), 1.0) * 1.22
-    ax.set_xlim(100 - rx, 100 + rx); ax.set_ylim(100 - ry, 100 + ry)
-    for (x0, x1, y0, y1, c) in ((100, 100 + rx, 100, 100 + ry, ROT_COLOR["Liderando"]),
-                                (100, 100 + rx, 100 - ry, 100, ROT_COLOR["Perdiendo fuerza"]),
-                                (100 - rx, 100, 100 - ry, 100, ROT_COLOR["Rezagado"]),
-                                (100 - rx, 100, 100, 100 + ry, ROT_COLOR["Mejorando"])):
-        ax.fill_between([x0, x1], y0, y1, color=c, alpha=0.07, zorder=0)
-    ax.axhline(100, color='#555555', linewidth=1, zorder=1); ax.axvline(100, color='#555555', linewidth=1, zorder=1)
-    esq = {"Liderando": (0.98, 0.98, 'right', 'top'), "Perdiendo fuerza": (0.98, 0.02, 'right', 'bottom'),
-           "Rezagado": (0.02, 0.02, 'left', 'bottom'), "Mejorando": (0.02, 0.98, 'left', 'top')}
-    for nombre, (tx, ty, ha, va) in esq.items():
-        ax.text(tx, ty, nombre.upper(), transform=ax.transAxes, ha=ha, va=va, fontsize=15,
-                fontweight='bold', color=ROT_COLOR[nombre], alpha=0.85)
-    puntos = []
-    for f in filas:
-        col = ROT_COLOR[f["cuad"]]
-        n = len(f["cola_x"])
-        ax.plot(f["cola_x"], f["cola_y"], color=col, linewidth=1.6, alpha=0.5, zorder=2)
-        for i in range(n - 1):
-            ax.plot(f["cola_x"][i], f["cola_y"][i], 'o', color=col, markersize=3 + i, alpha=0.25 + 0.12 * i, zorder=3)
-        ax.plot(f["x"], f["y"], 'o', color=col, markersize=12, markeredgecolor='white', markeredgewidth=1.5, zorder=5)
-        puntos.append((f["sym"], f["x"], f["y"], ROT_CORTO.get(f["sym"], f["sym"]), col))
-    ax.set_xlabel("Fuerza relativa vs S&P 500  →  más fuerte que el índice", color='#AAAAAA', fontsize=11)
-    ax.set_ylabel("Momentum de esa fuerza  →  acelerando", color='#AAAAAA', fontsize=11)
-    ax.tick_params(colors='#777777', labelsize=9)
-    for sp in ax.spines.values(): sp.set_color('#333333')
-    ax.grid(color='#1f2330', linestyle='--', linewidth=0.6, zorder=0)
-    fig.text(0.5, 0.968, "ROTACIÓN DE MERCADO — sectores, metales, bonos y BTC vs S&P 500", ha='center',
-             color='white', fontsize=17, fontweight='bold')
-    fig.text(0.5, 0.940, f"{res['hora']} (Madrid)  ·  datos semanales  ·  cola = últimas {ROT_COLA} semanas (el punto grande es ahora)",
-             ha='center', color='#FFB84D', fontsize=11)
-    fig.text(0.5, 0.914, "Giro habitual: Mejorando → Liderando → Perdiendo fuerza → Rezagado. "
-             "Aproximación propia del RRG: describe, no predice.", ha='center', color='#999999', fontsize=10)
-    _colocar_etiquetas(ax, fig, puntos)
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-def chart_ciclo(res):
-    """Ciclo económico clásico y qué sectores suelen ir mejor en cada fase, con cada sector marcado según
-    su cuadrante ACTUAL en el mapa de rotación y la fase a la que más se parece hoy."""
-    cic = res["ciclo"]
-    cuad = {f["sym"]: f["cuad"] for f in res["filas"]}
-    fig = plt.figure(figsize=(12, 12.5))
-    fig.patch.set_facecolor('#0d1117')
-    fig.text(0.5, 0.968, "CICLO ECONÓMICO Y ROTACIÓN SECTORIAL", ha='center', color='white',
-             fontsize=20, fontweight='bold')
-    fig.text(0.5, 0.942, "Qué sectores suelen ir mejor en cada fase (patrón histórico) y cómo están HOY en el mapa",
-             ha='center', color='#FFB84D', fontsize=11.5)
-    # Curva del ciclo
-    axc = fig.add_axes([0.04, 0.70, 0.92, 0.20]); axc.set_facecolor('#0d1117'); axc.axis('off')
-    xs = np.linspace(0, 4, 400); ys = -np.cos((xs - 0.5) * np.pi / 2)
-    for i, fz in enumerate(ROT_FASES):
-        m = (xs >= i) & (xs <= i + 1)
-        axc.plot(xs[m], ys[m], color=fz["color"], linewidth=5, solid_capstyle='round')
-        destacada = fz["nombre"] == cic["mejor"] or (not cic["claro"] and fz["nombre"] == cic["segunda"])
-        axc.axvspan(i, i + 1, color=fz["color"], alpha=0.16 if destacada else 0.05, zorder=0)
-        axc.text(i + 0.5, 1.55, f"{i + 1}. {fz['nombre'].upper()}", ha='center', va='center', color=fz["color"],
-                 fontsize=14, fontweight='bold')
-        axc.text(i + 0.5, 1.22, f"({fz['sub']})", ha='center', va='center', color='#999999', fontsize=10)
-    axc.annotate("", xy=(4.0, ys[-1] + 0.35), xytext=(3.75, ys[-1] - 0.1),
-                 arrowprops=dict(arrowstyle='->', color='#dc2626', lw=2.5))
-    axc.set_xlim(0, 4); axc.set_ylim(-1.3, 1.8)
-    # Columnas
-    ancho = 0.92 / 4
-    for i, fz in enumerate(cic["fases"]):
-        x0 = 0.04 + i * ancho
-        ax = fig.add_axes([x0 + 0.004, 0.10, ancho - 0.008, 0.585]); ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-        destacada = fz["nombre"] == cic["mejor"] or (not cic["claro"] and fz["nombre"] == cic["segunda"])
-        ax.set_facecolor('#121826')
-        for sp in ax.spines.values():
-            sp.set_color(fz["color"] if destacada else '#2a2e39'); sp.set_linewidth(3 if destacada else 1)
-        ax.set_xticks([]); ax.set_yticks([])
-        y = 0.965
-        for linea in fz["macro"]:
-            ax.text(0.06, y, linea, ha='left', va='top', color='#CCCCCC', fontsize=10.5); y -= 0.05
-        y -= 0.02
-        ax.plot([0.05, 0.95], [y, y], color='#2a2e39', linewidth=1); y -= 0.035
-        ax.text(0.06, y, "Suelen ir mejor:", ha='left', va='top', color=fz["color"], fontsize=11.5, fontweight='bold')
-        y -= 0.065
-        for sym in fz["sectores"]:
-            q = cuad.get(sym)
-            col = ROT_COLOR.get(q, '#555555')
-            ax.plot(0.09, y - 0.018, 'o', color=col, markersize=11, markeredgecolor='white', markeredgewidth=1)
-            ax.text(0.17, y, ROT_CORTO.get(sym, sym), ha='left', va='top', color='white', fontsize=11.5, fontweight='bold')
-            ax.text(0.17, y - 0.036, (q or "sin datos").lower(), ha='left', va='top', color=col, fontsize=9.5)
-            y -= 0.1
-        sc = fz["score"]
-        ax.text(0.5, 0.07, "Encaje hoy" if sc is not None else "", ha='center', va='bottom', color='#999999', fontsize=10)
-        ax.text(0.5, 0.02, f"{sc:+.1f}" if sc is not None else "—", ha='center', va='bottom',
-                color=fz["color"], fontsize=17, fontweight='bold')
-        if destacada:
-            ax.text(0.5, 0.18, "◆ SE PARECE MÁS" if cic["claro"] else "◆ MEZCLA", ha='center', va='bottom',
-                    color=fz["color"], fontsize=11, fontweight='bold')
-    # Conclusión y leyenda
-    if cic["mejor"] is None:
-        concl = "Sin datos suficientes para compararlo con el ciclo."
-    elif cic["claro"]:
-        concl = f"Lo que lidera ahora se parece más a la fase de {cic['mejor'].upper()}."
-    else:
-        concl = (f"Lo que lidera ahora no encaja claramente con una sola fase: mezcla de "
-                 f"{cic['mejor'].upper()} y {cic['segunda'].upper()}.")
-    fig.text(0.5, 0.068, concl, ha='center', color='white', fontsize=13, fontweight='bold')
-    ley = "   ".join(f"● {q.lower()}" for q in ROT_ORDEN)
-    fig.text(0.5, 0.045, "Color del punto = cuadrante actual en el mapa de rotación:", ha='center', color='#999999', fontsize=10)
-    for k, q in enumerate(ROT_ORDEN):
-        fig.text(0.24 + k * 0.155, 0.024, f"● {q}", ha='left', color=ROT_COLOR[q], fontsize=10.5, fontweight='bold')
-    fig.text(0.5, 0.004, "Encaje: media de Liderando +2, Mejorando +1, Perdiendo fuerza 0, Rezagado −1. "
-             "Patrón histórico, no una regla ni una recomendación.", ha='center', color='#777777', fontsize=8.8)
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=115, facecolor='#0d1117')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-def texto_rotacion(res):
-    L = ["📖 QUÉ ES ESTE MAPA\n",
-         "Compara cada sector (y oro, plata, bonos y BTC) con el S&P 500, semana a semana. "
-         "Eje horizontal: ¿lo está haciendo mejor o peor que el índice? Eje vertical: ¿esa ventaja o desventaja "
-         "está creciendo o menguando? La cola muestra el recorrido de las últimas semanas.\n"]
-    emoji = {"Liderando": "🟢", "Mejorando": "🔵", "Perdiendo fuerza": "🟡", "Rezagado": "🔴"}
-    desc = {"Liderando": "más fuerte que el índice y ganando fuerza",
-            "Mejorando": "aún por detrás del índice, pero recuperando",
-            "Perdiendo fuerza": "por delante del índice, pero frenando",
-            "Rezagado": "por detrás del índice y perdiendo"}
-    for q in ROT_ORDEN:
-        nombres = [f["nombre"] for f in res["filas"] if f["cuad"] == q]
-        if nombres:
-            L.append(f"{emoji[q]} {q.upper()} ({desc[q]}): {', '.join(nombres)}")
-    cambios = [f for f in res["filas"] if f["cuad"] != f["cuad_antes"]]
-    if cambios:
-        L.append("\n🔄 Cambios de cuadrante en las últimas 4 semanas:")
-        for f in cambios:
-            L.append(f"• {f['nombre']}: {f['cuad_antes']} → {f['cuad']}")
-    cic = res.get("ciclo") or {}
-    if cic.get("mejor"):
-        L.append("\n🧭 ¿A QUÉ FASE DEL CICLO SE PARECE? (imagen 2)")
-        for fz in cic["fases"]:
-            if fz["score"] is not None:
-                L.append(f"• {fz['nombre']}: {fz['score']:+.1f}")
-        if cic["claro"]:
-            L.append(f"Los sectores que lideran ahora se parecen más a los que suelen ir bien en {cic['mejor']}.")
-        else:
-            L.append(f"No encaja claramente con una sola fase: mezcla de {cic['mejor']} y {cic['segunda']}. "
-                     "Es habitual: el mercado no siempre sigue el ciclo de libro.")
-        L.append("Es un patrón histórico, no dice en qué fase está la economía. Para eso mira también /macro "
-                 "(tipos, inflación, paro).")
-    if res["sin_datos"]:
-        L.append(f"\nSin datos esta vez: {', '.join(res['sin_datos'])}.")
-    L.append("\n⚠️ Describe qué ha liderado estas semanas, no qué va a liderar. Las rotaciones se ven con "
-             "retraso y a veces se dan la vuelta sin completar el giro. No es una señal de compra ni de venta.")
-    return "\n".join(L)
-
-@bot.message_handler(commands=["rotacion"])
-@con_dyor
-def cmd_rotacion(msg):
-    if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
-        return
-    m = bot.send_message(msg.chat.id, "Calculando la rotación de mercado... (la primera vez del día puede tardar ~30 s)")
-    try:
-        res = calcular_rotacion()
-    except Exception as e:
-        log.warning(f"calcular_rotacion: {e}")
-        res = None
-    if not res:
-        safe_send(msg.chat.id, "No he podido obtener los datos ahora mismo. Reintenta en un rato.",
-                  message_id=m.message_id)
-        return
-    lider = [f["nombre"] for f in res["filas"] if f["cuad"] == "Liderando"]
-    caption = ("🔄 ROTACIÓN DE MERCADO (vs S&P 500, semanal)\n"
-               f"Liderando: {', '.join(lider) if lider else 'ninguno'}")
-    try:
-        img = chart_rotacion(res)
-        bot.delete_message(msg.chat.id, m.message_id)
-        bot.send_photo(msg.chat.id, img, caption=caption[:1020])
-    except Exception as e:
-        log.warning(f"chart_rotacion: {e}")
-        safe_send(msg.chat.id, caption, message_id=m.message_id)
-    try:
-        bot.send_photo(msg.chat.id, chart_ciclo(res))
-    except Exception as e:
-        log.warning(f"chart_ciclo: {e}")
-    safe_send(msg.chat.id, texto_rotacion(res))
-    grupos = "\n".join(f"- {q.upper()}: " + (", ".join(f["nombre"] for f in res["filas"] if f["cuad"] == q) or "ninguno")
-                       for q in ROT_ORDEN)
-    cambios = "\n".join(f"- {f['nombre']}: {f['cuad_antes']} → {f['cuad']}"
-                        for f in res["filas"] if f["cuad"] != f["cuad_antes"]) or "- ninguno"
-    cic = res.get("ciclo") or {}
-    if cic.get("mejor"):
-        ciclo_txt = (f"Se parece más a la fase de {cic['mejor']}." if cic["claro"] else
-                     f"No encaja claramente con una sola fase: mezcla de {cic['mejor']} y {cic['segunda']}.")
-    else:
-        ciclo_txt = "Sin datos suficientes."
-    prompt = ("Mapa de rotación de mercado (aproximación propia del Relative Rotation Graph, datos semanales, "
-              "todo comparado con el S&P 500).\n\n"
-              f"ACTIVOS EN CADA CUADRANTE (datos definitivos):\n{grupos}\n\n"
-              f"CAMBIOS DE CUADRANTE EN LAS ÚLTIMAS 4 SEMANAS (lista completa):\n{cambios}\n\n"
-              f"COMPARACIÓN CON EL CICLO ECONÓMICO CLÁSICO: {ciclo_txt}\n\n"
-              "Cuadrantes: Liderando = más fuerte que el índice y acelerando; Perdiendo fuerza = más fuerte pero "
-              "frenando; Rezagado = más débil y empeorando; Mejorando = más débil pero recuperando.\n"
-              "Reglas estrictas: usa EXACTAMENTE los cuadrantes de arriba; no muevas ningún activo de cuadrante ni lo "
-              "cambies de nombre. Si mencionas un cambio de cuadrante, cita solo los de la lista de cambios, tal cual. "
-              "NO des recomendaciones de operativa (comprar, vender, rotar la cartera, stops, objetivos). NO inventes "
-              "noticias ni causas concretas; si mencionas motivos, que sean hipótesis generales. No digas qué sector "
-              "'va a' liderar. Sin negritas ni formato markdown.\n\n"
-              "1. ¿Qué dice este mapa sobre dónde está el liderazgo del mercado ahora mismo?\n"
-              "2. ¿Qué rotaciones parecen estar en marcha según los cambios de cuadrante, y cómo encaja con el ciclo?\n"
-              "3. Limitaciones de leer la rotación de mercado y el ciclo con este tipo de gráfico")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 # Lista de símbolos del S&P 500 (constituyentes reales, sacados de la tabla pública de Wikipedia
@@ -5107,7 +4343,7 @@ def cmd_rsiminimos(msg):
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 def _scheduler_loop():
-    global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_aviso_cad_key, _ultimo_calientes_key
+    global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_aviso_cad_key
     log.info("Scheduler de difusión automática arrancado")
     _n_check = 0
     while True:
@@ -5134,17 +4370,9 @@ def _scheduler_loop():
                 if clave_cad != _ultimo_aviso_cad_key:
                     _ultimo_aviso_cad_key = clave_cad
                     revisar_caducidades()
-            if ahora.hour == CALIENTES_HORA and ahora.minute < 15:
-                clave_cal = ahora.strftime("%Y-%m-%d")
-                if clave_cal != _ultimo_calientes_key and not _calientes_ya_enviado(clave_cal):
-                    _ultimo_calientes_key = clave_cal
-                    log.info(f"Ejecutando /calientes automático ({clave_cal})")
-                    ejecutar_calientes_auto(clave_cal)
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
-
-
 # ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
 # Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
 # Reutiliza la misma lógica de "meses desde el halving" que ya usa
@@ -5306,479 +4534,6 @@ def cmd_ciclo(msg):
               "1. ¿Qué implica estar en esta fase concreta del ciclo?\n"
               "2. ¿Qué señales confirmarían el paso a la siguiente fase?\n"
               "3. Estrategia razonable dado este punto del ciclo")
-    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-# ═══ /SUELO — Triple Suelo de Sentimiento (VIX + AAII + Fear & Greed) ═
-# Metodología: alineación de tres métricas de pánico desde ángulos
-# distintos. El NAAIM (gestores activos) hubiera sido el tercer ángulo
-# "institucional puro", pero pasó a ser de pago desde el 1 de agosto de
-# 2026 ($1.500/año para acceso API) — usamos Fear & Greed como sustituto
-# razonable de esa pata institucional, con la limitación honesta de que
-# no es lo mismo (mide sentimiento agregado del mercado, no exposición
-# real de gestores).
-from bs4 import BeautifulSoup
-
-def fetch_aaii_sentiment():
-    """Página pública de verdad, sin login — confirmado a mano. Tabla con
-    Bullish/Neutral/Bearish semanales, la fila más reciente primero.
-    FIX: antes solo miraba la PRIMERA tabla de la página (soup.find), que
-    puede no ser la de datos si hay otras tablas antes en el HTML (menús,
-    layout...) — ahora recorre todas las tablas hasta encontrar filas con
-    el formato esperado. También manda cabeceras más completas de
-    navegador, por si la web sirve algo distinto a peticiones muy básicas."""
-    ck = "aaii_sentiment"
-    cached = cache_get(ck)
-    if cached is not None: return cached
-    def _do():
-        r = requests.get("https://www.aaii.com/sentimentsurvey/sent_results",
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                            "Accept-Language": "en-US,en;q=0.9",
-                        }, timeout=15)
-        if r.status_code != 200:
-            raise RuntimeError(f"AAII: HTTP {r.status_code}")
-        soup = BeautifulSoup(r.text, "html.parser")
-        tablas = soup.find_all("table")
-        for table in tablas:
-            for fila in table.find_all("tr"):
-                celdas = [td.get_text(strip=True) for td in fila.find_all("td")]
-                if len(celdas) == 4:
-                    try:
-                        return {"fecha": celdas[0],
-                                "bullish": float(celdas[1].replace("%", "")),
-                                "neutral": float(celdas[2].replace("%", "")),
-                                "bearish": float(celdas[3].replace("%", ""))}
-                    except ValueError:
-                        continue
-        raise RuntimeError(f"AAII: sin fila válida en {len(tablas)} tablas ({len(r.text)} bytes de HTML)")
-    res = with_retry(_do, tries=2, base_delay=2, what="fetch_aaii_sentiment")
-    if res: cache_set(ck, res)
-    return res
-
-def fetch_cot_sp500(semanas=156):
-    """Commitment of Traders (CFTC), API pública Socrata, sin key, sin
-    registro — dato oficial del gobierno de EEUU. Mide el posicionamiento
-    neto de los grandes especuladores (non-commercial) en futuros del
-    E-mini S&P 500, como proxy institucional real (mejor que Fear & Greed,
-    que solo mide sentimiento agregado del mercado, no posicionamiento)."""
-    ck = f"cot_sp500:{semanas}"
-    cached = cache_get(ck)
-    if cached is not None: return cached
-    def _do():
-        r = requests.get("https://publicreporting.cftc.gov/resource/jun7-fc8e.json",
-                        params={
-                            "$where": "upper(market_and_exchange_names) like '%E-MINI S&P 500%'",
-                            "$order": "report_date_as_yyyy_mm_dd DESC",
-                            "$limit": str(semanas),
-                        }, timeout=15)
-        if r.status_code != 200:
-            raise RuntimeError(f"CFTC COT: HTTP {r.status_code}")
-        data = r.json()
-        if not data:
-            raise RuntimeError("CFTC COT: sin datos para E-mini S&P 500")
-        filas = []
-        for d in data:
-            try:
-                largo = float(d["noncomm_positions_long_all"])
-                corto = float(d["noncomm_positions_short_all"])
-                filas.append({"fecha": d["report_date_as_yyyy_mm_dd"][:10], "net": largo - corto})
-            except (KeyError, ValueError):
-                continue
-        if not filas:
-            raise RuntimeError(f"CFTC COT: no se pudo parsear ninguna fila de {len(data)} recibidas")
-        return filas
-    res = with_retry(_do, tries=2, base_delay=2, what="fetch_cot_sp500")
-    if res: cache_set(ck, res)
-    return res
-
-def calcular_cot_score():
-    filas = fetch_cot_sp500()
-    if not filas:
-        return None
-    actual = filas[0]
-    valores = [f["net"] for f in filas]
-    percentil = sum(1 for v in valores if v <= actual["net"]) / len(valores) * 100
-    # Cuanto más bajo el percentil (posicionamiento neto más bajista de lo
-    # habitual en los últimos ~3 años), más "pánico institucional real".
-    score = max(0.0, min(10.0, (30 - percentil) / 30 * 10))
-    return {"fecha": actual["fecha"], "net": actual["net"], "percentil": round(percentil, 1),
-            "score": round(score, 1), "n_semanas": len(filas)}
-
-def calcular_suelo_mercado():
-    vix = None
-    vix_d = get_quote("^VIX")
-    if vix_d:
-        vix = vix_d["price"]
-    else:
-        spy_d = get_quote("SPY")
-        if spy_d:
-            rets = spy_d["closes"].pct_change().dropna()
-            window = min(20, len(rets))
-            if window >= 5:
-                vix = round(float(rets.tail(window).std() * (252**0.5) * 100), 1)
-    aaii = fetch_aaii_sentiment()
-    fg = get_fear_greed()
-    cot = calcular_cot_score()
-    if vix is None and aaii is None and fg is None and cot is None:
-        return None
-
-    componentes = {}
-    if vix is not None:
-        score = max(0, min(10, (vix - 15) / 20 * 10))
-        componentes["VIX (volatilidad)"] = {"score": round(score, 1), "valor": f"{vix:.1f}"}
-    if aaii is not None:
-        spread = aaii["bearish"] - aaii["bullish"]
-        score = max(0, min(10, spread / 50 * 10))
-        componentes["AAII (retail)"] = {"score": round(score, 1),
-                                        "valor": f"Bull {aaii['bullish']:.1f}% / Bear {aaii['bearish']:.1f}%"}
-    if cot is not None:
-        componentes["COT (posicionamiento institucional)"] = {
-            "score": cot["score"],
-            "valor": f"Percentil {cot['percentil']}% ({cot['n_semanas']} sem., {cot['fecha']})"}
-    if fg is not None:
-        score = max(0, min(10, (50 - fg["valor"]) / 50 * 10))
-        componentes["Fear & Greed (sentimiento general)"] = {"score": round(score, 1),
-                                                              "valor": f"{fg['valor']}/100 ({fg['texto']})"}
-
-    TOTAL_INDICADORES = 4
-    n_extremos = sum(1 for c in componentes.values() if c["score"] >= 7)
-    faltantes = []
-    if vix is None: faltantes.append("VIX")
-    if aaii is None: faltantes.append("AAII")
-    if cot is None: faltantes.append("COT")
-    if fg is None: faltantes.append("Fear & Greed")
-
-    if faltantes:
-        veredicto = (f"INCOMPLETO — falta {', '.join(faltantes)} esta vez (fallo puntual de la fuente); "
-                     f"veredicto calculado solo con {len(componentes)}/{TOTAL_INDICADORES} indicadores")
-    elif n_extremos == TOTAL_INDICADORES:
-        veredicto = "ALINEACIÓN COMPLETA — suelo de sentimiento en los 4 indicadores"
-    elif n_extremos >= 2:
-        veredicto = "ALINEACIÓN PARCIAL — algunos indicadores en pánico, no todos"
-    else:
-        veredicto = "SIN ALINEACIÓN — no hay pánico generalizado ahora mismo"
-
-    return {"componentes": componentes, "veredicto": veredicto, "n_extremos": n_extremos,
-            "faltantes": faltantes, "aaii_fecha": aaii["fecha"] if aaii else None}
-
-def chart_suelo_gauge(res):
-    """Velocímetro estilo /valor: traduce los 4 indicadores de pánico a un
-    único 0-100 de 'oportunidad de compra' (lógica contraria: más pánico
-    en los indicadores = más cerca de comprar; menos pánico/más euforia =
-    más cerca de tener cautela)."""
-    scores = [c["score"] for c in res["componentes"].values()]
-    score = sum(scores) / len(scores) * 10 if scores else 50  # 0-10 -> 0-100
-
-    fig = plt.figure(figsize=(10, 6.5))
-    fig.patch.set_facecolor('#0d1117')
-    ax = fig.add_axes([0.05, 0.12, 0.90, 0.72], projection='polar')
-    ax.set_facecolor('#0d1117')
-    theta = np.linspace(np.pi, 0, 101)
-    for i in range(100):
-        if i < 30:    c = '#FF3333'
-        elif i < 45:  c = '#FF7700'
-        elif i < 65:  c = '#FFCC00'
-        elif i < 80:  c = '#99DD00'
-        else:         c = '#00CC44'
-        ax.barh(1, theta[i]-theta[i+1], left=theta[i+1], height=0.45, color=c, edgecolor='none')
-    angle = np.pi - (score/100*np.pi)
-    ax.plot([angle, angle], [0, 1.10], color='white', linewidth=6, zorder=5)
-    ax.plot(angle, 0, 'o', color='white', markersize=22, zorder=6)
-    ax.plot(angle, 0, 'o', color='#0d1117', markersize=11, zorder=7)
-    ax.set_ylim(0, 1.35); ax.set_theta_zero_location('E'); ax.set_theta_direction(1)
-    ax.set_thetamin(0); ax.set_thetamax(180)
-    ax.set_xticks([np.pi, 3*np.pi/4, np.pi/2, np.pi/4, 0])
-    ax.set_xticklabels(['0\nCAUTELA', '25', '50\nNEUTRAL', '75', '100\nOPORTUNIDAD'],
-                       color='white', fontsize=9, fontweight='bold')
-    ax.set_yticks([]); ax.spines['polar'].set_visible(False); ax.grid(False)
-
-    if score >= 80:   zona, zc = "PÁNICO GENERALIZADO — zona de oportunidad histórica", '#00CC44'
-    elif score >= 65: zona, zc = "PÁNICO ELEVADO — buena zona para mirar entradas", '#99DD00'
-    elif score >= 45: zona, zc = "NEUTRAL — sin señal clara", '#FFCC00'
-    elif score >= 30: zona, zc = "POCO PÁNICO — precaución, mercado tranquilo", '#FF7700'
-    else:             zona, zc = "SIN PÁNICO / EUFORIA — cuidado con sobrecompra", '#FF3333'
-
-    fig.text(0.5, 0.19, f"{score:.0f}/100", ha='center', va='center', fontsize=32,
-             color='white', fontweight='bold')
-    fig.text(0.5, 0.135, zona, ha='center', va='center', fontsize=11, color=zc, fontweight='bold')
-    fig.text(0.5, 0.97, "MEDIDOR — ¿MOMENTO DE COMPRAR O DE CAUTELA?",
-             ha='center', fontsize=14, color='white', fontweight='bold')
-    fig.text(0.5, 0.02,
-             "Lógica contraria: a más pánico en VIX/AAII/COT/Fear&Greed, más cerca del extremo "
-             "'oportunidad' — no al revés.", ha='center', fontsize=8, color='#888888')
-
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-def chart_suelo_mercado(res):
-    comp = res["componentes"]; n = len(comp)
-    fig = plt.figure(figsize=(11, 3 + n*1.3))
-    fig.patch.set_facecolor('#0d1117')
-    ax = fig.add_axes([0.32, 0.12, 0.6, 0.72])
-    ax.set_facecolor('#0d1117')
-    ax.set_xlim(0, 10); ax.set_ylim(-0.5, n-0.5)
-    for idx, (nombre, datos) in enumerate(reversed(list(comp.items()))):
-        y = idx; score = datos["score"]
-        ax.barh(y, 10, height=0.5, color='#1a1a2e', zorder=1)
-        c = '#00CC44' if score < 4 else '#FFCC00' if score < 7 else '#FF3333'
-        ax.barh(y, max(score, 0.25), height=0.5, color=c, zorder=2)  # mínimo visible, aunque el score real sea 0
-        ax.text(-0.3, y, nombre, va='center', ha='right', color='white',
-                fontsize=11, fontweight='bold', transform=ax.transData)
-        ax.text(10.3, y, f"{score}/10", va='center', ha='left', color=c,
-                fontsize=11, fontweight='bold')
-        ax.text(0.15, y-0.32, datos["valor"], va='top', ha='left', color='#999999', fontsize=8.5)
-    ax.axis('off')
-    fig.text(0.5, 0.96, "TRIPLE SUELO DE SENTIMIENTO", ha='center', color='white',
-             fontsize=15, fontweight='bold')
-    if res.get("faltantes"):
-        vc = '#999999'
-    else:
-        vc = '#00CC44' if res["n_extremos"] < 2 else '#FFCC00' if res["n_extremos"] < 3 else '#FF3333'
-    fig.text(0.5, 0.04, res["veredicto"], ha='center', color=vc, fontsize=11, fontweight='bold')
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-@bot.message_handler(commands=["suelo"])
-@con_dyor
-def cmd_suelo(msg):
-    if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
-        return
-    m = bot.send_message(msg.chat.id, "Consultando VIX, AAII, COT y Fear & Greed... (10-15s)")
-    res = calcular_suelo_mercado()
-    if not res:
-        safe_send(msg.chat.id, "No he podido obtener ninguno de los cuatro indicadores ahora mismo.",
-                  message_id=m.message_id)
-        return
-    try:
-        gauge = chart_suelo_gauge(res)
-        try:
-            bot.delete_message(msg.chat.id, m.message_id)
-        except Exception:
-            pass
-        bot.send_photo(msg.chat.id, gauge)
-    except Exception as e:
-        log.warning(f"chart_suelo_gauge: {e}")
-        try:
-            bot.delete_message(msg.chat.id, m.message_id)
-        except Exception:
-            pass
-
-    try:
-        chart = chart_suelo_mercado(res)
-        bot.send_photo(msg.chat.id, chart)
-    except Exception as e:
-        log.warning(f"chart_suelo_mercado: {e}")
-        lines = [f"{k}: {v['score']}/10 ({v['valor']})" for k, v in res["componentes"].items()]
-        safe_send(msg.chat.id, "\n".join(lines) + f"\n\n{res['veredicto']}")
-
-    # Explicación en texto plano de qué mide cada cosa y qué implica el
-    # veredicto — las barras solas no dejan claro el "por qué".
-    explicacion = ["📖 QUÉ SIGNIFICA CADA INDICADOR\n"]
-    if res.get("faltantes"):
-        explicacion.append(
-            f"⚠️ Esta vez ha fallado la consulta de: {', '.join(res['faltantes'])} — el veredicto de "
-            f"abajo se ha calculado solo con {len(res['componentes'])} de los 4 indicadores. "
-            "Prueba /suelo de nuevo en un momento para tener la lectura completa.\n")
-    explicacion.append(
-        "• VIX: mide el miedo a través de la compra de opciones de protección. "
-        "Por encima de 30 suele coincidir con ventas de pánico.")
-    explicacion.append(
-        "• AAII: encuesta semanal a inversores particulares de EEUU. Cuando los "
-        "bajistas superan el 50% y los alcistas caen por debajo del 20%, es señal "
-        "clásica de pánico minorista (indicador contrario: suele ser tardío en la caída).")
-    explicacion.append(
-        "• COT: informe semanal oficial de la CFTC (gobierno de EEUU). Mide el "
-        "posicionamiento neto real de los grandes especuladores en futuros del S&P 500 "
-        "— el ángulo institucional de verdad (el NAAIM hacía algo parecido, pero pasó "
-        "a ser de pago desde agosto de 2026).")
-    explicacion.append(
-        "• Fear & Greed: sentimiento agregado del mercado en general, como complemento "
-        "a los otros tres.")
-    explicacion.append(f"\n{res['veredicto']}")
-    if res["n_extremos"] >= 2:
-        explicacion.append(
-            "\nCuando varios de estos indicadores llegan a extremos a la vez, "
-            "históricamente es la zona donde suelen formarse suelos de mercado — "
-            "no es una garantía, pero sí una señal a vigilar de cerca.")
-    else:
-        explicacion.append(
-            "\nTodavía no hay suficiente pánico acumulado en estos indicadores como "
-            "para hablar de una señal de suelo clásica.")
-    safe_send(msg.chat.id, "\n".join(explicacion))
-
-    # FIX: el prompt anterior mandaba "VIX (volatilidad): 0/10 — 9.2",
-    # formato ambiguo que llevó a la IA a interpretar mal la dirección de
-    # la escala (dijo "VIX alto indica miedo" cuando 9.2 es un valor muy
-    # BAJO, sin pánico) — probablemente por apoyarse en su conocimiento
-    # general de "VIX alto = miedo" sin parsear bien nuestros números.
-    # Ahora se lo damos ya interpretado en texto plano, sin dejarle nada
-    # a la inferencia.
-    def _interpretar(score):
-        if score < 3: return "TRANQUILO, sin señales de pánico"
-        if score < 7: return "MODERADO"
-        return "EN PÁNICO / ESTRÉS ALTO"
-    comp_txt = "\n".join(
-        f"{k}: valor real = {v['valor']} → {_interpretar(v['score'])} "
-        f"(score interno {v['score']}/10, donde 0=sin pánico y 10=pánico máximo)"
-        for k, v in res["componentes"].items())
-    prompt = (f"Indicadores de pánico de mercado ahora mismo, YA INTERPRETADOS — usa estas "
-              f"interpretaciones tal cual, no las reinterpretes ni las contradigas:\n{comp_txt}\n\n"
-              f"Veredicto del modelo: {res['veredicto']}\n\n"
-              "Nota: el COT es el informe oficial de la CFTC (gobierno de EEUU) sobre posicionamiento "
-              "real de grandes especuladores en futuros del S&P 500 — el ángulo institucional real "
-              "(sustituye al NAAIM, que pasó a ser de pago desde agosto 2026).\n\n"
-              "1. ¿Qué tan fiable es esta combinación de 4 indicadores para detectar un suelo real?\n"
-              "2. Si hay alineación parcial o completa, ¿qué habría que vigilar para confirmarlo?\n"
-              "3. Riesgo de actuar solo con esta señal")
-    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
-
-# ═══ /CURVA — Curva de tipos EEUU (10 años vs 2 años) ═══════════
-# El indicador de recesión más vigilado históricamente: cuando el bono a
-# 2 años paga más que el de 10, el mercado espera que la Fed tenga que
-# bajar tipos por debilidad económica futura — la curva se "invierte".
-# Reutiliza FRED (ya en /macro), pidiendo la serie completa en vez de solo
-# el último dato, para poder marcar desde cuándo está invertida (o no).
-
-def fetch_fred_series_range(series_id, limit=500):
-    if not FRED_API_KEY:
-        return None
-    try:
-        # FIX: pedíamos sort_order="asc" con un límite — eso trae los N
-        # datos MÁS ANTIGUOS de la serie (que arranca en los años 60-70),
-        # no los más recientes. Con "desc" sí traemos los últimos N datos
-        # (el orden dentro del diccionario no importa, solo qué fechas
-        # capturamos).
-        r = requests.get("https://api.stlouisfed.org/fred/series/observations",
-                        params={"series_id": series_id, "api_key": FRED_API_KEY,
-                                "file_type": "json", "sort_order": "desc", "limit": limit},
-                        timeout=15)
-        if r.status_code != 200:
-            log.warning(f"fetch_fred_series_range {series_id}: HTTP {r.status_code}")
-            return None
-        obs = [o for o in r.json().get("observations", []) if o.get("value") not in (".", None, "")]
-        return {o["date"]: float(o["value"]) for o in obs}
-    except Exception as e:
-        log.warning(f"fetch_fred_series_range {series_id}: {e}")
-        return None
-
-def calcular_curva_tipos():
-    dgs10 = fetch_fred_series_range("DGS10", limit=500)
-    dgs2 = fetch_fred_series_range("DGS2", limit=500)
-    if not dgs10 or not dgs2:
-        return None
-    fechas_comunes = sorted(set(dgs10.keys()) & set(dgs2.keys()))
-    if not fechas_comunes:
-        return None
-    spread = [{"fecha": f, "valor": round(dgs10[f] - dgs2[f], 3)} for f in fechas_comunes]
-
-    actual = spread[-1]
-    invertida_ahora = actual["valor"] < 0
-
-    # Buscar desde cuándo lleva en el estado actual (invertida o no)
-    desde = actual["fecha"]
-    for punto in reversed(spread):
-        if (punto["valor"] < 0) != invertida_ahora:
-            break
-        desde = punto["fecha"]
-    import datetime as dt
-    dias_en_estado = (dt.date.fromisoformat(actual["fecha"]) - dt.date.fromisoformat(desde)).days
-
-    return {"spread": spread, "actual": actual["valor"], "fecha": actual["fecha"],
-            "invertida": invertida_ahora, "desde": desde, "dias_en_estado": dias_en_estado}
-
-def chart_curva_tipos(res):
-    puntos = res["spread"][-260:]  # ~1 año de sesiones
-    fechas = [datetime.strptime(p["fecha"], "%Y-%m-%d") for p in puntos]
-    valores = [p["valor"] for p in puntos]
-
-    fig, ax = plt.subplots(figsize=(12, 6.5))
-    fig.patch.set_facecolor('#0d1117')
-    ax.set_facecolor('#0d1117')
-
-    ax.axhline(0, color='#666666', linewidth=1, zorder=2)
-    ax.fill_between(fechas, valores, 0, where=[v < 0 for v in valores],
-                    color='#FF3333', alpha=0.35, zorder=1, interpolate=True)
-    ax.fill_between(fechas, valores, 0, where=[v >= 0 for v in valores],
-                    color='#00CC44', alpha=0.25, zorder=1, interpolate=True)
-    ax.plot(fechas, valores, color='white', linewidth=1.6, zorder=3)
-
-    ultimo_color = '#FF3333' if res["invertida"] else '#00CC44'
-    ax.plot(fechas[-1], valores[-1], 'o', color=ultimo_color, markersize=12, zorder=5,
-           markeredgecolor='white', markeredgewidth=2)
-    ax.annotate(f"{res['actual']:+.2f} pp", xy=(fechas[-1], valores[-1]),
-               xytext=(fechas[-1], valores[-1] + (0.15 if valores[-1] >= 0 else -0.15)),
-               fontsize=12, color=ultimo_color, fontweight='bold', ha='right',
-               bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117', edgecolor=ultimo_color, alpha=0.95))
-
-    ax.set_title('CURVA DE TIPOS EEUU — Bono 10 años menos Bono 2 años', color='white',
-                fontsize=14, fontweight='bold', loc='left', pad=12)
-    ax.set_ylabel('Diferencia (puntos porcentuales)', color='#AAAAAA')
-    ax.tick_params(colors='#AAAAAA')
-    for spine in ax.spines.values(): spine.set_color('#333333')
-    ax.grid(color='#222222', linestyle='--', alpha=0.3)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-    fig.autofmt_xdate()
-
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-@bot.message_handler(commands=["curva"])
-@con_dyor
-def cmd_curva(msg):
-    if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
-        return
-    if not FRED_API_KEY:
-        safe_send(msg.chat.id,
-            "Falta configurar FRED_API_KEY en el servidor.\n\n"
-            "Clave gratis en: https://fred.stlouisfed.org/docs/api/api_key.html")
-        return
-    m = bot.send_message(msg.chat.id, "Consultando curva de tipos (FRED)... (10-15s)")
-    res = calcular_curva_tipos()
-    if not res:
-        safe_send(msg.chat.id, "No he podido obtener la curva de tipos ahora mismo.",
-                  message_id=m.message_id)
-        return
-    try:
-        chart = chart_curva_tipos(res)
-        bot.delete_message(msg.chat.id, m.message_id)
-        bot.send_photo(msg.chat.id, chart)
-    except Exception as e:
-        log.warning(f"chart_curva_tipos: {e}")
-        safe_send(msg.chat.id, f"Spread 10a-2a: {res['actual']:+.2f} pp ({res['fecha']})",
-                  message_id=m.message_id)
-
-    estado_txt = "INVERTIDA" if res["invertida"] else "NORMAL (no invertida)"
-    safe_send(msg.chat.id,
-        f"📖 CURVA DE TIPOS — {estado_txt}\n\n"
-        f"Bono 10 años menos bono 2 años: {res['actual']:+.2f} puntos porcentuales ({res['fecha']})\n"
-        f"En este estado desde: {res['desde']} ({res['dias_en_estado']} días)\n\n"
-        "Cuando el bono a 2 años paga MÁS que el de 10 (spread negativo = invertida), "
-        "el mercado espera que la Fed tenga que bajar tipos por debilidad económica futura. "
-        "Es el indicador de recesión más vigilado de la historia — ha precedido a todas las "
-        "recesiones de EEUU desde los años 50, aunque con un desfase que puede ir de meses "
-        "a más de un año, y no siempre acierta (algún falso positivo).")
-
-    prompt = (f"La curva de tipos EEUU (10 años menos 2 años) está en {res['actual']:+.2f} puntos "
-              f"porcentuales a fecha {res['fecha']}, {'invertida' if res['invertida'] else 'no invertida'} "
-              f"desde hace {res['dias_en_estado']} días.\n\n"
-              "1. ¿Qué implica este estado concreto de la curva ahora mismo?\n"
-              "2. Contexto histórico: ¿cuánto suele tardar en materializarse una recesión tras "
-              "una inversión de este tipo?\n"
-              "3. Qué otras señales conviene vigilar junto a esta")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
@@ -5955,193 +4710,6 @@ def cmd_insiders(msg):
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
-# ═══ /CORRELACION — BTC vs Nasdaq (risk-on / risk-off) ══════════
-# Mide si BTC se mueve pegado a las tech (mercado tratando a cripto como
-# "activo de riesgo más") o si se ha desacoplado. FIX de fondo necesario:
-# BTC cotiza 7 días/semana y Nasdaq solo entre semana, así que comparar
-# "los últimos N valores" de cada serie sin más desalinea las fechas — hay
-# que cruzar por fecha real y quedarnos solo con los días que Nasdaq
-# cotizó de verdad.
-
-def fetch_precio_fechas_stooq(ticker, dias=220):
-    """Versión de fetch_stooq que conserva las fechas (fetch_stooq normal
-    solo devuelve la serie de precios, sin fechas accesibles) — necesario
-    aquí para poder cruzar por fecha real con el histórico de BTC.
-    FIX: la primera versión solo tenía Stooq, sin ningún respaldo si
-    fallaba — a diferencia del resto del bot, que siempre encadena
-    Stooq -> Twelve Data -> yfinance. Le añadimos el mismo respaldo con
-    Twelve Data (que también trae fecha por cada dato)."""
-    import datetime as dt
-    st = STOOQ_MAP.get(ticker, f"{ticker.lower()}.us")
-    ck = f"stooq_fechas:{ticker}"
-    cached = cache_get(ck)
-    if cached is not None: return cached
-    def _do_stooq():
-        d1 = (dt.date.today()-dt.timedelta(days=dias+30)).strftime("%Y%m%d")
-        d2 = dt.date.today().strftime("%Y%m%d")
-        url = f"https://stooq.com/q/d/l/?s={st}&d1={d1}&d2={d2}&i=d"
-        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code != 200 or "No data" in r.text or len(r.text) < 50:
-            raise RuntimeError("sin datos en Stooq")
-        from io import StringIO
-        df = pd.read_csv(StringIO(r.text))
-        if df.empty or len(df) < 10:
-            raise RuntimeError("Stooq: pocos datos")
-        df = df.sort_values("Date")
-        return {"fechas": list(df["Date"]), "closes": df["Close"].astype(float).tolist()}
-    res = with_retry(_do_stooq, tries=2, base_delay=2, what=f"fetch_precio_fechas_stooq {ticker}")
-    if res is None and TWELVEDATA_API_KEY:
-        def _do_td():
-            sym = TWELVEDATA_SYMBOL_MAP.get(ticker, ticker)
-            _throttle_twelvedata()
-            r = requests.get("https://api.twelvedata.com/time_series",
-                            params={"symbol": sym, "interval": "1day", "outputsize": dias,
-                                    "apikey": TWELVEDATA_API_KEY}, timeout=10)
-            j = r.json()
-            if j.get("status") == "error" or "values" not in j:
-                raise RuntimeError(f"Twelve Data: {j.get('message', 'sin datos')}")
-            vals = list(reversed(j["values"]))
-            if len(vals) < 10:
-                raise RuntimeError("Twelve Data: pocos datos")
-            return {"fechas": [v["datetime"] for v in vals],
-                    "closes": [float(v["close"]) for v in vals]}
-        res = with_retry(_do_td, tries=2, base_delay=2, what=f"fetch_precio_fechas_stooq(TD) {ticker}")
-    if res: cache_set(ck, res)
-    return res
-
-def calcular_correlacion_btc_nasdaq(ventana=30):
-    btc_hist = fetch_btc_price_history_long(days=200)
-    nasdaq = fetch_precio_fechas_stooq("^IXIC", dias=200)
-    if not nasdaq:
-        nasdaq = fetch_precio_fechas_stooq("QQQ", dias=200)  # mismo fallback que ya usamos en /ticker
-    if not btc_hist or not nasdaq:
-        return None
-
-    btc_por_fecha = {f.strftime("%Y-%m-%d"): float(c) for f, c in
-                     zip(btc_hist["fechas"], btc_hist["closes"])}
-    nasdaq_por_fecha = dict(zip(nasdaq["fechas"], nasdaq["closes"]))
-
-    # Solo días donde AMBOS cotizaron de verdad — evita el desajuste de
-    # fin de semana que tendría comparar "los últimos N valores" sin más.
-    fechas_comunes = sorted(set(btc_por_fecha) & set(nasdaq_por_fecha))
-    if len(fechas_comunes) < ventana + 5:
-        return None
-
-    btc_serie = pd.Series([btc_por_fecha[f] for f in fechas_comunes])
-    nasdaq_serie = pd.Series([nasdaq_por_fecha[f] for f in fechas_comunes])
-    btc_ret = btc_serie.pct_change().dropna()
-    nasdaq_ret = nasdaq_serie.pct_change().dropna()
-
-    corr_actual = round(float(btc_ret.tail(ventana).corr(nasdaq_ret.tail(ventana))), 2)
-    corr_larga = round(float(btc_ret.tail(90).corr(nasdaq_ret.tail(90))), 2) if len(btc_ret) >= 90 else None
-
-    # Serie de correlación rodante, para el gráfico de tendencia
-    rodante = []
-    for i in range(ventana, len(btc_ret)):
-        c = btc_ret.iloc[i-ventana:i].corr(nasdaq_ret.iloc[i-ventana:i])
-        rodante.append({"fecha": fechas_comunes[i+1], "valor": round(float(c), 3)})
-
-    return {"corr_actual": corr_actual, "corr_larga": corr_larga, "ventana": ventana,
-            "rodante": rodante, "n_dias": len(fechas_comunes)}
-
-def chart_correlacion(res):
-    puntos = res["rodante"][-180:]
-    fechas = [datetime.strptime(p["fecha"], "%Y-%m-%d") for p in puntos]
-    valores = [p["valor"] for p in puntos]
-
-    fig, ax = plt.subplots(figsize=(12, 6.5))
-    fig.patch.set_facecolor('#0d1117')
-    ax.set_facecolor('#0d1117')
-
-    ax.axhline(0, color='#666666', linewidth=1, zorder=2)
-    ax.axhline(0.5, color='#333333', linewidth=1, linestyle='--', zorder=2)
-    ax.axhline(-0.5, color='#333333', linewidth=1, linestyle='--', zorder=2)
-    ax.fill_between(fechas, valores, 0, where=[v >= 0 for v in valores],
-                    color='#FF9900', alpha=0.30, zorder=1, interpolate=True)
-    ax.fill_between(fechas, valores, 0, where=[v < 0 for v in valores],
-                    color='#3388FF', alpha=0.30, zorder=1, interpolate=True)
-    ax.plot(fechas, valores, color='white', linewidth=1.6, zorder=3)
-
-    ax.plot(fechas[-1], valores[-1], 'o', color='#F7931A', markersize=12, zorder=5,
-           markeredgecolor='white', markeredgewidth=2)
-    ax.annotate(f"{res['corr_actual']:+.2f}", xy=(fechas[-1], valores[-1]),
-               xytext=(fechas[-1], valores[-1] + (0.08 if valores[-1] >= 0 else -0.08)),
-               fontsize=12, color='#F7931A', fontweight='bold', ha='right',
-               bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117', edgecolor='#F7931A', alpha=0.95))
-
-    ax.set_ylim(-1.05, 1.05)
-    ax.set_title(f'BTC vs NASDAQ — Correlación rodante ({res["ventana"]} días)', color='white',
-                fontsize=14, fontweight='bold', loc='left', pad=12)
-    ax.set_ylabel('Coeficiente de correlación', color='#AAAAAA')
-    ax.tick_params(colors='#AAAAAA')
-    for spine in ax.spines.values(): spine.set_color('#333333')
-    ax.grid(color='#222222', linestyle='--', alpha=0.3)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-    fig.autofmt_xdate()
-
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-@bot.message_handler(commands=["correlacion"])
-@con_dyor
-def cmd_correlacion(msg):
-    if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
-        return
-    m = bot.send_message(msg.chat.id, "Calculando correlación BTC-Nasdaq... (10-15s)")
-    res = calcular_correlacion_btc_nasdaq()
-    if not res:
-        safe_send(msg.chat.id, "No he podido calcular la correlación ahora mismo (datos insuficientes).",
-                  message_id=m.message_id)
-        return
-    try:
-        chart = chart_correlacion(res)
-        bot.delete_message(msg.chat.id, m.message_id)
-        bot.send_photo(msg.chat.id, chart)
-    except Exception as e:
-        log.warning(f"chart_correlacion: {e}")
-        safe_send(msg.chat.id, f"Correlación BTC-Nasdaq ({res['ventana']}d): {res['corr_actual']:+.2f}",
-                  message_id=m.message_id)
-
-    if res["corr_actual"] >= 0.6:
-        lectura = "ALTA — BTC se mueve muy pegado al Nasdaq (mercado tratando a cripto como activo de riesgo más)"
-    elif res["corr_actual"] >= 0.3:
-        lectura = "MODERADA — cierta relación con las tech, pero con movimiento propio"
-    elif res["corr_actual"] >= -0.3:
-        lectura = "BAJA / SIN RELACIÓN CLARA — BTC se está moviendo bastante por su cuenta"
-    else:
-        lectura = "NEGATIVA — BTC moviéndose en dirección contraria al Nasdaq (poco habitual)"
-
-    comparacion = ""
-    if res["corr_larga"] is not None:
-        diff = res["corr_actual"] - res["corr_larga"]
-        if abs(diff) >= 0.15:
-            comparacion = (f"\n\nHa cambiado bastante frente a los últimos 90 días "
-                          f"({res['corr_larga']:+.2f}) — {'subiendo' if diff>0 else 'bajando'} la correlación.")
-
-    linea_90d = f"Últimos 90 días: {res['corr_larga']:+.2f}\n" if res["corr_larga"] is not None else ""
-    safe_send(msg.chat.id,
-        f"📖 CORRELACIÓN BTC vs NASDAQ\n\n"
-        f"Últimos {res['ventana']} días: {res['corr_actual']:+.2f}\n"
-        f"{linea_90d}\n"
-        f"Lectura: {lectura}{comparacion}\n\n"
-        "Escala: +1 = se mueven exactamente igual, 0 = sin relación, -1 = se mueven exactamente al "
-        "revés. Cuando la correlación sube mucho, suele ser señal de que el mercado está en modo "
-        "'risk-on/risk-off' generalizado (todo sube o baja junto por sentimiento, no por fundamentales "
-        "propios de cada activo).")
-
-    prompt = (f"Correlación entre BTC y Nasdaq en los últimos {res['ventana']} días: {res['corr_actual']:+.2f} "
-              f"(últimos 90 días: {res['corr_larga']})\n\n"
-              "1. ¿Qué implica este nivel de correlación para un inversor con exposición a ambos?\n"
-              "2. Si la correlación ha subido o bajado mucho recientemente, ¿qué podría explicarlo?\n"
-              "3. ¿Cómo se debería interpretar esto junto al resto de indicadores del bot (Fear&Greed, VIX)?")
-    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
-
 # ═══ /GUIA — Explicación de cada comando ════════════════════════
 GUIA_PARTES = [
 """📖 GUÍA DE COMANDOS (1/3) — Análisis de precio y ciclos
@@ -6165,9 +4733,6 @@ BTC situado sobre la curva Pico→Contracción→Suelo→Expansión→Recuperaci
 ━━━ /dominancia ━━━
 Fear & Greed Index de BTC con histórico desde 2018, zonas de compra/venta.
 
-━━━ /suelo ━━━
-El más completo: VIX + AAII (retail) + COT (institucional real, CFTC) + Fear & Greed, combinados en un medidor 0-100. Mide el ánimo del MERCADO EN GENERAL, no una acción concreta.
-
 ━━━ /ballenas TICKER ━━━
 Muros de compra/venta grandes en el order book (solo cripto).
 
@@ -6180,26 +4745,11 @@ Compras/ventas de directivos en mercado abierto (SEC Form 4). Avisa si hay compr
 ━━━ /macro ━━━
 Tipos Fed, inflación, paro, bonos (FRED) + derivados cripto (Binance).
 
-━━━ /curva ━━━
-Curva de tipos EEUU (10 años vs 2 años) — indicador de recesión más vigilado históricamente.
-
-━━━ /correlacion ━━━
-Correlación BTC vs Nasdaq — mide si cripto se mueve pegado a las tech (risk-on/risk-off).
-
-━━━ /fuerza ━━━
-Compara 100 criptos contra BTC en 3 plazos: 24 horas, 7 días y ~200 días — detecta cuáles lideran solo hoy o esta semana vs cuáles llevan meses haciéndolo (señal más sólida). No predice el futuro, describe divergencias ya en marcha.
-
-━━━ /calientes ━━━
-Criptos de Binance con volumen de las últimas 24h muy por encima de lo normal (mediana de los 20 días previos) Y con compras agresivas dominantes. Gráfico de barras: la longitud es cuántas veces el volumen normal, el verde más intenso es más compra, y el panel de la derecha reparte compra (verde) y venta (rojo). También llega solo cada día a la hora indicada en /start. Es volumen, no una recomendación de compra.
-
 ━━━ /compresion ━━━
 Mide lo estrecho que está el rango de precio de BTC en los últimos 30 días frente a los últimos 12 meses, con un velocímetro (0% expandido, 100% compresión extrema), dónde está el precio dentro del rango y la historia. Una compresión alta suele anteceder a un movimiento fuerte, pero no dice hacia dónde. Aproximación propia con datos de Binance, no coincide exactamente con CryptoQuant.
 
 ━━━ /liquidaciones ━━━
 Mapa de calor ESTIMADO de dónde se liquidarían más posiciones apalancadas de BTC (cortos por encima del precio, largos por debajo), con un zoom de 24 h estilo TradingView (velas y un bloque por nivel sin tocar) y la visión de 30 días. Es un modelo propio con el interés abierto de Binance Futures: no son liquidaciones reales y no coincide con Glassnode o Coinglass.
-
-━━━ /rotacion ━━━
-Mapa de rotación de mercado: sectores del S&P 500, oro, plata, bonos y BTC comparados con el índice, semana a semana. Cuatro cuadrantes: Liderando, Perdiendo fuerza, Rezagado y Mejorando. Segunda imagen: el ciclo económico clásico (Recuperación, Expansión, Desaceleración, Recesión) y a qué fase se parece lo que lidera hoy. Describe qué ha liderado, no qué va a liderar.
 
 ━━━ /rsiminimos ━━━
 Cripto (Binance) y acciones del S&P 500 (Alpaca) cuyo RSI semanal está más cerca de su propio mínimo de los últimos 2 años. No es un umbral fijo: compara cada activo con su propio rango. Un RSI en mínimos no implica que vaya a rebotar.""",
@@ -6215,7 +4765,6 @@ Resumen visual al momento de ~30 activos (cripto, acciones, índices, oro).
 ━━━ Automatizaciones (sin comando) ━━━
 • Cada 2h (9-21h): mismo resumen visual de /ticker, automático
 • Cada mañana 8h: resumen diario (BTC, Fear&Greed, titulares)
-• Cada día por la tarde: /calientes automático
 • Alertas de noticias muy relevantes, cuando la IA las detecta
 
 ━━━ Suscripción ━━━
@@ -6243,7 +4792,7 @@ TEXTO_DYOR = """⚠️ AVISO IMPORTANTE — LÉEME
 
 Este bot es una herramienta de ANÁLISIS INFORMATIVO, no un servicio de asesoramiento financiero. Antes de usarlo, ten esto claro:
 
-📊 No es una recomendación de inversión. Ningún comando (/valor, /suelo, /ciclo, análisis de IA...) te dice qué comprar, vender, o cuándo. Son indicadores y datos para que TÚ decidas con tu propio criterio.
+📊 No es una recomendación de inversión. Ningún comando (/valor, /ciclo, análisis de IA...) te dice qué comprar, vender, o cuándo. Son indicadores y datos para que TÚ decidas con tu propio criterio.
 
 🤖 La IA puede equivocarse. Los análisis generados son orientativos, no verdad absoluta.
 
@@ -6258,282 +4807,6 @@ En resumen: DYOR — Do Your Own Research. Usa este bot como una herramienta má
 @bot.message_handler(commands=["dyor"])
 def cmd_dyor(msg):
     safe_send(msg.chat.id, TEXTO_DYOR)
-
-
-# ═══ /FUERZA — Fuerza relativa cripto vs BTC ════════════════════
-# Detecta qué criptos aguantan o suben MIENTRAS el mercado en general cae
-# (o suben más que el mercado cuando todo sube) — no predice el futuro,
-# describe divergencias que ya están pasando ahora mismo. Es el mismo
-# patrón que HYPE/PURR mostraron: mantenerse fuerte mientras el resto
-# sufre suele preceder a un liderazgo sostenido, aunque no es garantía.
-# CoinGecko top 100 por capitalización, gratis, sin key (ya lo usamos
-# para HYPE/PURR).
-
-STABLECOINS_EXCLUIR = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usds",
-                       "pyusd", "usdp", "frax", "gusd", "usdd"}
-
-def fetch_top_cryptos_cambios(n=100):
-    ck = "cg_markets_top100"
-    cached = cache_get(ck)
-    if cached is not None: return cached
-    def _do():
-        _throttle_coingecko()
-        r = requests.get("https://api.coingecko.com/api/v3/coins/markets",
-                        params={"vs_currency": "usd", "order": "market_cap_desc",
-                                "per_page": str(n), "page": "1",
-                                "price_change_percentage": "24h,7d,30d,200d"},
-                        timeout=15)
-        if r.status_code != 200:
-            raise RuntimeError(f"CoinGecko markets: HTTP {r.status_code}")
-        data = r.json()
-        if not data:
-            raise RuntimeError("CoinGecko markets: sin datos")
-        return data
-    res = with_retry(_do, tries=3, base_delay=5, what="fetch_top_cryptos_cambios")
-    if res: cache_set(ck, res)
-    return res
-
-def calcular_fuerza_relativa():
-    data = fetch_top_cryptos_cambios(100)
-    if not data:
-        return None
-    btc = next((c for c in data if c["symbol"].lower() == "btc"), None)
-    if not btc:
-        return None
-    btc_7d = btc.get("price_change_percentage_7d_in_currency") or 0
-    btc_30d = btc.get("price_change_percentage_30d_in_currency") or 0
-    btc_200d = btc.get("price_change_percentage_200d_in_currency") or 0
-    btc_24h = btc.get("price_change_percentage_24h_in_currency") or 0
-
-    # FIX: valores como "+528pp a 7 días" o "+38.000pp a 200 días" no son
-    # una señal real — son casi siempre microcaps con tan poca liquidez
-    # que su precio de referencia era casi cero (dispara el % aunque no
-    # signifique nada útil), o directamente un error de datos puntual de
-    # CoinGecko para esa moneda. Sin filtrarlos, aplastan la escala del
-    # gráfico y esconden la señal de verdad del resto.
-    LIMITE_24H = 100
-    LIMITE_7D = 200
-    LIMITE_200D = 2000
-
-    filas = []
-    sin_dato = []
-    anomalos = []
-    for c in data:
-        sym = c["symbol"].lower()
-        if sym in STABLECOINS_EXCLUIR or sym == "btc":
-            continue
-        cambio_7d = c.get("price_change_percentage_7d_in_currency")
-        cambio_200d = c.get("price_change_percentage_200d_in_currency")
-        if cambio_7d is None:
-            sin_dato.append(c["symbol"].upper())
-            continue
-        fuerza_7d = cambio_7d - btc_7d
-        fuerza_200d = (cambio_200d - btc_200d) if cambio_200d is not None else None
-        cambio_24h = c.get("price_change_percentage_24h_in_currency")
-        fuerza_24h = (cambio_24h - btc_24h) if cambio_24h is not None else None
-        if (abs(fuerza_7d) > LIMITE_7D or (fuerza_200d is not None and abs(fuerza_200d) > LIMITE_200D)
-                or (fuerza_24h is not None and abs(fuerza_24h) > LIMITE_24H)):
-            anomalos.append(c["symbol"].upper())
-            continue
-        filas.append({
-            "nombre": c["name"], "simbolo": c["symbol"].upper(),
-            "cambio_24h": cambio_24h,
-            "fuerza_24h": fuerza_24h,
-            "cambio_7d": cambio_7d,
-            "cambio_30d": c.get("price_change_percentage_30d_in_currency"),
-            "cambio_200d": cambio_200d,
-            "fuerza_7d": fuerza_7d,
-            # Si no hay dato de 200d (moneda muy nueva, p.ej. HYPE/PURR que
-            # llevan menos de 200 días cotizando), no inventamos un cero —
-            # lo dejamos en None y lo tratamos aparte.
-            "fuerza_200d": fuerza_200d,
-            "rank": c.get("market_cap_rank"),
-        })
-    filas.sort(key=lambda x: x["fuerza_7d"], reverse=True)
-    top_corto = filas[:15]
-
-    filas_24h = [f for f in filas if f["fuerza_24h"] is not None]
-    filas_24h.sort(key=lambda x: x["fuerza_24h"], reverse=True)
-    top_24h = filas_24h[:15]
-
-    filas_200d = [f for f in filas if f["fuerza_200d"] is not None]
-    filas_200d.sort(key=lambda x: x["fuerza_200d"], reverse=True)
-    top_largo = filas_200d[:15]
-
-    # La señal más sólida: fuerte en AMBOS plazos a la vez, no solo esta
-    # semana — esto es justo lo que distingue "ruido de una semana" de
-    # "liderazgo sostenido" (lo que preguntabas: la próxima reina del
-    # bullrun suele llevar así varios meses, no solo unos días).
-    simbolos_top_corto = {f["simbolo"] for f in top_corto}
-    doble_fuerza = [f for f in top_largo if f["simbolo"] in simbolos_top_corto]
-
-    # Sin dato de 200d (monedas demasiado nuevas para tener ese histórico,
-    # como HYPE o PURR) — no las escondemos, las señalamos aparte.
-    demasiado_nuevas = [f["simbolo"] for f in filas if f["fuerza_200d"] is None]
-
-    simbolos_en_top100 = {c["symbol"].upper() for c in data}
-
-    return {"btc_24h": btc_24h, "btc_7d": btc_7d, "btc_30d": btc_30d, "btc_200d": btc_200d,
-            "top_24h": top_24h, "top_corto": top_corto, "top_largo": top_largo, "doble_fuerza": doble_fuerza,
-            "demasiado_nuevas": demasiado_nuevas, "anomalos": anomalos, "todas": filas,
-            "sin_dato": sin_dato, "simbolos_en_top100": simbolos_en_top100}
-
-def buscar_moneda_en_fuerza(res, simbolo):
-    simbolo = simbolo.upper()
-    for f in res["todas"]:
-        if f["simbolo"] == simbolo:
-            pos_corto = res["todas"].index(f) + 1
-            if f["fuerza_200d"] is not None:
-                orden_largo = sorted([x for x in res["todas"] if x["fuerza_200d"] is not None],
-                                     key=lambda x: x["fuerza_200d"], reverse=True)
-                pos_largo = orden_largo.index(f) + 1
-                return (f"{simbolo}: fuerza 7d {f['fuerza_7d']:+.1f}pp (puesto #{pos_corto}) | "
-                       f"fuerza 200d {f['fuerza_200d']:+.1f}pp (puesto #{pos_largo})")
-            return (f"{simbolo}: fuerza 7d {f['fuerza_7d']:+.1f}pp (puesto #{pos_corto}) | "
-                   f"sin dato de 200 días (moneda demasiado nueva para ese histórico)")
-    if simbolo in res["sin_dato"]:
-        return f"{simbolo}: está en el top 100 por capitalización, pero CoinGecko no tiene su dato de 7 días ahora mismo"
-    if simbolo not in res["simbolos_en_top100"]:
-        return f"{simbolo}: no está en el top 100 por capitalización ahora mismo"
-    return f"{simbolo}: no encontrado (motivo desconocido)"
-
-def chart_fuerza_relativa(top, campo, titulo, btc_valor):
-    fig, ax = plt.subplots(figsize=(12, 8))
-    fig.patch.set_facecolor('#0d1117')
-    ax.set_facecolor('#0d1117')
-
-    nombres = [f["simbolo"] for f in top]
-    valores = [f[campo] for f in top]
-    colores = ['#00CC44' if v >= 0 else '#FF3333' for v in valores]
-    y_pos = list(range(len(top)))
-
-    ax.barh(y_pos, valores, color=colores, height=0.6, zorder=3)
-    ax.axvline(0, color='#666666', linewidth=1, zorder=2)
-    max_abs = max(abs(v) for v in valores) or 1
-    for i, f in enumerate(top):
-        v = f[campo]
-        offset = max_abs * 0.03
-        ax.text(v + (offset if v >= 0 else -offset), i, f"{v:+.1f}pp",
-                va='center', ha='left' if v >= 0 else 'right',
-                color=colores[i], fontweight='bold', fontsize=10)
-
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(nombres, color='white', fontsize=11, fontweight='bold')
-    ax.invert_yaxis()
-    ax.set_xlim(-max_abs*1.3, max_abs*1.3)
-    ax.set_xticks([])
-    for spine in ax.spines.values(): spine.set_visible(False)
-    ax.tick_params(left=False)
-
-    ax.set_title(f'{titulo} (BTC: {btc_valor:+.1f}%)',
-                color='white', fontsize=14, fontweight='bold', loc='left', pad=15)
-
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-@bot.message_handler(commands=["fuerza"])
-@con_dyor
-def cmd_fuerza(msg):
-    if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
-        return
-    m = bot.send_message(msg.chat.id, "Comparando 100 criptos contra BTC (24h, 7 días y 200 días)... (10-15s)")
-    res = calcular_fuerza_relativa()
-    if not res:
-        safe_send(msg.chat.id, "No he podido calcular la fuerza relativa ahora mismo.",
-                  message_id=m.message_id)
-        return
-
-    try:
-        bot.delete_message(msg.chat.id, m.message_id)
-    except Exception:
-        pass
-
-    try:
-        chart_24h = chart_fuerza_relativa(res["top_24h"], "fuerza_24h",
-                                          "FUERZA RELATIVA vs BTC — últimas 24 horas", res["btc_24h"])
-        bot.send_photo(msg.chat.id, chart_24h)
-    except Exception as e:
-        log.warning(f"chart_fuerza_relativa (24h): {e}")
-
-    try:
-        chart_corto = chart_fuerza_relativa(res["top_corto"], "fuerza_7d",
-                                            "FUERZA RELATIVA vs BTC — últimos 7 días", res["btc_7d"])
-        bot.send_photo(msg.chat.id, chart_corto)
-    except Exception as e:
-        log.warning(f"chart_fuerza_relativa (7d): {e}")
-
-    try:
-        chart_largo = chart_fuerza_relativa(res["top_largo"], "fuerza_200d",
-                                            "FUERZA RELATIVA vs BTC — últimos ~200 días (~6-7 meses)",
-                                            res["btc_200d"])
-        bot.send_photo(msg.chat.id, chart_largo)
-    except Exception as e:
-        log.warning(f"chart_fuerza_relativa (200d): {e}")
-
-    lines = [f"📖 FUERZA RELATIVA — top 100 por capitalización\n",
-             f"BTC: 24h {res['btc_24h']:+.1f}% | 7d {res['btc_7d']:+.1f}% | 30d {res['btc_30d']:+.1f}% | ~200d {res['btc_200d']:+.1f}%\n",
-             "Tres plazos, tres preguntas distintas:\n"
-             "• 24 horas = ¿quién se mueve mejor HOY? (lo más ruidoso, cambia de un día a otro)\n"
-             "• 7 días = ¿quién está fuerte ESTA semana? (puede ser ruido)\n"
-             "• ~200 días = ¿quién lleva MESES aguantando o liderando? (señal mucho más sólida — "
-             "esto es lo que suele distinguir a una futura 'reina del bullrun' de un simple pico "
-             "de una semana)\n"]
-
-    if res["doble_fuerza"]:
-        lines.append("⚡ FUERZA EN AMBOS PLAZOS A LA VEZ (la señal más fuerte):")
-        for f in res["doble_fuerza"]:
-            lines.append(f"  {f['simbolo']}: 7d {f['fuerza_7d']:+.1f}pp | 200d {f['fuerza_200d']:+.1f}pp")
-        lines.append("")
-    else:
-        lines.append("⚡ Ninguna moneda está en el top 15 de AMBOS plazos a la vez ahora mismo.\n")
-
-    lines.append("🏆 Top 8 — últimas 24 horas:")
-    for f in res["top_24h"][:8]:
-        lines.append(f"  {f['simbolo']}: {f['cambio_24h']:+.1f}% (vs BTC: {f['fuerza_24h']:+.1f}pp) — rank #{f['rank']}")
-
-    lines.append("\n🏆 Top 8 — últimos 7 días:")
-    for f in res["top_corto"][:8]:
-        lines.append(f"  {f['simbolo']}: {f['cambio_7d']:+.1f}% (vs BTC: {f['fuerza_7d']:+.1f}pp) — rank #{f['rank']}")
-
-    lines.append("\n🏆 Top 8 — últimos ~200 días:")
-    for f in res["top_largo"][:8]:
-        lines.append(f"  {f['simbolo']}: {f['cambio_200d']:+.1f}% (vs BTC: {f['fuerza_200d']:+.1f}pp) — rank #{f['rank']}")
-
-    if res["demasiado_nuevas"]:
-        nuevas_top = [s for s in res["demasiado_nuevas"] if s in {f["simbolo"] for f in res["todas"][:30]}]
-        if nuevas_top:
-            lines.append(f"\n📌 Sin dato de 200 días por ser muy recientes (no llevan tanto cotizando): "
-                        f"{', '.join(nuevas_top[:10])} — no significa que no sean fuertes, solo que no "
-                        "podemos medir su plazo largo todavía.")
-
-    if res.get("anomalos"):
-        lines.append(f"\n🚫 Excluidas por valores imposibles ({', '.join(res['anomalos'][:8])}) — "
-                    "casi siempre microcaps con precio de referencia cercano a cero (el % se dispara "
-                    "sin significar nada real) o un error de datos puntual, no una señal de verdad.")
-
-    safe_send(msg.chat.id, "\n".join(lines)[:4096])
-
-    dia_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_24h']:+.1f}pp)" for f in res["top_24h"][:6])
-    corto_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_7d']:+.1f}pp)" for f in res["top_corto"][:6])
-    largo_txt = ", ".join(f"{f['simbolo']} ({f['fuerza_200d']:+.1f}pp)" for f in res["top_largo"][:6])
-    doble_txt = ", ".join(f["simbolo"] for f in res["doble_fuerza"]) or "ninguna"
-    prompt = (f"Fuerza relativa cripto vs BTC:\n"
-              f"Top 24 horas: {dia_txt}\n"
-              f"Top 7 días: {corto_txt}\n"
-              f"Top ~200 días (6-7 meses): {largo_txt}\n"
-              f"Fuertes en AMBOS plazos a la vez: {doble_txt}\n\n"
-              "No inventes catalizadores concretos que no estén aquí — si no sabes la razón real "
-              "de por qué una moneda concreta está fuerte, dilo, no la inventes.\n\n"
-              "1. ¿Qué diferencia hay entre estar fuerte solo 7 días y estar fuerte también a 200 días? "
-              "¿Cuál es más significativo y por qué?\n"
-              "2. Si hay monedas en ambas listas, ¿qué sugiere eso sobre su papel en el ciclo actual?\n"
-              "3. Riesgos de perseguir fuerza relativa, tanto a corto como a largo plazo")
-    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 
 # ═══ Menú de comandos de Telegram (lo que sale al pulsar "/") ═══
@@ -6551,18 +4824,12 @@ MENU_COMANDOS = [
     ("halvingbtc", "Ciclo de 4 años de Bitcoin"),
     ("ciclo", "Fase actual de BTC en el ciclo de mercado"),
     ("dominancia", "Zonas de compra/venta de BTC (Fear & Greed)"),
-    ("suelo", "Triple suelo de sentimiento (VIX, AAII, COT, F&G)"),
     ("ballenas", "Muros de órdenes grandes en Binance"),
     ("cartera", "Carteras 13F de grandes inversores"),
     ("insiders", "Compras/ventas de directivos (SEC Form 4)"),
     ("macro", "Tipos, inflación, paro y derivados cripto"),
-    ("curva", "Curva de tipos EEUU (10 años vs 2 años)"),
-    ("correlacion", "Correlación BTC vs Nasdaq"),
-    ("fuerza", "Fuerza relativa de 100 criptos vs BTC (24h, 7d, 200d)"),
-    ("calientes", "Criptos con volumen inusual y compras dominantes"),
     ("compresion", "Compresión de precio de BTC (volatilidad 30 días)"),
     ("liquidaciones", "Mapa de liquidaciones estimado de BTC"),
-    ("rotacion", "Mapa de rotación de mercado (sectores vs S&P 500)"),
     ("rsiminimos", "Cripto y acciones del S&P 500 cerca de su mínimo de RSI (2 años)"),
     ("noticias", "Noticias de bolsa, economía y cripto"),
     ("ticker", "Resumen de mercados al momento"),
@@ -6584,7 +4851,6 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
 
 
 
