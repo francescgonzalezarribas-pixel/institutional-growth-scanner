@@ -516,6 +516,44 @@ def fetch_stooq(ticker, days=220):
     if res: cache_set(ck, res)
     return res
 
+def fetch_yahoo_directo(ticker, days=220):
+    """Yahoo, pero por la API de gráficos directa (la misma que usa su propia web), no la
+    librería yfinance. Ya la probamos a fondo en /rotacion y respondía bien desde Railway aunque
+    yfinance esté bloqueado por IP compartida — parece un bloqueo específico de cómo se conecta
+    esa librería, no de Yahoo en general. Se usa para símbolos que Stooq tiene muertos (los "^",
+    confirmado en los logs) y que Twelve Data rechaza o exige plan de pago (^GSPC, ^VIX)."""
+    ck = f"yhd:{ticker}"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+    def _do(host):
+        r = requests.get(f"https://{host}.finance.yahoo.com/v8/finance/chart/{ticker}",
+                         params={"range": f"{days + 30}d", "interval": "1d"}, headers=ua, timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"Yahoo HTTP {r.status_code}")
+        res = ((r.json().get("chart") or {}).get("result") or [None])[0]
+        if not res or not res.get("timestamp"):
+            raise RuntimeError("Yahoo: sin datos")
+        ind = (res.get("indicators") or {}).get("quote", [{}])[0]
+        c, h, lo, vol = ind.get("close"), ind.get("high"), ind.get("low"), ind.get("volume")
+        if not c or sum(1 for v in c if v is not None) < 5:
+            raise RuntimeError("Yahoo: pocos datos")
+        idx = [i for i, v in enumerate(c) if v is not None]
+        cs = pd.Series([c[i] for i in idx]); hs = pd.Series([(h[i] if h[i] is not None else c[i]) for i in idx])
+        ls = pd.Series([(lo[i] if lo[i] is not None else c[i]) for i in idx])
+        vs = pd.Series([(vol[i] if vol and i < len(vol) and vol[i] is not None else 1e6) for i in idx])
+        return build_quote(ticker, cs, hs, ls, vs)
+    res = None
+    for host in ("query1", "query2"):
+        res = with_retry(lambda: _do(host), tries=2, base_delay=1.5, what=f"yahoo_directo {ticker} ({host})")
+        if res:
+            break
+    if res:
+        cache_set(ck, res)
+    return res
+
 def get_quote(ticker):
     t = normalize_ticker(ticker)
     if t in BINANCE_MAP:
@@ -536,6 +574,15 @@ def get_quote(ticker):
         # tickers sin necesidad.
         td = fetch_twelvedata(t)
         if td: return td
+    if t.startswith("^"):
+        # Los índices (S&P 500, Nasdaq, VIX, IBEX, DAX...) tienen Stooq confirmado muerto desde
+        # Railway (siempre devuelve la página de "no indexar", no datos) y Twelve Data los
+        # rechaza o los exige de pago según el símbolo. Yahoo directo va primero aquí; solo si
+        # también falla se prueba la cadena de siempre, por si algún día alguno vuelve a servir.
+        res = fetch_yahoo_directo(t)
+        if res is None:
+            res = fetch_stooq(t)
+        return res
     res = fetch_stooq(t)
     if res is None and "-" not in t and "." not in t and "^" not in t and "=" not in t and len(t) <= 10:
         # Último recurso: si no parece encontrarse como acción, probamos si
@@ -2254,7 +2301,6 @@ def cmd_ballenas(msg):
               "2. ¿Qué estrategia de entrada/salida sugieren estos muros?\n"
               "3. Riesgo de que sean órdenes 'trampa' (spoofing) que se cancelan antes de ejecutarse")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
 # ═══ /NOTICIAS — Agregador de noticias financieras y cripto ═════
 # Varias fuentes distintas vía RSS (gratis, sin API key, sin límite de
 # peticiones): Investing.com (bolsa/economía/cripto), Cointelegraph en
@@ -4851,6 +4897,7 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
 
 
 
