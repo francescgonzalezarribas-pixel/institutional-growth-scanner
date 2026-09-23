@@ -140,8 +140,16 @@ def crear_pago():
         return None, None
 
 
-SYSTEM = """Eres un analista financiero senior. Responde SIEMPRE en español.
-Sin markdown. Máximo 4 párrafos concisos y accionables."""
+SYSTEM = """Eres un analista financiero senior. Responde SIEMPRE en español. Sin markdown.
+Máximo 4 párrafos concisos y bien fundamentados.
+
+Regla estricta, sin excepciones: NUNCA des recomendaciones de operativa. Esto incluye precios de
+entrada o salida, niveles de stop-loss, objetivos de toma de beneficios, tamaño o reparto de
+posición/capital, ni decir explícita o implícitamente si hay que comprar, vender o esperar. Da
+información y contexto para que decida el usuario, nunca una instrucción de qué hacer con su
+dinero. Si la pregunta te pide una 'estrategia concreta', respóndela igualmente pero en términos de
+qué factores vigilar y qué señales conviene combinar, nunca en precios, porcentajes de capital o
+niveles de entrada/salida."""
 
 # ═══ CACHÉ + RETRY (fix rate-limit yfinance/Stooq) ══════════
 _CACHE = {}
@@ -804,7 +812,8 @@ def cmd_valor(msg):
     comp_txt = "\n".join([f"{k}: {v['v']} ({v['p']}/10)" for k,v in res['comp'].items()])
     prompt = (f"Índice barato/caro de {res['ticker']}:\nPrecio: {res['price']} USD ({res['d1']:+.2f}% hoy)\n"
               f"Score: {res['score']}/100 — {res['zona']}\nComponentes:\n{comp_txt}\n\n"
-              f"1. ¿Es buen momento para entrar?\n2. Riesgo principal\n3. Estrategia concreta con precio")
+              f"1. ¿Qué dice este índice sobre la valoración actual?\n2. Riesgo principal\n"
+              f"3. Qué otras señales conviene mirar junto a este índice antes de sacar conclusiones")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 # ═══ /FUNDAMENTAL ════════════════════════════════════════════
@@ -1218,7 +1227,8 @@ def cmd_halvingbtc(msg):
         prompt=(f"Ciclo halving BTC: {meses} meses desde 4th halving, precio ${pa:,.0f}\n"
                 f"ATH ${126080:,} (Oct 2025), caída ~{round((1-pa/126080)*100) if pa>0 else '?'}%\n\n"
                 f"1. ¿Ya vimos el suelo? Argumentos a favor y en contra\n"
-                f"2. Diferencias con ciclos anteriores\n3. Proyección realista 2028-2029\n4. Estrategia concreta ahora")
+                f"2. Diferencias con ciclos anteriores\n3. Proyección realista 2028-2029\n"
+                f"4. Qué conviene vigilar a partir de aquí, sin dar niveles de entrada ni de salida")
         safe_send(msg.chat.id,f"ANÁLISIS IA — CICLO HALVING\n\n{ask_ai(prompt,2500)}")
     except Exception as e:
         log.error(f"halvingbtc: {e}")
@@ -2005,7 +2015,7 @@ def cmd_dominancia(msg):
               f"Estado: {zona}.\n\n"
               "1. ¿Qué nos dice esto sobre el sentimiento del mercado ahora mismo?\n"
               "2. ¿Es fiable esta señal por sí sola o hay que combinarla con algo más?\n"
-              "3. Estrategia concreta dado este nivel de sentimiento")
+              "3. Qué otras señales conviene mirar junto a esta antes de sacar conclusiones")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 # ═══ /BALLENAS — Muros de órdenes grandes (order book Binance) ══
@@ -2246,6 +2256,7 @@ def cmd_ballenas(msg):
               "2. ¿Qué estrategia de entrada/salida sugieren estos muros?\n"
               "3. Riesgo de que sean órdenes 'trampa' (spoofing) que se cancelan antes de ejecutarse")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 # ═══ /NOTICIAS — Agregador de noticias financieras y cripto ═════
 # Varias fuentes distintas vía RSS (gratis, sin API key, sin límite de
 # peticiones): Investing.com (bolsa/economía/cripto), Cointelegraph en
@@ -4774,7 +4785,6 @@ SP500_TICKERS = [
     'WAB', 'WMT', 'DIS', 'WBD', 'WM', 'WAT', 'WEC', 'WFC', 'WELL', 'WST', 'WDC', 'WY',
     'WSM', 'WMB', 'WTW', 'WDAY', 'WYNN', 'XEL', 'XYL', 'YUM', 'ZBRA', 'ZBH', 'ZTS',
 ]
-
 # ═══ /RSIMINIMOS — Activos tocando mínimos de RSI semanal (cripto + S&P 500) ═══
 # "Tocando mínimos" = el RSI semanal ACTUAL está muy cerca del RSI más bajo que ese mismo activo
 # ha tenido en los últimos RSIMIN_VENTANA_SEM (2 años). No es un umbral fijo tipo "RSI < 30": un
@@ -5037,6 +5047,20 @@ def texto_rsiminimos(res):
              "• El RSI de las acciones se calcula agregando velas diarias a semanales; el de las "
              "criptos usa velas semanales directas de Binance.")
     return "\n".join(L)
+
+@bot.message_handler(commands=["reset_rsiminimos"])
+def cmd_reset_rsiminimos(msg):
+    if not allowed(msg):
+        return
+    _RSIMIN_MEM.update(ts=0, filas=None, res=None)
+    _CACHE.pop("rsiminimos", None)
+    try:
+        os.remove(RSIMIN_CACHE_FILE)
+        disco = "borrada"
+    except FileNotFoundError:
+        disco = "no existía"
+    safe_send(msg.chat.id, f"Caché de /rsiminimos borrada (archivo: {disco}). El próximo /rsiminimos "
+             "recalcula desde cero.")
 
 @bot.message_handler(commands=["rsiminimos"])
 @con_dyor
