@@ -1310,7 +1310,8 @@ def cmd_start(msg):
             "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
             "/compresion — Compresión de precio de BTC (volatilidad 30 días)\n"
             "/liquidaciones — Mapa de calor de liquidaciones estimado de BTC\n"
-            "/rsiminimos — Cripto y acciones cerca de su mínimo de RSI en 2 años\n\n"
+            "/rsiminimos — Cripto y acciones cerca de su mínimo de RSI en 2 años\n"
+            "/vwap TICKER — Precio medio ponderado por volumen de hoy, cripto o acción\n\n"
             "/guia — Explicación completa de cada comando\n"
             "/dyor — Aviso legal (léelo antes de usar el bot para decidir)\n\n"
             "Además, cada 2h (9-21h) recibes un resumen automático de mercados y "
@@ -2514,20 +2515,25 @@ def cmd_macro(msg):
 BROADCAST_CRYPTO = {
     "Bitcoin": "BTC-USD", "Ethereum": "ETH-USD", "Solana": "SOL-USD", "BNB": "BNB-USD",
     "XRP": "XRP-USD", "Cardano": "ADA-USD", "Dogecoin": "DOGE-USD", "Avalanche": "AVAX-USD",
-    "Chainlink": "LINK-USD", "Polkadot": "DOT-USD", "Hedera": "HBAR-USD",
+    "Chainlink": "LINK-USD", "Polkadot": "DOT-USD", "Hedera": "HBAR-USD", "Sui": "SUI-USD",
 }
-# HYPE y PURR NO están en el mercado spot de Binance global (solo en
-# Binance.US, una plataforma distinta con otra API, o en el propio DEX de
-# Hyperliquid) — así que no se pueden traer con fetch_binance como el
-# resto. Usamos CoinGecko (gratis, sin API key) solo para estos dos.
+# HYPE NO está en el mercado spot de Binance global (solo en Binance.US, una
+# plataforma distinta con otra API, o en el propio DEX de Hyperliquid) — así
+# que no se puede traer con fetch_binance como el resto. Usamos CoinGecko
+# (gratis, sin API key) solo para este.
+# Ojo con "PURR": el ticker PURR es AMBIGUO. El memecoin cripto de Hyperliquid
+# iba aquí antes (CoinGecko "purr-2"), pero se retiró: lo que de verdad se
+# sigue es la ACCIÓN Hyperliquid Strategies Inc. (Nasdaq: PURR, va en
+# BROADCAST_STOCKS más abajo), una empresa que compra HYPE como tesorería,
+# sin relación directa con el memecoin más allá del nombre.
 BROADCAST_CRYPTO_COINGECKO = {
-    "Hyperliquid": "hyperliquid", "PURR": "purr-2",
+    "Hyperliquid": "hyperliquid",
 }
 BROADCAST_STOCKS = {
     "Apple": "AAPL", "Microsoft": "MSFT", "Nvidia": "NVDA", "Amazon": "AMZN",
     "Google": "GOOGL", "Meta": "META", "Tesla": "TSLA", "JPMorgan": "JPM",
     "Netflix": "NFLX", "SpaceX": "SPCX", "Strategy (Saylor)": "MSTR",
-    "Walmart": "WMT", "Coca-Cola": "KO",
+    "Walmart": "WMT", "Coca-Cola": "KO", "PURR (Hyperliquid Strategies)": "PURR",
 }
 BROADCAST_INDICES = {
     "S&P 500": "^GSPC", "Nasdaq": "^IXIC", "IBEX 35": "^IBEX", "DAX": "^GDAXI", "CAC 40": "^FCHI",
@@ -4419,6 +4425,231 @@ def _scheduler_loop():
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
+# ═══ /VWAP — Precio medio ponderado por volumen de la sesión actual ═══
+# El VWAP no es una media cualquiera: es el precio medio al que se ha negociado un activo DESDE
+# que empezó la sesión actual, ponderado por el volumen de cada vela (los tramos con más volumen
+# pesan más). Se reinicia al empezar cada sesión nueva. Necesita velas intradía para tener
+# sentido — con velas diarias o de varias horas apenas habría puntos por sesión.
+# Cripto (Binance, sin clave): sesión = desde las 00:00 UTC.
+# Acciones (Alpaca): sesión = desde la apertura de Wall Street (15:30 hora española en verano,
+# 16:30 en invierno); si el mercado está cerrado, se usa la última sesión completa.
+
+VWAP_VELA_MIN = 15
+VWAP_HORAS_ZOOM = 10        # cuánto se muestra alrededor de la sesión (con margen a los lados)
+
+def _vwap_ticker_a_fuente(ticker):
+    """Decide si un ticker es cripto (Binance) o acción (Alpaca), reutilizando el mismo mapa que
+    ya usa /valor. Devuelve ('cripto', simbolo_binance) o ('accion', ticker_normalizado)."""
+    t = normalize_ticker(ticker)
+    simbolo_binance = BINANCE_MAP.get(t)
+    if simbolo_binance:
+        return "cripto", simbolo_binance
+    return "accion", t
+
+def _vwap_velas_cripto(simbolo_binance):
+    """Velas de 15 min de Binance, suficientes para cubrir la sesión UTC de hoy y algo de ayer
+    de margen. Sin clave, mismo endpoint que el resto del bot."""
+    def _do():
+        r = requests.get("https://api.binance.com/api/v3/klines",
+                         params={"symbol": simbolo_binance, "interval": f"{VWAP_VELA_MIN}m", "limit": 200},
+                         timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return r.json()
+    kl = with_retry(_do, tries=2, base_delay=1.5, what=f"vwap binance {simbolo_binance}")
+    if not kl:
+        return None
+    if kl[-1][6] > int(time.time() * 1000):
+        kl = kl[:-1]                      # fuera la vela en curso, incompleta
+    t = np.array([int(k[0]) // 1000 for k in kl])
+    o = np.array([float(k[1]) for k in kl]); h = np.array([float(k[2]) for k in kl])
+    l = np.array([float(k[3]) for k in kl]); c = np.array([float(k[4]) for k in kl])
+    v = np.array([float(k[5]) for k in kl])
+    hoy_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    inicio = int(hoy_utc.timestamp())
+    m = t >= inicio
+    if m.sum() < 2:                       # sesión recién empezada: coge la de ayer de referencia
+        inicio -= 86400
+        m = t >= inicio
+    return {"t": t[m], "o": o[m], "h": h[m], "l": l[m], "c": c[m], "v": v[m],
+            "reset_txt": "00:00 UTC", "fuente": "Binance"}
+
+def _vwap_velas_accion(ticker):
+    """Velas de 15 min de Alpaca (feed IEX), agrupadas por sesión de Wall Street; se queda con
+    la sesión más reciente (la de hoy si el mercado está abierto, si no la última completa)."""
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        return None
+    desde = (datetime.now(timezone.utc) - timedelta(days=6)).strftime("%Y-%m-%d")
+    barras, cursor = [], None
+    for _ in range(4):
+        params = {"timeframe": f"{VWAP_VELA_MIN}Min", "start": desde, "limit": 1000, "feed": "iex"}
+        if cursor:
+            params["page_token"] = cursor
+        j = _alpaca_get(f"/v2/stocks/{ticker}/bars", params)
+        if j is None:
+            return None
+        barras += j.get("bars") or []
+        cursor = j.get("next_page_token")
+        if not cursor:
+            break
+    if len(barras) < 2:
+        return None
+    ny = pytz.timezone("America/New_York")
+    fechas_ny = [datetime.fromisoformat(b["t"].replace("Z", "+00:00")).astimezone(ny) for b in barras]
+    dia_sesion = max(f.date() for f in fechas_ny)      # la sesión más reciente presente en los datos
+    idx = [i for i, f in enumerate(fechas_ny) if f.date() == dia_sesion]
+    if len(idx) < 2:
+        return None
+    t = np.array([int(fechas_ny[i].timestamp()) for i in idx])
+    o = np.array([float(barras[i]["o"]) for i in idx]); h = np.array([float(barras[i]["h"]) for i in idx])
+    l = np.array([float(barras[i]["l"]) for i in idx]); c = np.array([float(barras[i]["c"]) for i in idx])
+    v = np.array([float(barras[i]["v"]) for i in idx])
+    return {"t": t, "o": o, "h": h, "l": l, "c": c, "v": v,
+            "reset_txt": "apertura de Wall Street", "fuente": "Alpaca"}
+
+def _vwap_calcular(d):
+    """VWAP acumulado desde el inicio de la sesión, más bandas de ±1 y ±2 desviaciones (ponderadas
+    por volumen, la misma idea que un Bollinger pero centrado en el VWAP en vez de una media simple)."""
+    tp = (d["h"] + d["l"] + d["c"]) / 3
+    cum_v = np.cumsum(d["v"])
+    cum_v_seguro = np.where(cum_v > 0, cum_v, 1e-9)
+    vwap = np.cumsum(tp * d["v"]) / cum_v_seguro
+    var = np.cumsum(d["v"] * (tp - vwap) ** 2) / cum_v_seguro
+    std = np.sqrt(np.maximum(var, 0))
+    return vwap, std
+
+def calcular_vwap(ticker):
+    ck = f"vwap:{ticker}"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    tipo, simbolo = _vwap_ticker_a_fuente(ticker)
+    d = _vwap_velas_cripto(simbolo) if tipo == "cripto" else _vwap_velas_accion(simbolo)
+    if not d:
+        return None
+    vwap, std = _vwap_calcular(d)
+    precio = float(d["c"][-1])
+    v_actual, s_actual = float(vwap[-1]), float(std[-1])
+    dist_pct = (precio - v_actual) / v_actual * 100 if v_actual else 0.0
+    dist_sigma = (precio - v_actual) / s_actual if s_actual > 0 else 0.0
+    res = {**d, "vwap": vwap, "std": std, "precio": precio, "tipo": tipo, "ticker_mostrado": ticker.upper(),
+           "dist_pct": dist_pct, "dist_sigma": dist_sigma,
+           "hora": datetime.now(MADRID).strftime("%d/%m %H:%M")}
+    cache_set(ck, res)
+    return res
+
+def chart_vwap(res):
+    n = len(res["c"])
+    fig = plt.figure(figsize=(11, 8.5))
+    fig.patch.set_facecolor('#0d1117')
+    ax = fig.add_axes([0.09, 0.11, 0.86, 0.70])
+    ax.set_facecolor('#0d1117')
+    for sp in ax.spines.values(): sp.set_color('#333333')
+    x = np.arange(n)
+    vwap, std = res["vwap"], res["std"]
+    ax.fill_between(x, vwap - 2 * std, vwap + 2 * std, color='#3b82f6', alpha=0.08, zorder=1)
+    ax.fill_between(x, vwap - std, vwap + std, color='#3b82f6', alpha=0.14, zorder=1)
+    ax.plot(x, vwap, color='#f0b90b', linewidth=2, zorder=3, label='VWAP')
+    ancho = 0.62
+    for i in range(n):
+        col = '#26a69a' if res["c"][i] >= res["o"][i] else '#ef5350'
+        ax.plot([i, i], [res["l"][i], res["h"][i]], color=col, linewidth=1, zorder=2)
+        ax.add_patch(plt.Rectangle((i - ancho / 2, min(res["o"][i], res["c"][i])), ancho,
+                                   max(abs(res["c"][i] - res["o"][i]), res["precio"] * 0.0003),
+                                   facecolor=col, edgecolor=col, zorder=4))
+    ax.axhline(res["precio"], color='white', linestyle=':', linewidth=0.8, alpha=0.6, zorder=2)
+    ext = max(2, n // 12)
+    ax.text(n + ext - 0.5, res["precio"], f"AHORA ${res['precio']:,.2f}", color='white', fontsize=10.5,
+           fontweight='bold', va='center', ha='right', zorder=6,
+           bbox=dict(boxstyle='round,pad=0.2', facecolor='#0d1117', edgecolor='none', alpha=0.85))
+    cada = max(1, (60 // VWAP_VELA_MIN) * 2)
+    pos_x = list(range(0, n, cada))
+    ax.set_xticks(pos_x)
+    tz = pytz.timezone("America/New_York") if res["tipo"] == "accion" else timezone.utc
+    ax.set_xticklabels([datetime.fromtimestamp(res["t"][i], tz).strftime("%H:%M") for i in pos_x],
+                       color='#AAAAAA', fontsize=9.5)
+    ax.set_xlim(-1, n + ext)
+    ax.tick_params(axis='y', colors='#AAAAAA', labelsize=10)
+    ax.grid(color='#1f2330', linestyle='--', linewidth=0.6, zorder=0)
+    ax.legend(loc='upper left', frameon=False, labelcolor='#CCCCCC', fontsize=10)
+    fig.text(0.5, 0.965, f"{res['ticker_mostrado']} — VWAP DE HOY (velas de {VWAP_VELA_MIN} min)",
+             ha='center', color='white', fontsize=17, fontweight='bold')
+    fig.text(0.5, 0.935, f"{res['hora']} (Madrid)  ·  sesión desde {res['reset_txt']}  ·  fuente: {res['fuente']}",
+             ha='center', color='#FFB84D', fontsize=10.5)
+    signo = "por encima" if res["dist_pct"] >= 0 else "por debajo"
+    fig.text(0.5, 0.905, f"Precio {abs(res['dist_pct']):.2f}% {signo} del VWAP ({res['dist_sigma']:+.1f}σ)",
+             ha='center', color='#CCCCCC', fontsize=11)
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+def texto_vwap(res):
+    signo = "por encima" if res["dist_pct"] >= 0 else "por debajo"
+    if abs(res["dist_sigma"]) < 1:
+        zona = "dentro de su rango normal de hoy (±1σ)"
+    elif abs(res["dist_sigma"]) < 2:
+        zona = "en la banda ancha, algo estirado respecto a hoy (entre 1σ y 2σ)"
+    else:
+        zona = "fuera de su rango habitual de hoy (más de 2σ)"
+    L = ["📖 QUÉ ES EL VWAP\n",
+         "El precio medio al que se ha negociado el activo desde que empezó la sesión, ponderado "
+         "por el volumen de cada tramo (los momentos con más volumen pesan más que los de poco "
+         "volumen). Se reinicia cada sesión. Las bandas son la desviación del precio respecto a "
+         "ese VWAP, ponderada igual: dicen si el movimiento de hoy es normal o se ha salido de lo "
+         "habitual.\n",
+         f"📊 {res['ticker_mostrado']}: ${res['precio']:,.2f}",
+         f"VWAP de hoy: ${res['vwap'][-1]:,.2f} — el precio está un {abs(res['dist_pct']):.2f}% {signo}, "
+         f"{zona}.",
+         "\n⚠️ Cómo leerlo con cabeza:\n"
+         "• Esto describe dónde está el precio ahora respecto al promedio de hoy, no predice hacia "
+         "dónde va a ir.\n"
+         "• Con cripto la sesión se reinicia a las 00:00 UTC aunque el mercado no cierre nunca; con "
+         "acciones, a la apertura de Wall Street.\n"
+         "• Muy al principio de la sesión hay pocas velas y las bandas pueden ser poco fiables."]
+    return "\n".join(L)
+
+@bot.message_handler(commands=["vwap"])
+@con_dyor
+def cmd_vwap(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        return
+    partes = msg.text.split(maxsplit=1)
+    ticker = partes[1].strip().upper() if len(partes) > 1 else "BTC"
+    m = bot.send_message(msg.chat.id, f"Calculando el VWAP de {ticker}...")
+    try:
+        res = calcular_vwap(ticker)
+    except Exception as e:
+        log.warning(f"calcular_vwap {ticker}: {e}")
+        res = None
+    if not res:
+        motivo = ("" if (ALPACA_API_KEY and ALPACA_SECRET_KEY) else
+                  " (si es una acción, revisa que ALPACA_API_KEY/ALPACA_SECRET_KEY estén puestas)")
+        safe_send(msg.chat.id, f"No he podido calcular el VWAP de {ticker} ahora mismo.{motivo} "
+                 "Prueba con otro ticker o vuelve a intentarlo en un rato.", message_id=m.message_id)
+        return
+    signo = "por encima" if res["dist_pct"] >= 0 else "por debajo"
+    caption = (f"📊 VWAP — {res['ticker_mostrado']}\n${res['precio']:,.2f}  ·  "
+               f"{abs(res['dist_pct']):.2f}% {signo} del VWAP de hoy")
+    try:
+        img = chart_vwap(res)
+        bot.delete_message(msg.chat.id, m.message_id)
+        bot.send_photo(msg.chat.id, img, caption=caption[:1020])
+    except Exception as e:
+        log.warning(f"chart_vwap {res['ticker_mostrado']}: {e}")
+        safe_send(msg.chat.id, caption, message_id=m.message_id)
+    safe_send(msg.chat.id, texto_vwap(res))
+    prompt = (f"VWAP de {res['ticker_mostrado']} ({'cripto, sesión desde 00:00 UTC' if res['tipo']=='cripto' else 'acción, sesión de Wall Street'}). "
+              f"Precio actual ${res['precio']:,.2f}, VWAP ${res['vwap'][-1]:,.2f}, "
+              f"desviación {res['dist_pct']:+.2f}% ({res['dist_sigma']:+.1f} desviaciones estándar de la sesión).\n\n"
+              "Datos ya calculados, úsalos tal cual. No inventes cifras ni noticias.\n\n"
+              "1. ¿Qué dice esta posición respecto al VWAP sobre cómo ha ido la sesión de hoy?\n"
+              "2. ¿Qué significa que el precio esté a esa distancia en desviaciones estándar?\n"
+              "3. Qué otras señales conviene mirar junto al VWAP antes de sacar conclusiones")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 # ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
 # Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
 # Reutiliza la misma lógica de "meses desde el halving" que ya usa
@@ -4797,6 +5028,9 @@ Mide lo estrecho que está el rango de precio de BTC en los últimos 30 días fr
 ━━━ /liquidaciones ━━━
 Mapa de calor ESTIMADO de dónde se liquidarían más posiciones apalancadas de BTC (cortos por encima del precio, largos por debajo), con un zoom de 24 h estilo TradingView (velas y un bloque por nivel sin tocar) y la visión de 30 días. Es un modelo propio con el interés abierto de Binance Futures: no son liquidaciones reales y no coincide con Glassnode o Coinglass.
 
+━━━ /vwap TICKER ━━━
+Precio medio ponderado por volumen de la sesión actual (VWAP), con bandas de ±1 y ±2 desviaciones. Cripto por Binance (sesión desde 00:00 UTC), acciones por Alpaca (sesión desde la apertura de Wall Street). Sin ticker, BTC por defecto. Describe dónde está el precio hoy, no predice hacia dónde va.
+
 ━━━ /rsiminimos ━━━
 Cripto (Binance) y acciones del S&P 500 (Alpaca) cuyo RSI semanal está más cerca de su propio mínimo de los últimos 2 años. No es un umbral fijo: compara cada activo con su propio rango. Un RSI en mínimos no implica que vaya a rebotar.""",
 
@@ -4877,6 +5111,7 @@ MENU_COMANDOS = [
     ("compresion", "Compresión de precio de BTC (volatilidad 30 días)"),
     ("liquidaciones", "Mapa de liquidaciones estimado de BTC"),
     ("rsiminimos", "Cripto y acciones del S&P 500 cerca de su mínimo de RSI (2 años)"),
+    ("vwap", "VWAP de hoy con bandas — cripto o acciones, TICKER opcional"),
     ("noticias", "Noticias de bolsa, economía y cripto"),
     ("ticker", "Resumen de mercados al momento"),
 ]
