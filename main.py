@@ -1309,7 +1309,7 @@ def cmd_start(msg):
             "/ciclo — Fase actual de BTC en el ciclo de mercado\n"
             "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
             "/compresion — Compresión de precio de BTC (volatilidad 30 días)\n"
-            "/liquidaciones — Mapa de calor de liquidaciones estimado de BTC\n"
+            "/liquidaciones [BTC|ETH|SOL|HYPE] — Mapa de liquidaciones estimado (sin moneda, BTC)\n"
             "/rsiminimos — Cripto y acciones cerca de su mínimo de RSI en 2 años\n"
             "/vwap TICKER — Precio medio ponderado por volumen de hoy, cripto o acción\n\n"
             "/guia — Explicación completa de cada comando\n"
@@ -1355,7 +1355,7 @@ def cmd_trial(msg):
         f"Expira: {expiry.strftime('%d/%m/%Y')}\n\n"
         "Tienes acceso a TODOS los comandos, no solo a unos pocos. Algunos para empezar:\n"
         "/valor BTC-USD — índice barato/caro\n"
-        "/liquidaciones — mapa de liquidaciones de BTC\n"
+        "/liquidaciones — mapa de liquidaciones (BTC, ETH, SOL, HYPE)\n"
         "/rsiminimos — cripto y acciones cerca de su mínimo de RSI\n\n"
         "/start — ver la lista completa\n"
         "/guia — explicación de cada comando\n\n"
@@ -3363,7 +3363,7 @@ def cmd_compresion(msg):
               "3. Qué habría que vigilar para confirmar una ruptura del rango y riesgos de falsas rupturas")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
-# ═══ /LIQUIDACIONES — Mapa de calor de liquidaciones ESTIMADO de BTC ═══
+# ═══ /LIQUIDACIONES — Mapa de calor de liquidaciones ESTIMADO (BTC, ETH, SOL) ═══
 # Estimación propia con datos públicos de Binance Futures (sin claves): interés abierto y
 # ratio largos/cortos cada 15 min (si Binance no da esa resolución, cada hora) de los últimos
 # 30 días, más las velas. Modelo: cada vez que sube el interés abierto se "abren" posiciones
@@ -3372,16 +3372,28 @@ def cmd_compresion(msg):
 # toca después, la posición se da por liquidada y desaparece; si baja el interés abierto, se
 # reduce lo que queda. NO es dato real de liquidaciones: es un modelo, como los de Glassnode o
 # Coinglass (que usan supuestos distintos), así que no coincidirá con ellos.
-# Salen dos imágenes: zoom de 24 h con bloques por nivel (estilo TradingView) y visión de 30 días.
+# Salen tres imágenes: corto plazo, zoom de 24 h con bloques por nivel (estilo TradingView) y visión de 30 días.
+# Monedas disponibles: las de LIQ_MONEDAS (para añadir otra, comprobar que tenga perpetuo USDT con el
+# mismo nombre en Binance y en Bybit; las que llevan multiplicador, tipo 1000PEPEUSDT, necesitan ajuste extra).
 
 LIQ_DIAS = 30
 LIQ_TIERS = {5: 0.10, 10: 0.25, 25: 0.30, 50: 0.20, 100: 0.15}   # apalancamiento supuesto -> peso
+# HYPE: Binance da como máximo 75x (según el anuncio de su perpetuo), así que no hay tramo de 100x
+LIQ_TIERS_POR_SIMBOLO = {"HYPEUSDT": {5: 0.10, 10: 0.25, 25: 0.30, 50: 0.25, 75: 0.10}}
 LIQ_MMR = 0.005                                                   # margen de mantenimiento aprox.
 LIQ_CALENTAMIENTO_H = 48        # las primeras horas del modelo no son fiables (no vemos lo anterior)
 LIQ_NBINS = 600                 # ~0,1% de precio por fila
 LIQ_SEED_SIGMA = 0.05           # al empezar la ventana no sabemos a qué precio se abrieron las posiciones ya existentes:
 LIQ_SEED_RANGO = 0.15           # se reparten alrededor del precio de inicio (campana de ±5%, hasta ±15%), no en un punto
 LIQ_PASOS_MS = {"5m": 300000, "15m": 900000, "30m": 1800000, "1h": 3600000}
+LIQ_MONEDAS = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "HYPE": "HYPEUSDT"}
+
+def _dec_precio(p):
+    """Decimales según la magnitud del precio (BTC 0, SOL 1-2, monedas baratas 4)."""
+    return 0 if p >= 1000 else 1 if p >= 100 else 2 if p >= 1 else 4
+
+def _fp(x):
+    return f"${x:,.{_dec_precio(x)}f}"
 
 def _fut_get(path, params):
     def _do():
@@ -3460,29 +3472,29 @@ def _bybit_paginado_1h(path, extra_params, dias):
         time.sleep(0.15)
     return out
 
-def fetch_bybit_oi_ls_1h(dias=LIQ_DIAS):
-    """Interés abierto (en BTC) y proporción de cuentas en largo de Bybit BTCUSDT lineal, cada hora.
-    Best-effort: cualquier fallo (símbolo, formato, límite de peticiones) hace que se devuelva None y el
-    modelo siga solo con Binance, como hacía antes de tener esta fuente."""
-    ck = f"bybit_oi_ls_1h:{dias}"
+def fetch_bybit_oi_ls_1h(dias=LIQ_DIAS, symbol="BTCUSDT"):
+    """Interés abierto (en unidades de la moneda) y proporción de cuentas en largo de Bybit (lineal),
+    cada hora. Best-effort: cualquier fallo (símbolo, formato, límite de peticiones) hace que se devuelva
+    None y el modelo siga solo con Binance, como hacía antes de tener esta fuente."""
+    ck = f"bybit_oi_ls_1h:{symbol}:{dias}"
     cached = cache_get(ck)
     if cached is not None:
         return cached
     try:
         oi_raw = _bybit_paginado_1h("/v5/market/open-interest",
-                                    {"category": "linear", "symbol": "BTCUSDT", "intervalTime": "1h"}, dias)
+                                    {"category": "linear", "symbol": symbol, "intervalTime": "1h"}, dias)
         if len(oi_raw) < dias * 12:       # menos de la mitad de las horas esperadas: no nos fiamos
-            log.warning(f"fetch_bybit_oi_ls_1h: solo {len(oi_raw)} horas de {dias*24} esperadas, se descarta")
+            log.warning(f"fetch_bybit_oi_ls_1h {symbol}: solo {len(oi_raw)} horas de {dias*24} esperadas, se descarta")
             return None
         ls_raw = _bybit_paginado_1h("/v5/market/account-ratio",
-                                    {"category": "linear", "symbol": "BTCUSDT", "period": "1h"}, dias)
+                                    {"category": "linear", "symbol": symbol, "period": "1h"}, dias)
         oi = {h: float(d["openInterest"]) for h, d in oi_raw.items()}
         ls = {h: float(d["buyRatio"]) for h, d in ls_raw.items()} if ls_raw else {}
         res = {"oi_btc": oi, "long_share": ls}
         cache_set(ck, res)
         return res
     except Exception as e:
-        log.warning(f"fetch_bybit_oi_ls_1h: {e}")
+        log.warning(f"fetch_bybit_oi_ls_1h {symbol}: {e}")
         return None
 
 def _forward_fill_por_hora(dic, horas, default=np.nan):
@@ -3495,22 +3507,22 @@ def _forward_fill_por_hora(dic, horas, default=np.nan):
     idx = np.searchsorted(claves, horas, side="right") - 1
     return np.where(idx >= 0, valores[np.clip(idx, 0, len(valores) - 1)], default)
 
-def _enriquecer_con_bybit(d):
+def _enriquecer_con_bybit(d, symbol="BTCUSDT"):
     """Suma el interés abierto de Bybit (pasado a USD con el precio de Binance) al de Binance, y
     recalcula la proporción de largos como media ponderada por el interés abierto de cada exchange.
     Si Bybit falla o llega incompleto, 'd' se devuelve sin tocar: el modelo sigue solo con Binance,
     exactamente como antes de tener esta fuente."""
     d["fuentes"] = ["Binance"]
     try:
-        by = fetch_bybit_oi_ls_1h()
+        by = fetch_bybit_oi_ls_1h(symbol=symbol)
         if not by or not by["oi_btc"]:
             return d
         horas = (d["t"] // 3600).astype(np.int64)
-        oi_btc = _forward_fill_por_hora(by["oi_btc"], horas)
+        oi_btc = _forward_fill_por_hora(by["oi_btc"], horas)      # en unidades de la moneda (BTC, ETH, SOL...)
         ls_by = _forward_fill_por_hora(by["long_share"], horas, default=0.5)
         cobertura = float(np.mean(~np.isnan(oi_btc)))
         if cobertura < 0.5:               # menos de la mitad de las velas tienen dato de Bybit: se descarta
-            log.warning(f"_enriquecer_con_bybit: cobertura {cobertura*100:.0f}%, se descarta")
+            log.warning(f"_enriquecer_con_bybit {symbol}: cobertura {cobertura*100:.0f}%, se descarta")
             return d
         oi_usd = np.nan_to_num(oi_btc, nan=0.0) * d["c"]
         ls_by = np.nan_to_num(ls_by, nan=0.5)
@@ -3520,7 +3532,7 @@ def _enriquecer_con_bybit(d):
         d["oi"] = total
         d["fuentes"].append("Bybit")
     except Exception as e:
-        log.warning(f"_enriquecer_con_bybit: {e}")
+        log.warning(f"_enriquecer_con_bybit {symbol}: {e}")
     return d
 
 def _liq_datos(symbol, periodo, dias=LIQ_DIAS):
@@ -3552,8 +3564,8 @@ def _liq_datos(symbol, periodo, dias=LIQ_DIAS):
     sl = slice(ok, None)                  # empezamos donde hay dato de interés abierto
     d = {"t": np.array(claves[sl]) * (paso // 1000), "o": o[sl], "h": h[sl], "l": lo[sl], "c": c[sl],
          "oi": np.array(oi_v[sl], dtype=float), "long_share": np.array(ls_v[sl], dtype=float),
-         "paso_min": paso // 60000}
-    return _enriquecer_con_bybit(d)
+         "paso_min": paso // 60000, "tiers": LIQ_TIERS_POR_SIMBOLO.get(symbol, LIQ_TIERS)}
+    return _enriquecer_con_bybit(d, symbol)
 
 def _semilla(p):
     """Precios de entrada (y pesos) de las posiciones que ya existían al empezar la ventana."""
@@ -3583,7 +3595,7 @@ def modelo_liquidaciones(d, bins):
             entradas, pesos = ([p], [1.0]) if i > 0 else _semilla(p)
             nl, na, nlg = [], [], []
             for ep, we in zip(entradas, pesos):
-                for lev, w in LIQ_TIERS.items():
+                for lev, w in d.get("tiers", LIQ_TIERS).items():
                     nl += [ep * (1 - 1 / lev + LIQ_MMR), ep * (1 + 1 / lev - LIQ_MMR)]
                     na += [delta * sh * w * we, delta * (1 - sh) * w * we]
                     nlg += [True, False]
@@ -3655,7 +3667,8 @@ def calcular_liquidaciones(symbol="BTCUSDT"):
         return float(vec[(centros >= a) & (centros <= b)].sum())
     tot10 = suma(S, precio, precio * 1.10) + suma(L, precio * 0.90, precio)
     prev10 = suma(PS, precio, precio * 1.10) + suma(PL, precio * 0.90, precio)
-    res = {"precio": precio, "bins": bins, "centros": centros, "t": d["t"], "paso_min": d["paso_min"],
+    res = {"symbol": symbol, "moneda": symbol[:-4],
+           "precio": precio, "bins": bins, "centros": centros, "t": d["t"], "paso_min": d["paso_min"],
            "o": d["o"], "h": d["h"], "l": d["l"], "c": d["c"], "close": d["c"],
            "Lm": Lm, "Sm": Sm, "Pm": Pm, "L": L, "S": S,
            "previo_pct": (prev10 / tot10 * 100) if tot10 > 0 else 0.0,
@@ -3764,7 +3777,8 @@ def calcular_liquidaciones_corto(symbol="BTCUSDT"):
     Ln, Sn = np.maximum(L - PL, 0), np.maximum(S - PS, 0)
     def suma(vec, a, b):
         return float(vec[(centros >= a) & (centros <= b)].sum())
-    res = {"precio": precio, "bins": bins, "centros": centros, "t": d["t"], "paso_min": d["paso_min"],
+    res = {"symbol": symbol, "moneda": symbol[:-4],
+           "precio": precio, "bins": bins, "centros": centros, "t": d["t"], "paso_min": d["paso_min"],
            "o": d["o"], "h": d["h"], "l": d["l"], "c": d["c"], "close": d["c"],
            "Lm": Lm, "Sm": Sm, "Pm": Pm, "L": L, "S": S, "fuentes": d["fuentes"],
            "cortos_5": suma(S, precio, precio * 1.05), "largos_5": suma(L, precio * 0.95, precio),
@@ -3781,7 +3795,7 @@ def chart_liquidaciones_corto(res):
     return _grafico_bloques(
         res, horas=LIQ_CORTO_HORAS_ZOOM, vela_min=paso, pad_pct=0.010, agrup_bins=1, ext=10,
         pcts=[86, 94, 98.2, 99.7],
-        titulo=f"BTC — LIQUIDACIONES ESTIMADAS · CORTO PLAZO ({LIQ_CORTO_HORAS_ZOOM} H, velas de {paso} min)",
+        titulo=f"{res['moneda']} — LIQUIDACIONES ESTIMADAS · CORTO PLAZO ({LIQ_CORTO_HORAS_ZOOM} H, velas de {paso} min)",
         subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de {_texto_fuentes(res['fuentes'])}",
         aclaracion="Mismo modelo, con más detalle: interés abierto cada 5 min en vez de cada 15. "
                    "Cada bloque es un nivel sin tocar; se prolonga a la derecha hasta que lo toque.",
@@ -3795,6 +3809,7 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
     from matplotlib.collections import PatchCollection
     from matplotlib.patches import Rectangle, Patch
     p, paso = res["precio"], res["paso_min"]
+    dec = _dec_precio(p)
     n_tot = len(res["c"])
     ini = (LIQ_CALENTAMIENTO_H * 60 // paso) if calentamiento else 0
     k = max(1, vela_min // paso)                              # pasos del modelo que forman una vela
@@ -3854,16 +3869,16 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
         for precio_p, total, _v in picos[:3]:
             if ylo <= precio_p <= yhi:
                 ax.axhline(precio_p, color=col, linestyle=':', linewidth=0.6, alpha=0.5, zorder=1)
-                ax.text(nc + ext + 0.4, precio_p, _e(f"${precio_p/1000:.2f}K · {_usd(total)}"), color=col,
+                ax.text(nc + ext + 0.4, precio_p, _e(f"{_fp(precio_p)} · {_usd(total)}"), color=col,
                         fontsize=10, va='center', ha='left', clip_on=False)
     ax.set_xlim(0, nc + ext); ax.set_ylim(ylo, yhi)
     pos_x = list(range(0, nc, cada_velas))
     ax.set_xticks([x + 0.5 for x in pos_x])
     ax.set_xticklabels([fmt_x(_hora_madrid(tt[x])) for x in pos_x], color='#AAAAAA', fontsize=11)
     ax.tick_params(axis='y', colors='#AAAAAA', labelsize=11)
-    ax.yaxis.set_major_formatter(lambda x, _: f"{x:,.0f}")
+    ax.yaxis.set_major_formatter(lambda x, _: f"{x:,.{dec}f}")
     ax.grid(color='#1f2330', linestyle='-', linewidth=0.6, zorder=0)
-    ax.text(nc + ext - 0.3, p + p * 0.0022, _e(f"AHORA ${p:,.0f}"), color='#26a69a', fontsize=10.5, fontweight='bold',
+    ax.text(nc + ext - 0.3, p + p * 0.0022, _e(f"AHORA {_fp(p)}"), color='#26a69a', fontsize=10.5, fontweight='bold',
             va='bottom', ha='right', zorder=6,
             bbox=dict(boxstyle='round,pad=0.2', facecolor='#131722', edgecolor='none', alpha=0.85))
     fig.text(0.5, 0.965, titulo, ha='center', color='white', fontsize=18, fontweight='bold')
@@ -3875,8 +3890,8 @@ def _grafico_bloques(res, horas, vela_min, pad_pct, agrup_bins, ext, pcts, titul
     # más alta del eje Y (quedaba tapada por el fondo de este recuadro).
     chg = float(c[-1] - c[-2]) if nc > 1 else 0.0
     pct = chg / float(c[-2]) * 100 if nc > 1 and c[-2] else 0.0
-    cab = (f"BTC/USDT · {tf_txt}   O {o[-1]:,.1f}   H {h[-1]:,.1f}   L {l[-1]:,.1f}   C {c[-1]:,.1f}   "
-           f"{chg:+,.1f} ({pct:+.2f}%)")
+    cab = (f"{res['moneda']}/USDT · {tf_txt}   O {o[-1]:,.{dec}f}   H {h[-1]:,.{dec}f}   L {l[-1]:,.{dec}f}   "
+           f"C {c[-1]:,.{dec}f}   {chg:+,.{dec}f} ({pct:+.2f}%)")
     fig.text(0.5, top + 0.018, cab, ha='center', va='bottom', fontsize=10.5, family='DejaVu Sans Mono',
              color=('#26a69a' if chg >= 0 else '#ef5350'))
     if resumen:
@@ -3906,7 +3921,7 @@ def chart_liquidaciones_zoom(res):
     paso = res["paso_min"]
     return _grafico_bloques(
         res, horas=24, vela_min=paso, pad_pct=0.018, agrup_bins=1, ext=8, pcts=[86, 94, 98.2, 99.7],
-        titulo=f"BTC — LIQUIDACIONES ESTIMADAS · ZOOM 24 H (velas de {paso} min)",
+        titulo=f"{res['moneda']} — LIQUIDACIONES ESTIMADAS · ZOOM 24 H (velas de {paso} min)",
         subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de {_texto_fuentes(res['fuentes'])}",
         aclaracion="Cada bloque es un nivel de liquidación estimado que el precio todavía no ha tocado. "
                    "Se prolonga a la derecha hasta que lo toque.",
@@ -3917,7 +3932,7 @@ def chart_liquidaciones(res):
     """Visión de 30 días con el MISMO estilo que el zoom: velas de 4 h y un bloque por nivel sin tocar."""
     return _grafico_bloques(
         res, horas=24 * LIQ_DIAS, vela_min=240, pad_pct=0.03, agrup_bins=3, ext=12, pcts=[88, 95, 98.5, 99.7],
-        titulo="BTC — LIQUIDACIONES ESTIMADAS · 30 DÍAS (velas de 4 h)",
+        titulo=f"{res['moneda']} — LIQUIDACIONES ESTIMADAS · 30 DÍAS (velas de 4 h)",
         subtitulo=f"{res['hora']} (Madrid)  ·  ESTIMACIÓN PROPIA con interés abierto de {_texto_fuentes(res['fuentes'])}",
         aclaracion="Cada bloque es un nivel de liquidación estimado que el precio todavía no ha tocado. "
                    "Se prolonga a la derecha hasta que lo toque.",
@@ -3925,6 +3940,7 @@ def chart_liquidaciones(res):
 
 def texto_liquidaciones(res, res_corto=None):
     p = res["precio"]
+    mon = res["moneda"]
     if res_corto:
         intro_img = (f"🖼 Imagen 1: corto plazo ({LIQ_CORTO_HORAS_ZOOM} h, velas de {res_corto['paso_min']} min, "
                      f"el más fino de los tres). Imagen 2: zoom de 24 h (velas de {res['paso_min']} min). "
@@ -3933,7 +3949,7 @@ def texto_liquidaciones(res, res_corto=None):
         intro_img = (f"🖼 Imagen 1: zoom de 24 h con velas de {res['paso_min']} min; cada bloque es un nivel aún sin "
                      "tocar y se prolonga a la derecha. Imagen 2: los 30 días con el mismo estilo (velas de 4 h).\n")
     L = ["📖 QUÉ ES ESTE MAPA\n",
-         "Estima en qué precios se liquidarían más posiciones apalancadas de BTC si el precio llegase hasta allí. "
+         f"Estima en qué precios se liquidarían más posiciones apalancadas de {mon} si el precio llegase hasta allí. "
          "Al liquidarse, el exchange cierra la posición a la fuerza: un corto liquidado COMPRA y un largo liquidado "
          "VENDE, así que las zonas con muchas liquidaciones pueden acelerar el movimiento… o quedarse en nada.\n",
          intro_img,
@@ -3941,12 +3957,12 @@ def texto_liquidaciones(res, res_corto=None):
          f"{res['paso_min']} min), así que entre horas se usa su último dato conocido.\n"
          if len(res["fuentes"]) > 1 else
          "Fuente: solo Binance — Bybit no ha podido consultarse esta vez.\n"),
-         f"📊 AHORA — BTC ${p:,.0f}"]
+         f"📊 AHORA — {mon} {_fp(p)}"]
     if res["picos_cortos"]:
-        a = ", ".join(f"${x:,.0f} ({(x/p-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_cortos"])
+        a = ", ".join(f"{_fp(x)} ({(x/p-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_cortos"])
         L.append(f"🔴 Zonas de cortos por encima: {a}")
     if res["picos_largos"]:
-        b = ", ".join(f"${x:,.0f} ({(x/p-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_largos"])
+        b = ", ".join(f"{_fp(x)} ({(x/p-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_largos"])
         L.append(f"🟢 Zonas de largos por debajo: {b}")
     ratio = res["cortos_10"] / res["largos_10"] if res["largos_10"] > 0 else None
     if ratio:
@@ -3964,6 +3980,11 @@ def texto_liquidaciones(res, res_corto=None):
              "• No distingue entre posiciones cubiertas o con margen cruzado.\n"
              "• Los colores del zoom son intensidad relativa dentro de la ventana.\n"
              "• Que haya liquidaciones estimadas en una zona no significa que el precio vaya hacia allí.")
+    if mon != "BTC":
+        L.append(f"• En {mon} hay menos interés abierto y más ruido que en BTC: es una estimación aún más aproximada.")
+    if mon == "HYPE":
+        L.append("• El interés abierto de HYPE en Hyperliquid (su propio exchange) NO entra en este modelo, solo Binance y Bybit: "
+                 "el mapa ve solo una parte del mercado.")
     return "\n".join(L)
 
 @bot.message_handler(commands=["liquidaciones", "mapacalor"])
@@ -3972,23 +3993,29 @@ def cmd_liquidaciones(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
         return
-    m = bot.send_message(msg.chat.id, "Calculando el mapa de liquidaciones de BTC... (20-40s)")
+    partes = msg.text.split()
+    moneda = partes[1].upper().replace("-USD", "").replace("USDT", "") if len(partes) > 1 else "BTC"
+    symbol = LIQ_MONEDAS.get(moneda)
+    if not symbol:
+        safe_send(msg.chat.id, "Uso: /liquidaciones [MONEDA]\n\nDisponibles: " + ", ".join(LIQ_MONEDAS) +
+                  "\nSin moneda, se muestra BTC.")
+        return
+    m = bot.send_message(msg.chat.id, f"Calculando el mapa de liquidaciones de {moneda}... (20-40s)")
     try:
-        res = calcular_liquidaciones()
+        res = calcular_liquidaciones(symbol)
     except Exception as e:
-        log.warning(f"calcular_liquidaciones: {e}")
+        log.warning(f"calcular_liquidaciones {symbol}: {e}")
         res = None
     if not res:
         safe_send(msg.chat.id, "No he podido obtener los datos de Binance Futures ahora mismo. Reintenta en un momento.",
                   message_id=m.message_id)
         return
     try:
-        res_corto = calcular_liquidaciones_corto()
+        res_corto = calcular_liquidaciones_corto(symbol)
     except Exception as e:
-        log.warning(f"calcular_liquidaciones_corto: {e}")
+        log.warning(f"calcular_liquidaciones_corto {symbol}: {e}")
         res_corto = None
-    n_img = 3 if res_corto else 2
-    caption = (f"🔥 LIQUIDACIONES ESTIMADAS — BTC\nBTC ${res['precio']:,.0f}\n"
+    caption = (f"🔥 LIQUIDACIONES ESTIMADAS — {moneda}\n{moneda} {_fp(res['precio'])}\n"
                f"Cortos hasta +5%: {_usd(res['cortos_5'])} · Largos hasta −5%: {_usd(res['largos_5'])}\n"
                + (f"Corto plazo ({LIQ_CORTO_HORAS_ZOOM} h, imagen 1), zoom 24 h (imagen 2) y 30 días (imagen 3)"
                   if res_corto else "Zoom de 24 h (imagen 1) y visión de 30 días (imagen 2)"))
@@ -4012,10 +4039,10 @@ def cmd_liquidaciones(msg):
             if cap:
                 safe_send(msg.chat.id, cap)
     safe_send(msg.chat.id, texto_liquidaciones(res, res_corto))
-    pc = ", ".join(f"${x:,.0f} ({(x/res['precio']-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_cortos"]) or "ninguna"
-    pl = ", ".join(f"${x:,.0f} ({(x/res['precio']-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_largos"]) or "ninguna"
-    prompt = (f"Mapa de liquidaciones ESTIMADO de BTC (modelo propio con interés abierto de Binance Futures de los "
-              f"últimos 30 días, no datos reales de liquidaciones). BTC ${res['precio']:,.0f}.\n"
+    pc = ", ".join(f"{_fp(x)} ({(x/res['precio']-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_cortos"]) or "ninguna"
+    pl = ", ".join(f"{_fp(x)} ({(x/res['precio']-1)*100:+.1f}%, ~{_usd(t)})" for x, t, _ in res["picos_largos"]) or "ninguna"
+    prompt = (f"Mapa de liquidaciones ESTIMADO de {moneda} (modelo propio con interés abierto de Binance Futures de los "
+              f"últimos 30 días, no datos reales de liquidaciones). {moneda} {_fp(res['precio'])}.\n"
               f"Zonas con más liquidaciones estimadas de CORTOS por encima del precio: {pc}.\n"
               f"Zonas con más liquidaciones estimadas de LARGOS por debajo: {pl}.\n"
               f"Interés abierto combinado de {' + '.join(res['fuentes'])}.\n"
@@ -5025,8 +5052,8 @@ Tipos Fed, inflación, paro, bonos (FRED) + derivados cripto (Binance).
 ━━━ /compresion ━━━
 Mide lo estrecho que está el rango de precio de BTC en los últimos 30 días frente a los últimos 12 meses, con un velocímetro (0% expandido, 100% compresión extrema), dónde está el precio dentro del rango y la historia. Una compresión alta suele anteceder a un movimiento fuerte, pero no dice hacia dónde. Aproximación propia con datos de Binance, no coincide exactamente con CryptoQuant.
 
-━━━ /liquidaciones ━━━
-Mapa de calor ESTIMADO de dónde se liquidarían más posiciones apalancadas de BTC (cortos por encima del precio, largos por debajo), con un zoom de 24 h estilo TradingView (velas y un bloque por nivel sin tocar) y la visión de 30 días. Es un modelo propio con el interés abierto de Binance Futures: no son liquidaciones reales y no coincide con Glassnode o Coinglass.
+━━━ /liquidaciones [MONEDA] ━━━
+Mapa de calor ESTIMADO de dónde se liquidarían más posiciones apalancadas (cortos por encima del precio, largos por debajo). Disponible para BTC, ETH, SOL y HYPE (/liquidaciones ETH; sin moneda, BTC). Incluye corto plazo, zoom de 24 h estilo TradingView (velas y un bloque por nivel sin tocar) y la visión de 30 días. Es un modelo propio con el interés abierto de Binance y Bybit Futures: no son liquidaciones reales y no coincide con Glassnode o Coinglass. En HYPE no entra el interés abierto de Hyperliquid, su propio exchange.
 
 ━━━ /vwap TICKER ━━━
 Precio medio ponderado por volumen de la sesión actual (VWAP), con bandas de ±1 y ±2 desviaciones. Cripto por Binance (sesión desde 00:00 UTC), acciones por Alpaca (sesión desde la apertura de Wall Street). Sin ticker, BTC por defecto. Describe dónde está el precio hoy, no predice hacia dónde va.
@@ -5109,7 +5136,7 @@ MENU_COMANDOS = [
     ("insiders", "Compras/ventas de directivos (SEC Form 4)"),
     ("macro", "Tipos, inflación, paro y derivados cripto"),
     ("compresion", "Compresión de precio de BTC (volatilidad 30 días)"),
-    ("liquidaciones", "Mapa de liquidaciones estimado de BTC"),
+    ("liquidaciones", "Mapa de liquidaciones estimado (BTC, ETH, SOL, HYPE)"),
     ("rsiminimos", "Cripto y acciones del S&P 500 cerca de su mínimo de RSI (2 años)"),
     ("vwap", "VWAP de hoy con bandas — cripto o acciones, TICKER opcional"),
     ("noticias", "Noticias de bolsa, economía y cripto"),
@@ -5132,8 +5159,6 @@ if __name__ == "__main__":
     log.info("AnalisisPro Bot arrancado")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
-
 
 
 
