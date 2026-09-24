@@ -4425,64 +4425,105 @@ def _scheduler_loop():
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
-# ═══ /VWAP — Precio medio ponderado por volumen de la sesión actual ═══
-# El VWAP no es una media cualquiera: es el precio medio al que se ha negociado un activo DESDE
-# que empezó la sesión actual, ponderado por el volumen de cada vela (los tramos con más volumen
-# pesan más). Se reinicia al empezar cada sesión nueva. Necesita velas intradía para tener
-# sentido — con velas diarias o de varias horas apenas habría puntos por sesión.
-# Cripto (Binance, sin clave): sesión = desde las 00:00 UTC.
-# Acciones (Alpaca): sesión = desde la apertura de Wall Street (15:30 hora española en verano,
-# 16:30 en invierno); si el mercado está cerrado, se usa la última sesión completa.
+# ═══ /RSIMINIMOS — Activos tocando mínimos de RSI semanal (cripto + S&P 500) ═══
+# "Tocando mínimos" = el RSI semanal ACTUAL está muy cerca del RSI más bajo que ese mismo activo
+# ha tenido en los últimos RSIMIN_VENTANA_SEM (2 años). No es un umbral fijo tipo "RSI < 30": un
+# activo puede llevar RSI 45 y aun así estar en su peor lectura en 2 años si nunca baja de ahí.
+# Fuentes: Binance (velas semanales, cripto, sin clave) y Alpaca Markets (velas diarias del S&P
+# 500 real, agregadas a semanales aquí — Alpaca no cobra por esto en su plan gratuito, feed IEX).
+# Ni Binance ni Alpaca necesitan estar de acuerdo en nada: cada universo se calcula por separado
+# y se combinan solo al final, en la clasificación.
 
-VWAP_VELA_MIN = 15
-VWAP_HORAS_ZOOM = 10        # cuánto se muestra alrededor de la sesión (con margen a los lados)
+RSIMIN_VENTANA_SEM = 104        # 2 años de velas semanales para buscar el mínimo propio de cada activo
+RSIMIN_MIN_SEMANAS = 60         # por debajo de esto (activo muy nuevo) no se usa: RSI poco fiable
+RSIMIN_TOP = 20                 # cuántos activos entran en el gráfico
+RSIMIN_CACHE_H = 6
+RSIMIN_CACHE_FILE = os.environ.get("RSIMIN_CACHE_FILE", _p("rsiminimos_cache.json"))
+ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
 
-def _vwap_ticker_a_fuente(ticker):
-    """Decide si un ticker es cripto (Binance) o acción (Alpaca), reutilizando el mismo mapa que
-    ya usa /valor. Devuelve ('cripto', simbolo_binance) o ('accion', ticker_normalizado)."""
-    t = normalize_ticker(ticker)
-    simbolo_binance = BINANCE_MAP.get(t)
-    if simbolo_binance:
-        return "cripto", simbolo_binance
-    return "accion", t
+# Con 6 peticiones a la vez (ThreadPoolExecutor) Alpaca devolvía 429 en casi todas: el límite real
+# (o al menos el que aguanta en ráfaga) es más estricto que las 200/min anunciadas. Con este candado
+# TODAS las peticiones, vengan del hilo que vengan, se espacian contra el mismo cupo compartido.
+_ALPACA_LOCK = threading.Lock()
+_ALPACA_CALL_TIMES = []
+_ALPACA_MAX_PER_MIN = 150       # por debajo de lo anunciado, con margen de sobra
 
-def _vwap_velas_cripto(simbolo_binance):
-    """Velas de 15 min de Binance, suficientes para cubrir la sesión UTC de hoy y algo de ayer
-    de margen. Sin clave, mismo endpoint que el resto del bot."""
+def _throttle_alpaca():
+    with _ALPACA_LOCK:
+        while True:
+            now = time.time()
+            _ALPACA_CALL_TIMES[:] = [t for t in _ALPACA_CALL_TIMES if now - t < 60]
+            if len(_ALPACA_CALL_TIMES) < _ALPACA_MAX_PER_MIN:
+                _ALPACA_CALL_TIMES.append(now)
+                return
+            time.sleep(max(60 - (now - _ALPACA_CALL_TIMES[0]) + 0.05, 0.05))
+
+def _rsimin_universo_cripto():
+    """Las monedas más líquidas de Binance (mismo filtro de liquidez que /calientes), como lista
+    de (symbol Binance, ticker corto)."""
+    def _tickers():
+        r = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=15)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return r.json()
+    tk = with_retry(_tickers, tries=2, base_delay=2, what="ticker 24hr Binance (rsiminimos)")
+    if not tk:
+        return []
+    cands = []
+    for t in tk:
+        s = t.get("symbol", "")
+        if not s.endswith("USDT"):
+            continue
+        base = s[:-4]
+        if base.lower() in _CALIENTES_EXCLUIR:
+            continue
+        try:
+            qv = float(t.get("quoteVolume") or 0)
+        except (ValueError, TypeError):
+            continue
+        if qv >= CALIENTES_MIN_USDT:
+            cands.append((s, base, qv))
+    cands.sort(key=lambda x: -x[2])
+    return [(s, base) for s, base, _ in cands[:CALIENTES_UNIVERSO]]
+
+def _rsimin_rsi_cripto(symbol):
+    """RSI semanal (serie) de una moneda de Binance, últimas ~2,3 años."""
     def _do():
         r = requests.get("https://api.binance.com/api/v3/klines",
-                         params={"symbol": simbolo_binance, "interval": f"{VWAP_VELA_MIN}m", "limit": 200},
+                         params={"symbol": symbol, "interval": "1w", "limit": RSIMIN_VENTANA_SEM + 20},
                          timeout=10)
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code}")
         return r.json()
-    kl = with_retry(_do, tries=2, base_delay=1.5, what=f"vwap binance {simbolo_binance}")
-    if not kl:
+    kl = with_retry(_do, tries=2, base_delay=1.5, what=f"rsiminimos binance {symbol}")
+    if not kl or len(kl) < RSIMIN_MIN_SEMANAS + 14:
         return None
     if kl[-1][6] > int(time.time() * 1000):
-        kl = kl[:-1]                      # fuera la vela en curso, incompleta
-    t = np.array([int(k[0]) // 1000 for k in kl])
-    o = np.array([float(k[1]) for k in kl]); h = np.array([float(k[2]) for k in kl])
-    l = np.array([float(k[3]) for k in kl]); c = np.array([float(k[4]) for k in kl])
-    v = np.array([float(k[5]) for k in kl])
-    hoy_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    inicio = int(hoy_utc.timestamp())
-    m = t >= inicio
-    if m.sum() < 2:                       # sesión recién empezada: coge la de ayer de referencia
-        inicio -= 86400
-        m = t >= inicio
-    return {"t": t[m], "o": o[m], "h": h[m], "l": l[m], "c": c[m], "v": v[m],
-            "reset_txt": "00:00 UTC", "fuente": "Binance"}
+        kl = kl[:-1]                      # fuera la vela semanal en curso, incompleta
+    cierres = pd.Series([float(k[4]) for k in kl])
+    return calc_rsi(cierres, 14)
 
-def _vwap_velas_accion(ticker):
-    """Velas de 15 min de Alpaca (feed IEX), agrupadas por sesión de Wall Street; se queda con
-    la sesión más reciente (la de hoy si el mercado está abierto, si no la última completa)."""
+def _alpaca_get(path, params):
+    def _do():
+        _throttle_alpaca()
+        r = requests.get(f"https://data.alpaca.markets{path}", params=params,
+                         headers={"APCA-API-KEY-ID": ALPACA_API_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY},
+                         timeout=12)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:100]}")
+        return r.json()
+    return with_retry(_do, tries=2, base_delay=1.5, what=f"alpaca {path}")
+
+def _rsimin_rsi_accion(ticker):
+    """RSI semanal (serie) de una acción, agregando velas diarias de Alpaca. None si Alpaca falla,
+    no tiene clave configurada, o no hay suficiente historial."""
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         return None
-    desde = (datetime.now(timezone.utc) - timedelta(days=6)).strftime("%Y-%m-%d")
+    desde = (datetime.now(timezone.utc) - timedelta(days=int(RSIMIN_VENTANA_SEM * 7 * 1.15))).strftime("%Y-%m-%d")
     barras, cursor = [], None
-    for _ in range(4):
-        params = {"timeframe": f"{VWAP_VELA_MIN}Min", "start": desde, "limit": 1000, "feed": "iex"}
+    for _ in range(6):                    # tope de seguridad: nunca deberían hacer falta tantas páginas
+        params = {"timeframe": "1Day", "start": desde, "limit": 1000, "feed": "iex", "adjustment": "split"}
         if cursor:
             params["page_token"] = cursor
         j = _alpaca_get(f"/v2/stocks/{ticker}/bars", params)
@@ -4492,646 +4533,247 @@ def _vwap_velas_accion(ticker):
         cursor = j.get("next_page_token")
         if not cursor:
             break
-    if len(barras) < 2:
+    if len(barras) < RSIMIN_MIN_SEMANAS * 5:      # ~5 sesiones por semana
         return None
-    ny = pytz.timezone("America/New_York")
-    fechas_ny = [datetime.fromisoformat(b["t"].replace("Z", "+00:00")).astimezone(ny) for b in barras]
-    dia_sesion = max(f.date() for f in fechas_ny)      # la sesión más reciente presente en los datos
-    idx = [i for i, f in enumerate(fechas_ny) if f.date() == dia_sesion]
-    if len(idx) < 2:
+    diarios = pd.Series([float(b["c"]) for b in barras],
+                        index=pd.to_datetime([b["t"] for b in barras]))
+    semanal = diarios.resample("W-FRI").last().dropna()
+    if len(semanal) < RSIMIN_MIN_SEMANAS + 14:
         return None
-    t = np.array([int(fechas_ny[i].timestamp()) for i in idx])
-    o = np.array([float(barras[i]["o"]) for i in idx]); h = np.array([float(barras[i]["h"]) for i in idx])
-    l = np.array([float(barras[i]["l"]) for i in idx]); c = np.array([float(barras[i]["c"]) for i in idx])
-    v = np.array([float(barras[i]["v"]) for i in idx])
-    return {"t": t, "o": o, "h": h, "l": l, "c": c, "v": v,
-            "reset_txt": "apertura de Wall Street", "fuente": "Alpaca"}
+    return calc_rsi(semanal, 14)
 
-def _vwap_calcular(d):
-    """VWAP acumulado desde el inicio de la sesión, más bandas de ±1 y ±2 desviaciones (ponderadas
-    por volumen, la misma idea que un Bollinger pero centrado en el VWAP en vez de una media simple)."""
-    tp = (d["h"] + d["l"] + d["c"]) / 3
-    cum_v = np.cumsum(d["v"])
-    cum_v_seguro = np.where(cum_v > 0, cum_v, 1e-9)
-    vwap = np.cumsum(tp * d["v"]) / cum_v_seguro
-    var = np.cumsum(d["v"] * (tp - vwap) ** 2) / cum_v_seguro
-    std = np.sqrt(np.maximum(var, 0))
-    return vwap, std
-
-def calcular_vwap(ticker):
-    ck = f"vwap:{ticker}"
+def calcular_rsiminimos():
+    ck = "rsiminimos"
     cached = cache_get(ck)
     if cached is not None:
         return cached
-    tipo, simbolo = _vwap_ticker_a_fuente(ticker)
-    d = _vwap_velas_cripto(simbolo) if tipo == "cripto" else _vwap_velas_accion(simbolo)
-    if not d:
+    ahora = time.time()
+    if not _RSIMIN_MEM["filas"] is None and ahora - _RSIMIN_MEM["ts"] < RSIMIN_CACHE_H * 3600:
+        cache_set(ck, _RSIMIN_MEM["res"])
+        return _RSIMIN_MEM["res"]
+    try:
+        with open(RSIMIN_CACHE_FILE, "r") as f:
+            disco = json.load(f)
+        if ahora - disco.get("ts", 0) < RSIMIN_CACHE_H * 3600 and disco.get("res"):
+            _RSIMIN_MEM.update(ts=disco["ts"], filas=disco["res"]["filas"], res=disco["res"])
+            cache_set(ck, disco["res"])
+            return disco["res"]
+    except Exception:
+        pass
+
+    from concurrent.futures import ThreadPoolExecutor
+    filas, sin_alpaca = [], not (ALPACA_API_KEY and ALPACA_SECRET_KEY)
+
+    cripto = _rsimin_universo_cripto()
+    def _job_cripto(par):
+        symbol, base = par
+        try:
+            serie = _rsimin_rsi_cripto(symbol)
+        except Exception as e:
+            log.warning(f"rsiminimos cripto {symbol}: {e}")
+            return None
+        return _rsimin_evaluar(base, "cripto", serie)
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        for r in ex.map(_job_cripto, cripto):
+            if r:
+                filas.append(r)
+
+    if not sin_alpaca:
+        def _job_accion(ticker):
+            try:
+                serie = _rsimin_rsi_accion(ticker)
+            except Exception as e:
+                log.warning(f"rsiminimos accion {ticker}: {e}")
+                return None
+            return _rsimin_evaluar(ticker, "acción", serie)
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            for r in ex.map(_job_accion, SP500_TICKERS):
+                if r:
+                    filas.append(r)
+
+    if not filas:
         return None
-    vwap, std = _vwap_calcular(d)
-    precio = float(d["c"][-1])
-    v_actual, s_actual = float(vwap[-1]), float(std[-1])
-    dist_pct = (precio - v_actual) / v_actual * 100 if v_actual else 0.0
-    dist_sigma = (precio - v_actual) / s_actual if s_actual > 0 else 0.0
-    res = {**d, "vwap": vwap, "std": std, "precio": precio, "tipo": tipo, "ticker_mostrado": ticker.upper(),
-           "dist_pct": dist_pct, "dist_sigma": dist_sigma,
+    filas.sort(key=lambda f: f["dist"])
+    res = {"filas": filas, "top": filas[:RSIMIN_TOP], "n_cripto": sum(1 for f in filas if f["tipo"] == "cripto"),
+           "n_acciones": sum(1 for f in filas if f["tipo"] == "acción"), "sin_alpaca": sin_alpaca,
+           "universo_cripto": len(cripto), "universo_acciones": len(SP500_TICKERS) if not sin_alpaca else 0,
            "hora": datetime.now(MADRID).strftime("%d/%m %H:%M")}
+    _RSIMIN_MEM.update(ts=ahora, filas=filas, res=res)
+    try:
+        tmp = RSIMIN_CACHE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"ts": ahora, "res": res}, f)
+        os.replace(tmp, RSIMIN_CACHE_FILE)
+    except Exception as e:
+        log.warning(f"rsiminimos cache disco: {e}")
     cache_set(ck, res)
     return res
 
-def chart_vwap(res):
-    n = len(res["c"])
-    fig = plt.figure(figsize=(11, 8.5))
+_RSIMIN_MEM = {"ts": 0, "filas": None, "res": None}
+
+def _rsimin_evaluar(nombre, tipo, serie):
+    if serie is None:
+        return None
+    v = serie.dropna()
+    if len(v) < RSIMIN_MIN_SEMANAS:
+        return None
+    ventana = v.iloc[-RSIMIN_VENTANA_SEM:] if len(v) > RSIMIN_VENTANA_SEM else v
+    actual = float(ventana.iloc[-1])
+    idx_min = int(np.argmin(ventana.values))
+    minimo = float(ventana.iloc[idx_min])
+    maximo = float(ventana.max())
+    semanas_desde_min = len(ventana) - 1 - idx_min
+    return {"nombre": nombre, "tipo": tipo, "actual": actual, "minimo": minimo, "maximo": maximo,
+            "dist": actual - minimo, "semanas_desde_min": semanas_desde_min, "n_semanas": len(ventana)}
+
+def chart_rsiminimos(res):
+    filas = list(reversed(res["top"]))          # el más cerca de su mínimo, arriba
+    n = len(filas)
+    fig = plt.figure(figsize=(11, max(6, 1.6 + n * 0.42)))
     fig.patch.set_facecolor('#0d1117')
-    ax = fig.add_axes([0.09, 0.11, 0.86, 0.70])
+    ax = fig.add_axes([0.24, 0.10, 0.70, 0.78])
     ax.set_facecolor('#0d1117')
+    COL = {"cripto": "#f0b90b", "acción": "#3b82f6"}
+    ys = np.arange(n)
+    for y, f in zip(ys, filas):
+        col = COL[f["tipo"]]
+        ax.plot([f["minimo"], f["maximo"]], [y, y], color=col, alpha=0.35, linewidth=4, solid_capstyle='round', zorder=2)
+        ax.plot(f["minimo"], y, '|', color=col, markersize=10, markeredgewidth=2, zorder=3)
+        ax.plot(f["maximo"], y, '|', color=col, markersize=10, markeredgewidth=2, zorder=3)
+        ax.plot(f["actual"], y, 'v', color=col, markersize=15, markeredgecolor='white', markeredgewidth=1.3, zorder=5)
+        ax.text(-2, y, f["nombre"], ha='right', va='center', color='white', fontsize=10.5, fontweight='bold')
+        ax.text(102, y, f"{f['actual']:.0f}", ha='left', va='center', color=col, fontsize=10.5, fontweight='bold')
+    ax.axvline(30, color='#ef4444', linestyle=':', linewidth=1, alpha=0.6, zorder=1)
+    ax.text(30, n - 0.3, ' 30', color='#ef4444', fontsize=8.5, va='bottom', ha='left', alpha=0.8)
+    ax.set_xlim(0, 100); ax.set_ylim(-1, n)
+    ax.set_yticks([])
+    ax.set_xlabel("RSI semanal", color='#AAAAAA', fontsize=10.5)
+    ax.tick_params(axis='x', colors='#777777', labelsize=9)
     for sp in ax.spines.values(): sp.set_color('#333333')
-    x = np.arange(n)
-    vwap, std = res["vwap"], res["std"]
-    ax.fill_between(x, vwap - 2 * std, vwap + 2 * std, color='#3b82f6', alpha=0.08, zorder=1)
-    ax.fill_between(x, vwap - std, vwap + std, color='#3b82f6', alpha=0.14, zorder=1)
-    ax.plot(x, vwap, color='#f0b90b', linewidth=2, zorder=3, label='VWAP')
-    ancho = 0.62
-    for i in range(n):
-        col = '#26a69a' if res["c"][i] >= res["o"][i] else '#ef5350'
-        ax.plot([i, i], [res["l"][i], res["h"][i]], color=col, linewidth=1, zorder=2)
-        ax.add_patch(plt.Rectangle((i - ancho / 2, min(res["o"][i], res["c"][i])), ancho,
-                                   max(abs(res["c"][i] - res["o"][i]), res["precio"] * 0.0003),
-                                   facecolor=col, edgecolor=col, zorder=4))
-    ax.axhline(res["precio"], color='white', linestyle=':', linewidth=0.8, alpha=0.6, zorder=2)
-    ext = max(2, n // 12)
-    ax.text(n + ext - 0.5, res["precio"], f"AHORA ${res['precio']:,.2f}", color='white', fontsize=10.5,
-           fontweight='bold', va='center', ha='right', zorder=6,
-           bbox=dict(boxstyle='round,pad=0.2', facecolor='#0d1117', edgecolor='none', alpha=0.85))
-    cada = max(1, (60 // VWAP_VELA_MIN) * 2)
-    pos_x = list(range(0, n, cada))
-    ax.set_xticks(pos_x)
-    tz = pytz.timezone("America/New_York") if res["tipo"] == "accion" else timezone.utc
-    ax.set_xticklabels([datetime.fromtimestamp(res["t"][i], tz).strftime("%H:%M") for i in pos_x],
-                       color='#AAAAAA', fontsize=9.5)
-    ax.set_xlim(-1, n + ext)
-    ax.tick_params(axis='y', colors='#AAAAAA', labelsize=10)
-    ax.grid(color='#1f2330', linestyle='--', linewidth=0.6, zorder=0)
-    ax.legend(loc='upper left', frameon=False, labelcolor='#CCCCCC', fontsize=10)
-    fig.text(0.5, 0.965, f"{res['ticker_mostrado']} — VWAP DE HOY (velas de {VWAP_VELA_MIN} min)",
-             ha='center', color='white', fontsize=17, fontweight='bold')
-    fig.text(0.5, 0.935, f"{res['hora']} (Madrid)  ·  sesión desde {res['reset_txt']}  ·  fuente: {res['fuente']}",
+    ax.grid(axis='x', color='#1f2330', linestyle='--', linewidth=0.6, zorder=0)
+    fig.text(0.5, 0.965, "RSI SEMANAL — MÁS CERCA DE SU MÍNIMO DE 2 AÑOS", ha='center', color='white',
+             fontsize=16, fontweight='bold')
+    fig.text(0.5, 0.938, f"{res['hora']} (Madrid)  ·  ▼ = RSI actual  ·  la barra es su rango de 2 años (mín–máx)",
              ha='center', color='#FFB84D', fontsize=10.5)
-    signo = "por encima" if res["dist_pct"] >= 0 else "por debajo"
-    fig.text(0.5, 0.905, f"Precio {abs(res['dist_pct']):.2f}% {signo} del VWAP ({res['dist_sigma']:+.1f}σ)",
-             ha='center', color='#CCCCCC', fontsize=11)
+    fig.text(0.5, 0.915, f"Cripto: {res['n_cripto']} de {res['universo_cripto']} analizadas (Binance)  ·  "
+             f"Acciones: {res['n_acciones']} de {res['universo_acciones']} (S&P 500, Alpaca)",
+             ha='center', color='#999999', fontsize=9.5)
+    ax.plot([], [], color=COL["cripto"], linewidth=4, label='Cripto')
+    ax.plot([], [], color=COL["acción"], linewidth=4, label='Acción (S&P 500)')
+    ax.legend(loc='lower right', frameon=False, labelcolor='#CCCCCC', fontsize=9.5)
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117')
     plt.close()
     buf.seek(0)
     return buf
 
-def texto_vwap(res):
-    signo = "por encima" if res["dist_pct"] >= 0 else "por debajo"
-    if abs(res["dist_sigma"]) < 1:
-        zona = "dentro de su rango normal de hoy (±1σ)"
-    elif abs(res["dist_sigma"]) < 2:
-        zona = "en la banda ancha, algo estirado respecto a hoy (entre 1σ y 2σ)"
-    else:
-        zona = "fuera de su rango habitual de hoy (más de 2σ)"
-    L = ["📖 QUÉ ES EL VWAP\n",
-         "El precio medio al que se ha negociado el activo desde que empezó la sesión, ponderado "
-         "por el volumen de cada tramo (los momentos con más volumen pesan más que los de poco "
-         "volumen). Se reinicia cada sesión. Las bandas son la desviación del precio respecto a "
-         "ese VWAP, ponderada igual: dicen si el movimiento de hoy es normal o se ha salido de lo "
-         "habitual.\n",
-         f"📊 {res['ticker_mostrado']}: ${res['precio']:,.2f}",
-         f"VWAP de hoy: ${res['vwap'][-1]:,.2f} — el precio está un {abs(res['dist_pct']):.2f}% {signo}, "
-         f"{zona}.",
-         "\n⚠️ Cómo leerlo con cabeza:\n"
-         "• Esto describe dónde está el precio ahora respecto al promedio de hoy, no predice hacia "
-         "dónde va a ir.\n"
-         "• Con cripto la sesión se reinicia a las 00:00 UTC aunque el mercado no cierre nunca; con "
-         "acciones, a la apertura de Wall Street.\n"
-         "• Muy al principio de la sesión hay pocas velas y las bandas pueden ser poco fiables."]
+def texto_rsiminimos(res):
+    L = ["📖 QUÉ ES ESTE LISTADO\n",
+         "Para cada activo, calcula el RSI semanal (14 semanas) y lo compara con el rango que ese "
+         "mismo activo ha tenido en las últimas 2 años. No es un umbral fijo: un activo puede llevar "
+         "RSI 45 y aun así estar en su peor lectura de los últimos 2 años, si nunca ha bajado de ahí. "
+         "Los de arriba del gráfico son los que ahora mismo están más cerca de su propio mínimo.\n"]
+    for f in res["top"][:10]:
+        pos = ("en su mínimo de 2 años" if f["semanas_desde_min"] == 0 else
+               f"su mínimo fue hace {f['semanas_desde_min']} semanas")
+        L.append(f"• {f['nombre']} ({f['tipo']}): RSI {f['actual']:.0f} — {pos} "
+                 f"(rango 2a: {f['minimo']:.0f}-{f['maximo']:.0f})")
+    if res["sin_alpaca"]:
+        L.append("\n⚠️ No hay clave de Alpaca configurada: solo se ha podido analizar cripto, sin acciones.")
+    L.append("\n⚠️ Cómo leerlo con cabeza:\n"
+             "• Un RSI en mínimos no significa que vaya a rebotar. A veces se queda ahí semanas o "
+             "meses porque el activo sigue cayendo (lo que se llama quedarse 'pegado' a sobreventa).\n"
+             "• Es una lectura técnica sobre el pasado reciente, no una predicción ni una señal de compra.\n"
+             "• El RSI de las acciones se calcula agregando velas diarias a semanales; el de las "
+             "criptos usa velas semanales directas de Binance.")
     return "\n".join(L)
 
-@bot.message_handler(commands=["vwap"])
+@bot.message_handler(commands=["reset_rsiminimos"])
+def cmd_reset_rsiminimos(msg):
+    if not allowed(msg):
+        return
+    _RSIMIN_MEM.update(ts=0, filas=None, res=None)
+    _CACHE.pop("rsiminimos", None)
+    try:
+        os.remove(RSIMIN_CACHE_FILE)
+        disco = "borrada"
+    except FileNotFoundError:
+        disco = "no existía"
+    safe_send(msg.chat.id, f"Caché de /rsiminimos borrada (archivo: {disco}). El próximo /rsiminimos "
+             "recalcula desde cero.")
+
+@bot.message_handler(commands=["rsiminimos"])
 @con_dyor
-def cmd_vwap(msg):
+def cmd_rsiminimos(msg):
     if not is_premium(msg.from_user.id):
         safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
         return
-    partes = msg.text.split(maxsplit=1)
-    ticker = partes[1].strip().upper() if len(partes) > 1 else "BTC"
-    m = bot.send_message(msg.chat.id, f"Calculando el VWAP de {ticker}...")
+    m = bot.send_message(msg.chat.id, "Escaneando cripto y el S&P 500 en busca de mínimos de RSI... "
+                                      "(la primera vez del día puede tardar 2-3 min)")
     try:
-        res = calcular_vwap(ticker)
+        res = calcular_rsiminimos()
     except Exception as e:
-        log.warning(f"calcular_vwap {ticker}: {e}")
+        log.warning(f"calcular_rsiminimos: {e}")
         res = None
     if not res:
-        motivo = ("" if (ALPACA_API_KEY and ALPACA_SECRET_KEY) else
-                  " (si es una acción, revisa que ALPACA_API_KEY/ALPACA_SECRET_KEY estén puestas)")
-        safe_send(msg.chat.id, f"No he podido calcular el VWAP de {ticker} ahora mismo.{motivo} "
-                 "Prueba con otro ticker o vuelve a intentarlo en un rato.", message_id=m.message_id)
+        safe_send(msg.chat.id, "No he podido calcularlo ahora mismo. Reintenta en un rato.",
+                  message_id=m.message_id)
         return
-    signo = "por encima" if res["dist_pct"] >= 0 else "por debajo"
-    caption = (f"📊 VWAP — {res['ticker_mostrado']}\n${res['precio']:,.2f}  ·  "
-               f"{abs(res['dist_pct']):.2f}% {signo} del VWAP de hoy")
+    top3 = ", ".join(f"{f['nombre']} (RSI {f['actual']:.0f})" for f in res["top"][:3])
+    caption = f"📉 RSI SEMANAL EN MÍNIMOS\nMás cerca de su mínimo de 2 años: {top3}"
     try:
-        img = chart_vwap(res)
+        img = chart_rsiminimos(res)
         bot.delete_message(msg.chat.id, m.message_id)
         bot.send_photo(msg.chat.id, img, caption=caption[:1020])
     except Exception as e:
-        log.warning(f"chart_vwap {res['ticker_mostrado']}: {e}")
+        log.warning(f"chart_rsiminimos: {e}")
         safe_send(msg.chat.id, caption, message_id=m.message_id)
-    safe_send(msg.chat.id, texto_vwap(res))
-    prompt = (f"VWAP de {res['ticker_mostrado']} ({'cripto, sesión desde 00:00 UTC' if res['tipo']=='cripto' else 'acción, sesión de Wall Street'}). "
-              f"Precio actual ${res['precio']:,.2f}, VWAP ${res['vwap'][-1]:,.2f}, "
-              f"desviación {res['dist_pct']:+.2f}% ({res['dist_sigma']:+.1f} desviaciones estándar de la sesión).\n\n"
-              "Datos ya calculados, úsalos tal cual. No inventes cifras ni noticias.\n\n"
-              "1. ¿Qué dice esta posición respecto al VWAP sobre cómo ha ido la sesión de hoy?\n"
-              "2. ¿Qué significa que el precio esté a esa distancia en desviaciones estándar?\n"
-              "3. Qué otras señales conviene mirar junto al VWAP antes de sacar conclusiones")
+    safe_send(msg.chat.id, texto_rsiminimos(res))
+    lista = "\n".join(f"- {f['nombre']} ({f['tipo']}): RSI {f['actual']:.0f}, rango 2a {f['minimo']:.0f}-{f['maximo']:.0f}, "
+                      f"mínimo hace {f['semanas_desde_min']} semanas" for f in res["top"])
+    prompt = ("Listado de activos (cripto y acciones del S&P 500) cuyo RSI SEMANAL está ahora mismo "
+              f"más cerca de su propio mínimo de los últimos 2 años:\n{lista}\n\n"
+              "Datos ya calculados, úsalos tal cual, no inventes cifras ni noticias. Reglas: NO des "
+              "recomendaciones de operativa (comprar, vender, entradas, stops, objetivos). No afirmes "
+              "que vayan a rebotar. Sin negritas ni formato markdown.\n\n"
+              "1. ¿Qué tienen en común, si algo, los activos que aparecen en esta lista?\n"
+              "2. ¿Por qué un RSI en mínimos no implica que el precio vaya a girar?\n"
+              "3. ¿Qué otras señales conviene mirar junto a esto antes de sacar conclusiones?")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
-# ═══ /CICLO — Ciclo de mercado simplificado (Pico/Contracción/Suelo/
-# Expansión/Recuperación/Prosperidad), con BTC marcado en su fase actual ═
-# Reutiliza la misma lógica de "meses desde el halving" que ya usa
-# /halvingbtc (ahí ya está verificada) como señal principal, y la afina con
-# RSI y distancia al máximo histórico para situar el punto con más
-# precisión dentro de esa fase.
-
-def calcular_ciclo_btc():
-    d = get_quote("BTC-USD")
-    if not d:
-        return None
-    import datetime as dt
-
-    # FIX de raíz: antes "distancia al máximo" se calculaba con solo 220
-    # días de histórico (d["hi52"]), lo que en septiembre de 2026 ni
-    # siquiera alcanza a ver el máximo histórico real de octubre de 2025
-    # ($126,080) — así que comparaba el precio actual contra un "máximo"
-    # equivocado, mucho más bajo que el real, y nunca llegaba a ver el
-    # suelo real del ciclo (~$58,120, 25 junio 2026) tampoco. Ahora se usa
-    # el histórico completo real (mismo mecanismo que ya usa /dominancia)
-    # para encontrar el máximo y el mínimo de verdad.
-    hist = fetch_btc_price_history_long(days=500)
-    rsi = d["rsi"]
-    price_now = d["price"]
-
-    if hist and len(hist["closes"]) > 30:
-        closes = hist["closes"]
-        idx_ath = closes.idxmax()
-        ath = float(closes.iloc[idx_ath])
-        # Mínimo realizado DESPUÉS del máximo (el suelo real de este ciclo
-        # bajista, si ya ha ocurrido) — no un mínimo hipotético.
-        post_ath = closes.iloc[idx_ath:]
-        low_after_ath = float(post_ath.min()) if len(post_ath) > 0 else ath
-        dist_ath = (price_now - ath) / ath * 100
-        # Posición de recuperación: 0 = justo en el mínimo realizado,
-        # 1 = de vuelta en el máximo histórico. Si el precio actual ES el
-        # mínimo (todavía cayendo), recovery_frac = 0.
-        rango_total = ath - low_after_ath
-        recovery_frac = ((price_now - low_after_ath) / rango_total) if rango_total > 0 else 0.5
-        recovery_frac = max(0.0, min(1.0, recovery_frac))
-    else:
-        # Sin histórico largo disponible: fallback conservador con lo que
-        # ya teníamos (peor, pero mejor que fallar del todo).
-        ath = d["hi52"]
-        dist_ath = (price_now - ath) / ath * 100 if ath > 0 else 0
-        recovery_frac = 0.5
-        low_after_ath = None
-
-    # El suelo real ya ha pasado (recovery_frac > 0 y el mínimo no es el
-    # precio de ahora mismo) -> estamos en la mitad ASCENDENTE del ciclo
-    # (Suelo -> Expansión -> Recuperación -> Prosperidad), avanzando en
-    # proporción a cuánto llevamos recuperado desde ese mínimo real hacia
-    # el máximo anterior. RSI ajusta un poco dentro de ese tramo.
-    rsi_ajuste = max(0.0, min(1.0, (rsi - 30) / 40))  # alto = sobrecompra = empuja más adelante
-    avance = recovery_frac * 0.8 + rsi_ajuste * 0.2
-    x_frac = 0.5 + avance * 0.5  # 0.5 = justo en el Suelo, 1.0 = de vuelta al Pico
-
-    if recovery_frac < 0.15:
-        fase = "Suelo (saliendo de mínimos)"
-    elif recovery_frac < 0.45:
-        fase = "Expansión temprana"
-    elif recovery_frac < 0.75:
-        fase = "Expansión / Recuperación"
-    else:
-        fase = "Recuperación avanzada (cerca de máximos previos)"
-
-    meses = (dt.date.today() - dt.date(2024, 4, 19)).days // 30
-
-    return {"x_frac": x_frac, "fase": fase, "meses": meses, "rsi": round(rsi, 1),
-            "dist_ath": round(dist_ath, 1), "price": d["price"]}
-
-def chart_ciclo_mercado(res):
-    fig, ax = plt.subplots(figsize=(13, 8))
-    fig.patch.set_facecolor('#0d1117')
-    ax.set_facecolor('#0d1117')
-
-    xs = np.linspace(0, 1, 400)
-    ys = np.cos(2*np.pi*xs)
-
-    # Degradado de color siguiendo la curva: rojo/naranja en el pico
-    # (riesgo máximo), pasando por amarillo, hasta verde/azul en el suelo
-    # (oportunidad máxima) — mismo código de colores que el resto del bot.
-    for i in range(len(xs)-1):
-        frac = (ys[i] + 1) / 2  # 1 en el pico, 0 en el suelo
-        if frac > 0.8:   c = '#FF3333'
-        elif frac > 0.55:c = '#FF9900'
-        elif frac > 0.45:c = '#FFCC00'
-        elif frac > 0.2: c = '#66CC66'
-        else:             c = '#3388FF'
-        ax.plot(xs[i:i+2], ys[i:i+2], color=c, linewidth=6, solid_capstyle='round', zorder=3)
-
-    ax.fill_between(xs, ys, -1.3, color='#0d1117', zorder=1)
-    ax.axhline(-1.15, color='#333333', linewidth=1, zorder=2)
-
-    # Etiquetas de las fases
-    def marcar(x, y, texto, sub, dy=0.22, ha='center'):
-        ax.plot(x, y, 'o', color='white', markersize=8, zorder=5)
-        ax.text(x, y+dy, texto, color='white', fontsize=13, fontweight='bold',
-                ha=ha, va='bottom', zorder=6)
-        if sub:
-            ax.text(x, y+dy-0.11, sub, color='#999999', fontsize=9.5, ha=ha, va='bottom', zorder=6)
-
-    marcar(0.0, 1.0, "PICO", "Riesgo financiero máximo", dy=0.18, ha='left')
-    marcar(0.5, -1.0, "SUELO", "Oportunidad financiera máxima", dy=0.30)
-    ax.text(0.78, -0.75, "Recuperación", color='#AAAAAA', fontsize=11, fontweight='bold', ha='center')
-    ax.text(0.93, -0.35, "Prosperidad", color='#AAAAAA', fontsize=11, fontweight='bold', ha='center')
-    ax.text(0.22, 0.0, "Contracción", color='#AAAAAA', fontsize=12, fontweight='bold', ha='center')
-    ax.text(0.68, 0.0, "Expansión", color='#AAAAAA', fontsize=12, fontweight='bold', ha='center')
-
-    # Marcador de BTC en su posición actual
-    xf = res["x_frac"]
-    yf = np.cos(2*np.pi*xf)
-    ax.plot(xf, yf, 'o', color='#F7931A', markersize=22, zorder=10,
-            markeredgecolor='white', markeredgewidth=2.5)
-    ax.annotate(f"BTC AHORA\n${res['price']:,.0f}", xy=(xf, yf), xytext=(xf, yf+0.35),
-                fontsize=11, color='#F7931A', fontweight='bold', ha='center', zorder=11,
-                bbox=dict(boxstyle='round,pad=0.35', facecolor='#0d1117', edgecolor='#F7931A',
-                          linewidth=2, alpha=0.95),
-                arrowprops=dict(arrowstyle='->', color='#F7931A', lw=1.8))
-
-    ax.set_xlim(-0.03, 1.03)
-    ax.set_ylim(-1.35, 1.45)
-    ax.axis('off')
-    ax.set_title('CICLO DE MERCADO SIMPLIFICADO — BITCOIN', color='white', fontsize=16,
-                 fontweight='bold', pad=10)
-
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor='#0d1117', bbox_inches='tight')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-@bot.message_handler(commands=["ciclo"])
-@con_dyor
-def cmd_ciclo(msg):
-    if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
-        return
-    m = bot.send_message(msg.chat.id, "Calculando posición de BTC en el ciclo... (10-15s)")
-    res = calcular_ciclo_btc()
-    if not res:
-        safe_send(msg.chat.id, "Sin datos de BTC ahora mismo. Reintenta en un momento.",
-                  message_id=m.message_id)
-        return
-    try:
-        chart = chart_ciclo_mercado(res)
-        bot.delete_message(msg.chat.id, m.message_id)
-        bot.send_photo(msg.chat.id, chart)
-    except Exception as e:
-        log.warning(f"chart_ciclo_mercado: {e}")
-        safe_send(msg.chat.id, f"BTC está en fase: {res['fase']}", message_id=m.message_id)
-
-    prompt = (f"Bitcoin cotiza a ${res['price']:,.0f}. Lleva {res['meses']} meses desde el último "
-              f"halving (19 abril 2024). RSI 14d: {res['rsi']}. Distancia al máximo histórico: "
-              f"{res['dist_ath']:+.1f}%. Según este contexto, ahora mismo se sitúa en la fase de "
-              f"'{res['fase']}' dentro del ciclo de mercado clásico (Pico -> Contracción -> Suelo -> "
-              f"Expansión -> Recuperación -> Prosperidad).\n\n"
-              "1. ¿Qué implica estar en esta fase concreta del ciclo?\n"
-              "2. ¿Qué señales confirmarían el paso a la siguiente fase?\n"
-              "3. Estrategia razonable dado este punto del ciclo")
-    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
-
-# ═══ /INSIDERS TICKER — Compras de directivos (SEC Form 4) ══════
-# Cuando varios directivos/consejeros compran acciones de su propia
-# empresa (no venden, compran) a la vez, suele ser señal alcista fuerte —
-# tienen información que el mercado no tiene. Datos oficiales de la SEC,
-# misma infraestructura que ya usamos para /cartera (13F).
-
-TICKER_CIK_MAP_FILE = os.environ.get("TICKER_CIK_MAP_FILE", _p("ticker_cik_map.json"))
-_TICKER_CIK_MAP = None
-
-def _cargar_ticker_cik_map():
-    """Mapeo oficial ticker->CIK que publica la propia SEC (un solo fichero
-    para las ~10.000 empresas cotizadas), cacheado en disco para no volver
-    a descargarlo en cada consulta."""
-    global _TICKER_CIK_MAP
-    if _TICKER_CIK_MAP is not None:
-        return _TICKER_CIK_MAP
-    try:
-        with open(TICKER_CIK_MAP_FILE, "r") as f:
-            _TICKER_CIK_MAP = json.load(f)
-            return _TICKER_CIK_MAP
-    except Exception:
-        pass
-    try:
-        r = requests.get("https://www.sec.gov/files/company_tickers.json",
-                        headers=SEC_HEADERS, timeout=15)
-        data = r.json()
-        mapa = {v["ticker"].upper(): str(v["cik_str"]).zfill(10) for v in data.values()}
-        _TICKER_CIK_MAP = mapa
+def _scheduler_loop():
+    global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_aviso_cad_key
+    log.info("Scheduler de difusión automática arrancado")
+    _n_check = 0
+    while True:
         try:
-            with open(TICKER_CIK_MAP_FILE, "w") as f:
-                json.dump(mapa, f)
+            ahora = datetime.now(MADRID)
+            _n_check += 1
+            if _n_check % 10 == 0:  # latido cada ~10 min, para poder verificar en logs que sigue vivo
+                log.info(f"Scheduler vivo — hora actual Madrid: {ahora.strftime('%Y-%m-%d %H:%M')}, "
+                        f"última difusión: {_ultimo_broadcast_key}, último resumen diario: {_ultimo_resumen_diario_key}")
+            if _debe_emitir_ahora(ahora):
+                clave = ahora.strftime("%Y-%m-%d %H")
+                if clave != _ultimo_broadcast_key:
+                    _ultimo_broadcast_key = clave
+                    log.info(f"Ejecutando broadcast automático ({clave})")
+                    ejecutar_broadcast_hora()
+            if _debe_emitir_resumen_diario(ahora):
+                clave_dia = ahora.strftime("%Y-%m-%d")
+                if clave_dia != _ultimo_resumen_diario_key:
+                    _ultimo_resumen_diario_key = clave_dia
+                    log.info(f"Ejecutando resumen diario ({clave_dia})")
+                    ejecutar_resumen_diario()
+            if 9 <= ahora.hour <= 21 and ahora.minute < 15:
+                clave_cad = ahora.strftime("%Y-%m-%d %H")
+                if clave_cad != _ultimo_aviso_cad_key:
+                    _ultimo_aviso_cad_key = clave_cad
+                    revisar_caducidades()
         except Exception as e:
-            log.warning(f"_cargar_ticker_cik_map: no se pudo guardar en disco: {e}")
-        return mapa
-    except Exception as e:
-        log.warning(f"_cargar_ticker_cik_map: {e}")
-        return {}
-
-def fetch_form4_recientes(ticker, limite=20):
-    cik = _cargar_ticker_cik_map().get(ticker.upper())
-    if not cik:
-        return None
-    try:
-        r = requests.get("https://www.sec.gov/cgi-bin/browse-edgar",
-                        params={"action": "getcompany", "CIK": cik, "type": "4",
-                                "dateb": "", "owner": "include", "count": str(limite),
-                                "output": "atom"},
-                        headers=SEC_HEADERS, timeout=15)
-        entradas = re.findall(r"<entry>.*?</entry>", r.text, re.DOTALL)
-        filings = []
-        for e in entradas:
-            m_acc = re.search(r"accession-number>([\d\-]+)<", e)
-            m_fecha = re.search(r"filing-date>([\d\-]+)<", e)
-            if m_acc and m_fecha:
-                filings.append({"accession": m_acc.group(1), "fecha": m_fecha.group(1)})
-        return {"cik": cik, "filings": filings}
-    except Exception as e:
-        log.warning(f"fetch_form4_recientes {ticker}: {e}")
-        return None
-
-def _parsear_form4_xml(cik, accession):
-    """Cada Form 4 es su propio documento XML con las transacciones. Solo
-    nos interesan P (compra en mercado abierto) y S (venta en mercado
-    abierto) — descartamos A (awards/grants, no son decisión del insider),
-    opciones y ajustes fiscales, que son ruido para esta señal."""
-    accn_nodash = accession.replace("-", "")
-    try:
-        idx = requests.get(
-            f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn_nodash}/index.json",
-            headers=SEC_HEADERS, timeout=10).json()
-        items = idx.get("directory", {}).get("item", [])
-        for it in items:
-            name = it.get("name", "")
-            if not name.lower().endswith(".xml"):
-                continue
-            url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn_nodash}/{name}"
-            xr = requests.get(url, headers=SEC_HEADERS, timeout=10)
-            xml = xr.text
-            if "<rptOwnerName>" not in xml:
-                continue  # no es el documento de propiedad (puede haber otros XML auxiliares)
-            nombre_m = re.search(r"<rptOwnerName>(.*?)</rptOwnerName>", xml)
-            nombre = nombre_m.group(1) if nombre_m else "Desconocido"
-            transacciones = []
-            for bloque in re.findall(r"<nonDerivativeTransaction>.*?</nonDerivativeTransaction>", xml, re.DOTALL):
-                codigo_m = re.search(r"<transactionCode>(.*?)</transactionCode>", bloque)
-                shares_m = re.search(r"<transactionShares>\s*<value>([\d.]+)</value>", bloque)
-                precio_m = re.search(r"<transactionPricePerShare>\s*<value>([\d.]+)</value>", bloque)
-                if codigo_m and codigo_m.group(1) in ("P", "S") and shares_m:
-                    transacciones.append({
-                        "codigo": codigo_m.group(1),
-                        "shares": float(shares_m.group(1)),
-                        "precio": float(precio_m.group(1)) if precio_m else 0,
-                    })
-            if transacciones:
-                return {"nombre": nombre, "transacciones": transacciones}
-    except Exception as e:
-        log.warning(f"_parsear_form4_xml {cik}/{accession}: {e}")
-    return None
-
-def calcular_insiders(ticker):
-    base = fetch_form4_recientes(ticker, limite=20)
-    if not base or not base["filings"]:
-        return None
-    resultados = []
-    for f in base["filings"][:15]:  # limitamos para no encadenar demasiadas peticiones
-        parsed = _parsear_form4_xml(base["cik"], f["accession"])
-        if parsed:
-            for t in parsed["transacciones"]:
-                resultados.append({"insider": parsed["nombre"], "fecha": f["fecha"],
-                                    "codigo": t["codigo"], "shares": t["shares"], "precio": t["precio"]})
-        time.sleep(0.2)
-    if not resultados:
-        return {"ticker": ticker.upper(), "compras": [], "ventas": [], "insiders_compradores": 0}
-    compras = [r for r in resultados if r["codigo"] == "P"]
-    ventas = [r for r in resultados if r["codigo"] == "S"]
-    insiders_compradores = len(set(r["insider"] for r in compras))
-    return {"ticker": ticker.upper(), "compras": compras, "ventas": ventas,
-            "insiders_compradores": insiders_compradores}
-
-@bot.message_handler(commands=["insiders"])
-@con_dyor
-def cmd_insiders(msg):
-    if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
-        return
-    parts = msg.text.split()
-    if len(parts) < 2:
-        safe_send(msg.chat.id, "Uso: /insiders TICKER\n\nEjemplo: /insiders AAPL\n\n"
-                                "Solo funciona con tickers de EEUU (los que reportan a la SEC).")
-        return
-    ticker = parts[1].upper()
-    m = bot.send_message(msg.chat.id, f"Consultando Form 4 de {ticker} en la SEC... (15-25s)")
-    res = calcular_insiders(ticker)
-    if res is None:
-        safe_send(msg.chat.id, f"No he encontrado \"{ticker}\" en el registro de la SEC. "
-                                "Comprueba que sea un ticker de EEUU.", message_id=m.message_id)
-        return
-
-    lines = [f"👔 INSIDERS — {res['ticker']}",
-             f"Últimas transacciones en mercado abierto (Form 4, últimas ~15 presentaciones)\n"]
-    if res["compras"]:
-        valor_total = sum(c["shares"]*c["precio"] for c in res["compras"])
-        lines.append(f"🟢 COMPRAS: {len(res['compras'])} operaciones, "
-                     f"{res['insiders_compradores']} insiders distintos, ~${valor_total/1e6:.2f}M")
-        for c in res["compras"][:8]:
-            lines.append(f"  • {c['insider']} — {c['shares']:,.0f} acc. a ${c['precio']:.2f} ({c['fecha']})")
-    else:
-        lines.append("🟢 COMPRAS: ninguna en este periodo")
-    if res["ventas"]:
-        valor_total = sum(v["shares"]*v["precio"] for v in res["ventas"])
-        lines.append(f"\n🔴 VENTAS: {len(res['ventas'])} operaciones, ~${valor_total/1e6:.2f}M")
-    else:
-        lines.append("\n🔴 VENTAS: ninguna en este periodo")
-
-    if res["insiders_compradores"] >= 3:
-        lines.append(f"\n⚡ {res['insiders_compradores']} insiders distintos comprando en el mismo "
-                     "periodo — señal de compra agrupada, más fuerte que una compra aislada.")
-    safe_send(msg.chat.id, "\n".join(lines)[:4096], message_id=m.message_id)
-
-    if not res["compras"] and not res["ventas"]:
-        return  # sin transacciones reales que analizar, no llamamos a la IA con nada
-    resumen = (f"{res['ticker']}: {len(res['compras'])} compras ({res['insiders_compradores']} insiders "
-              f"distintos), {len(res['ventas'])} ventas, en las últimas ~15 presentaciones Form 4.")
-    prompt = (f"Actividad de insiders (directivos/consejeros) en {res['ticker']}: {resumen}\n\n"
-              "No inventes nombres ni cifras que no estén aquí.\n\n"
-              "1. ¿Qué interpretación razonable tiene este patrón de compras/ventas?\n"
-              "2. ¿Compra agrupada de varios insiders a la vez es más significativa que una compra "
-              "aislada? ¿Por qué?\n"
-              "3. Limitaciones de usar esto como señal (insiders también venden por motivos ajenos "
-              "a la empresa: impuestos, diversificación, planes 10b5-1 automáticos...)")
-    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+            log.error(f"_scheduler_loop: {e}")
+        time.sleep(60)
 
 
-# ═══ /GUIA — Explicación de cada comando ════════════════════════
-GUIA_PARTES = [
-"""📖 GUÍA DE COMANDOS (1/3) — Análisis de precio y ciclos
-
-━━━ /valor TICKER ━━━
-Velocímetro 0-100 de "barato/caro" para un activo concreto. Combina EMA200, RSI, distancia al máximo/mínimo y, en cripto, Fear & Greed, funding, DXY, Google Trends y ciclo del halving.
-Ejemplo: /valor BTC-USD, /valor TSLA
-
-━━━ /fundamental TICKER ━━━
-Velocímetro 0-100 de calidad fundamental de una empresa (solo acciones). 5 categorías: Valoración, Salud Financiera, Rentabilidad, Crecimiento, Potencial LP.
-Ejemplo: /fundamental NVDA
-
-━━━ /halvingbtc ━━━
-Gráfico del ciclo de 4 años de BTC (halvings históricos + proyección).
-
-━━━ /ciclo ━━━
-BTC situado sobre la curva Pico→Contracción→Suelo→Expansión→Recuperación→Prosperidad. Usa el máximo y mínimo REALES de este ciclo, no supuestos.""",
-
-"""📖 GUÍA DE COMANDOS (2/3) — Sentimiento y datos en vivo
-
-━━━ /dominancia ━━━
-Fear & Greed Index de BTC con histórico desde 2018, zonas de compra/venta.
-
-━━━ /ballenas TICKER ━━━
-Muros de compra/venta grandes en el order book (solo cripto).
-
-━━━ /cartera NOMBRE ━━━
-Cartera trimestral (13F) de grandes inversores — Buffett, Ackman, Burry y 15 más. Datos oficiales SEC.
-
-━━━ /insiders TICKER ━━━
-Compras/ventas de directivos en mercado abierto (SEC Form 4). Avisa si hay compra agrupada (3+ insiders a la vez).
-
-━━━ /macro ━━━
-Tipos Fed, inflación, paro, bonos (FRED) + derivados cripto (Binance).
-
-━━━ /compresion ━━━
-Mide lo estrecho que está el rango de precio de BTC en los últimos 30 días frente a los últimos 12 meses, con un velocímetro (0% expandido, 100% compresión extrema), dónde está el precio dentro del rango y la historia. Una compresión alta suele anteceder a un movimiento fuerte, pero no dice hacia dónde. Aproximación propia con datos de Binance, no coincide exactamente con CryptoQuant.
-
-━━━ /liquidaciones ━━━
-Mapa de calor ESTIMADO de dónde se liquidarían más posiciones apalancadas de BTC (cortos por encima del precio, largos por debajo), con un zoom de 24 h estilo TradingView (velas y un bloque por nivel sin tocar) y la visión de 30 días. Es un modelo propio con el interés abierto de Binance Futures: no son liquidaciones reales y no coincide con Glassnode o Coinglass.
-
-━━━ /vwap TICKER ━━━
-Precio medio ponderado por volumen de la sesión actual (VWAP), con bandas de ±1 y ±2 desviaciones. Cripto por Binance (sesión desde 00:00 UTC), acciones por Alpaca (sesión desde la apertura de Wall Street). Sin ticker, BTC por defecto. Describe dónde está el precio hoy, no predice hacia dónde va.
-
-━━━ /rsiminimos ━━━
-Cripto (Binance) y acciones del S&P 500 (Alpaca) cuyo RSI semanal está más cerca de su propio mínimo de los últimos 2 años. No es un umbral fijo: compara cada activo con su propio rango. Un RSI en mínimos no implica que vaya a rebotar.""",
-
-"""📖 GUÍA DE COMANDOS (3/3) — Noticias y automatizaciones
-
-━━━ /noticias ━━━
-Titulares de bolsa/economía/cripto de varias fuentes, con análisis de IA basado solo en los titulares reales.
-
-━━━ /ticker ━━━
-Resumen visual al momento de ~30 activos (cripto, acciones, índices, oro).
-
-━━━ Automatizaciones (sin comando) ━━━
-• Cada 2h (9-21h): mismo resumen visual de /ticker, automático
-• Cada mañana 8h: resumen diario (BTC, Fear&Greed, titulares)
-• Alertas de noticias muy relevantes, cuando la IA las detecta
-
-━━━ Suscripción ━━━
-/trial — 7 días gratis
-/premium — 5€/mes
-/verificar HASH — confirmar pago manual
-/mistatus — ver tu suscripción
-
-━━━ Importante ━━━
-Usa /dyor para leer el aviso legal antes de tomar decisiones con lo que veas aquí."""
-]
-
-@bot.message_handler(commands=["guia"])
-def cmd_guia(msg):
-    if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
-        return
-    for parte in GUIA_PARTES:
-        safe_send(msg.chat.id, parte)
-        time.sleep(0.3)
-
-
-# ═══ /DYOR — Aviso legal / descargo de responsabilidad ══════════
-TEXTO_DYOR = """⚠️ AVISO IMPORTANTE — LÉEME
-
-Este bot es una herramienta de ANÁLISIS INFORMATIVO, no un servicio de asesoramiento financiero. Antes de usarlo, ten esto claro:
-
-📊 No es una recomendación de inversión. Ningún comando (/valor, /ciclo, análisis de IA...) te dice qué comprar, vender, o cuándo. Son indicadores y datos para que TÚ decidas con tu propio criterio.
-
-🤖 La IA puede equivocarse. Los análisis generados son orientativos, no verdad absoluta.
-
-📡 Los datos pueden fallar o tener errores. Este bot depende de fuentes gratuitas de terceros (Binance, Stooq, SEC, CFTC, FRED, AAII...). A veces fallan, se retrasan, o cambian sin avisar. Verifica cifras importantes antes de actuar.
-
-💸 Invertir conlleva riesgo real de pérdida. Rendimientos pasados no garantizan resultados futuros. Nunca inviertas dinero que no puedas permitirte perder.
-
-🧑‍💼 No somos asesores financieros regulados. Para decisiones importantes, consulta con un profesional cualificado.
-
-En resumen: DYOR — Do Your Own Research. Usa este bot como una herramienta más en tu proceso de análisis, nunca como la única fuente de tu decisión."""
-
-@bot.message_handler(commands=["dyor"])
-def cmd_dyor(msg):
-    safe_send(msg.chat.id, TEXTO_DYOR)
-
-
-# ═══ Menú de comandos de Telegram (lo que sale al pulsar "/") ═══
-# El orden de esta lista es el orden del menú: /dyor va el primero.
-MENU_COMANDOS = [
-    ("dyor", "⚠️ Aviso legal — léelo antes de usar el bot"),
-    ("start", "Inicio y lista de comandos"),
-    ("guia", "Explicación completa de cada comando"),
-    ("trial", "Prueba gratuita de 7 días"),
-    ("premium", "Suscripción premium"),
-    ("verificar", "Confirmar tu pago con el hash de la transacción"),
-    ("mistatus", "Ver el estado de tu suscripción"),
-    ("valor", "Índice barato/caro 0-100 de un activo"),
-    ("fundamental", "Análisis fundamental 0-100 de una acción"),
-    ("halvingbtc", "Ciclo de 4 años de Bitcoin"),
-    ("ciclo", "Fase actual de BTC en el ciclo de mercado"),
-    ("dominancia", "Zonas de compra/venta de BTC (Fear & Greed)"),
-    ("ballenas", "Muros de órdenes grandes en Binance"),
-    ("cartera", "Carteras 13F de grandes inversores"),
-    ("insiders", "Compras/ventas de directivos (SEC Form 4)"),
-    ("macro", "Tipos, inflación, paro y derivados cripto"),
-    ("compresion", "Compresión de precio de BTC (volatilidad 30 días)"),
-    ("liquidaciones", "Mapa de liquidaciones estimado de BTC"),
-    ("rsiminimos", "Cripto y acciones del S&P 500 cerca de su mínimo de RSI (2 años)"),
-    ("vwap", "VWAP de hoy con bandas — cripto o acciones, TICKER opcional"),
-    ("noticias", "Noticias de bolsa, economía y cripto"),
-    ("ticker", "Resumen de mercados al momento"),
-]
-
-if __name__ == "__main__":
-    # FIX 409: si el contenedor anterior no llegó a cerrar su getUpdates a
-    # tiempo, esto libera el "lock" de Telegram antes de empezar a hacer
-    # polling, en vez de chocar con la sesión previa.
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-    except Exception as e:
-        log.warning(f"remove_webhook al arrancar: {e}")
-    try:
-        bot.set_my_commands([telebot.types.BotCommand(c, d) for c, d in MENU_COMANDOS])
-    except Exception as e:
-        log.warning(f"set_my_commands: {e}")
-    log.info("AnalisisPro Bot arrancado")
-    threading.Thread(target=_scheduler_loop, daemon=True).start()
-    bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
 
 
 
