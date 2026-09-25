@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AnalisisPro Bot — Con suscripciones (5€/mes vía NOWPayments) + /valor /fundamental /halvingbtc"""
+"""AnalisisPro Bot — Uso personal (sin suscripciones) + /valor /fundamental /halvingbtc"""
 import os, io, json, re, time, logging, requests, threading
 import pandas as pd
 import numpy as np
@@ -33,112 +33,12 @@ def _p(nombre):
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 ai  = Groq(api_key=GROQ_API_KEY)
 
-# ═══ SISTEMA DE SUSCRIPCIONES ════════════════════════════════
-NOWPAYMENTS_KEY  = os.environ.get("NOWPAYMENTS_API_KEY", "")
-WALLET_USDT      = os.environ.get("WALLET_USDT", "").strip()   # strip: un espacio o salto de línea pegado por error rompería la verificación
-
-def _direccion_tron_valida(a):
-    """Comprueba longitud, prefijo y suma de control (base58check) de una dirección Tron."""
-    try:
-        import hashlib
-        ALF = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-        n = 0
-        for c in a:
-            n = n * 58 + ALF.index(c)
-        b = n.to_bytes(25, "big")
-        return (len(a) == 34 and b[0] == 0x41
-                and hashlib.sha256(hashlib.sha256(b[:-4]).digest()).digest()[:4] == b[-4:])
-    except Exception:
-        return False
-
-if WALLET_USDT and not _direccion_tron_valida(WALLET_USDT):
-    log.warning("WALLET_USDT no parece una dirección Tron válida: revisa la variable en Railway")
-PRECIO_MENSUAL   = 5  # EUR
-TRIAL_DIAS       = 7
-SUBS_FILE        = os.environ.get("SUBS_FILE", _p("subscribers.json"))
-
-def _load_subs():
-    try:
-        with open(SUBS_FILE, "r") as f:
-            raw = json.load(f)
-        out = {}
-        for cid, s in raw.items():
-            out[int(cid)] = {
-                "activo": s.get("activo", False),
-                "expiry": datetime.fromisoformat(s["expiry"]) if s.get("expiry") else None,
-                "trial_used": s.get("trial_used", False),
-            }
-        return out
-    except Exception as e:
-        log.info(f"_load_subs: sin fichero previo o vacío ({e})")
-        return {}
-
-_SUBS_LOCK = threading.Lock()
-
-def _save_subs():
-    try:
-        with _SUBS_LOCK:
-            raw = {}
-            for cid, s in list(SUSCRIPTORES.items()):
-                raw[str(cid)] = {
-                    "activo": s.get("activo", False),
-                    "expiry": s["expiry"].isoformat() if s.get("expiry") else None,
-                    "trial_used": s.get("trial_used", False),
-                }
-            tmp = SUBS_FILE + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(raw, f)
-            os.replace(tmp, SUBS_FILE)  # escritura atómica: nunca deja el JSON a medias
-    except Exception as e:
-        log.warning(f"_save_subs: {e}")
-
-# {chat_id: {"activo":bool, "expiry":datetime, "trial_used":bool}}
-SUSCRIPTORES = _load_subs()
-
+# ═══ ACCESO — bot de uso personal, sin suscripciones ═══════════
+# Solo responde a ALLOWED_USER_ID (tu chat_id de Telegram). Así se evita
+# cualquier duda sobre uso comercial de fuentes de datos como yfinance,
+# pensadas por sus propios términos para uso personal/educativo.
 def is_premium(chat_id):
-    if chat_id == ALLOWED_USER_ID: return True
-    sub = SUSCRIPTORES.get(chat_id, {})
-    if not sub.get("activo"): return False
-    expiry = sub.get("expiry")
-    if expiry and datetime.now() > expiry:
-        SUSCRIPTORES[chat_id]["activo"] = False
-        _save_subs()
-        return False
-    return True
-
-def activar(chat_id, dias=30):
-    ahora = datetime.now()
-    sub = SUSCRIPTORES.get(chat_id, {})
-    if sub.get("activo") and sub.get("expiry") and sub["expiry"] > ahora:
-        nueva = sub["expiry"] + timedelta(days=dias)
-    else:
-        nueva = ahora + timedelta(days=dias)
-    SUSCRIPTORES[chat_id] = {
-        "activo": True, "expiry": nueva,
-        "trial_used": sub.get("trial_used", False),
-    }
-    _save_subs()
-    return nueva
-
-def crear_pago():
-    try:
-        r = requests.post(
-            "https://api.nowpayments.io/v1/invoice",
-            headers={"x-api-key": NOWPAYMENTS_KEY, "Content-Type": "application/json"},
-            json={
-                "price_amount": PRECIO_MENSUAL,
-                "price_currency": "eur",
-                "pay_currency": "usdttrc20",
-                "order_id": f"premium_{int(datetime.now().timestamp())}",
-                "order_description": "AnalisisPro Premium 1 mes",
-            }, timeout=10
-        )
-        data = r.json()
-        return data.get("invoice_url"), data.get("id")
-    except Exception as e:
-        log.error(f"NOWPayments: {e}")
-        return None, None
-
+    return chat_id == ALLOWED_USER_ID
 
 SYSTEM = """Eres un analista financiero senior. Responde SIEMPRE en español. Sin markdown.
 Máximo 4 párrafos concisos y bien fundamentados.
@@ -211,7 +111,7 @@ AVISO_DYOR = "⚠️ Información, no asesoramiento financiero. Lee /dyor antes 
 
 def con_dyor(fn):
     """Tras un comando de análisis, envía en silencio un recordatorio de /dyor.
-    No lo envía a quien no tiene acceso (esos reciben solo el aviso de suscripción)."""
+    No lo envía a quien no tiene acceso (solo tú puedes usar el bot)."""
     import functools
     @functools.wraps(fn)
     def wrapper(msg):
@@ -838,7 +738,7 @@ def chart_valor(res):
 @con_dyor
 def cmd_valor(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     parts = msg.text.split()
     if len(parts)<2:
@@ -1110,7 +1010,7 @@ def chart_fundamental(res):
 @con_dyor
 def cmd_fundamental(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     parts = msg.text.split()
     if len(parts)<2:
@@ -1260,7 +1160,7 @@ def chart_halving():
 @con_dyor
 def cmd_halvingbtc(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     m = bot.send_message(msg.chat.id,"Generando ciclo de 4 años de Bitcoin... (15s)")
     try:
@@ -1291,338 +1191,37 @@ def cmd_halvingbtc(msg):
 def cmd_start(msg):
     chat_id = msg.from_user.id
     nombre = msg.from_user.first_name or "inversor"
-    if is_premium(chat_id):
-        safe_send(chat_id,
-            f"Bienvenido {nombre}! 👋\n\n"
-            "⚠️ Antes de empezar, lee /dyor: esto es información, no asesoramiento financiero.\n\n"
-            "/valor BTC-USD — Índice barato/caro 0-100 para crypto\n"
-            "/valor TSLA — Índice para acciones US\n"
-            "/valor SAN.MC — Acciones españolas\n\n"
-            "/fundamental NVDA — Análisis fundamental 0-100\n"
-            "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n"
-            "/cartera Buffett — Cartera 13F de grandes inversores\n"
-            "/dominancia — Zonas históricas de compra/venta BTC (USDT.D)\n"
-            "/ballenas BTC — Muros de órdenes grandes (order book)\n"
-            "/noticias — Noticias de bolsa, economía y cripto de varias fuentes\n"
-            "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n"
-            "/ticker — Resumen de mercados al momento (bajo demanda)\n"
-            "/ciclo — Fase actual de BTC en el ciclo de mercado\n"
-            "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
-            "/compresion — Compresión de precio de BTC (volatilidad 30 días)\n"
-            "/liquidaciones [BTC|ETH|SOL|HYPE] — Mapa de liquidaciones estimado (sin moneda, BTC)\n"
-            "/rsiminimos — Cripto y acciones cerca de su mínimo de RSI en 2 años\n"
-            "/vwap TICKER — Precio medio ponderado por volumen de hoy, cripto o acción\n\n"
-            "/guia — Explicación completa de cada comando\n"
-            "/dyor — Aviso legal (léelo antes de usar el bot para decidir)\n\n"
-            "Además, cada 2h (9-21h) recibes un resumen automático de mercados y "
-            "cada mañana a las 8h un resumen diario con Fear & Greed y noticias destacadas.\n\n"
-            "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
-            "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
-            "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).\n\n"
-            "/mistatus — Ver tu suscripción\n"
-            "/premium — Suscribirte o renovar tu acceso (5€/mes)")
+    if not is_premium(chat_id):
+        safe_send(chat_id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     safe_send(chat_id,
-        f"Hola {nombre}! 👋\n\n"
-        "AnalisisPro — Bot de análisis financiero con IA\n\n"
+        f"Bienvenido {nombre}! 👋\n\n"
         "⚠️ Antes de empezar, lee /dyor: esto es información, no asesoramiento financiero.\n\n"
-        "📊 Índice barato/caro con velocímetro\n"
-        "🔍 Análisis fundamental 0-100\n"
-        "📈 Ciclo Bitcoin con halvings y proyección\n\n"
-        "🎁 Prueba 7 días GRATIS → /trial\n"
-        f"💳 Suscripción → /premium ({PRECIO_MENSUAL}€/mes)")
-
-@bot.message_handler(commands=["trial"])
-def cmd_trial(msg):
-    chat_id = msg.from_user.id
-    sub = SUSCRIPTORES.get(chat_id, {})
-    if sub.get("trial_used"):
-        safe_send(chat_id, f"Ya usaste el trial gratuito.\n\nPara continuar: /premium ({PRECIO_MENSUAL}€/mes)")
-        return
-    if is_premium(chat_id):
-        safe_send(chat_id, "Ya tienes acceso activo. Usa /mistatus para ver cuándo expira.")
-        return
-    expiry = activar(chat_id, dias=TRIAL_DIAS)
-    SUSCRIPTORES[chat_id]["trial_used"] = True
-    _save_subs()
-    nombre = msg.from_user.first_name or "?"
-    username = f"@{msg.from_user.username}" if msg.from_user.username else "sin username"
-    safe_send(ALLOWED_USER_ID,
-        f"🆕 NUEVO TRIAL\nNombre: {nombre}\nUsername: {username}\n"
-        f"Chat ID: {chat_id}\nExpira: {expiry.strftime('%d/%m/%Y')}")
-    safe_send(chat_id,
-        f"✅ TRIAL ACTIVADO — 7 días gratis\n\n"
-        f"Expira: {expiry.strftime('%d/%m/%Y')}\n\n"
-        "Tienes acceso a TODOS los comandos, no solo a unos pocos. Algunos para empezar:\n"
-        "/valor BTC-USD — índice barato/caro\n"
-        "/liquidaciones — mapa de liquidaciones (BTC, ETH, SOL, HYPE)\n"
-        "/rsiminimos — cripto y acciones cerca de su mínimo de RSI\n\n"
-        "/start — ver la lista completa\n"
-        "/guia — explicación de cada comando\n\n"
-        f"Al terminar el trial: /premium ({PRECIO_MENSUAL}€/mes)")
-
-@bot.message_handler(commands=["premium"])
-def cmd_premium(msg):
-    chat_id = msg.from_user.id
-    extra = ""
-    if is_premium(chat_id):
-        if chat_id == ALLOWED_USER_ID:
-            safe_send(chat_id, "Eres el administrador: acceso premium permanente ✅")
-            return
-        # Trial o suscripción aún activos: se puede pagar ya, los 30 días se
-        # suman al final del acceso actual (activar() ya lo hace así).
-        expiry = SUSCRIPTORES.get(chat_id, {}).get("expiry")
-        if expiry:
-            extra = (f"Tu acceso actual expira el {expiry.strftime('%d/%m/%Y')}. "
-                     "Si pagas ahora, los 30 días se suman a partir de esa fecha.\n\n")
-    if WALLET_USDT:
-        importe = importe_para(chat_id)
-        if importe is None:
-            safe_send(chat_id, "Ahora mismo no puedo asignarte un importe de pago. Contacta al administrador.")
-            return
-        safe_send(chat_id,
-            extra + f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
-            f"Envía EXACTAMENTE <code>{importe:.3f}</code> USDT por la red TRC20 (Tron) a:\n"
-            f"<code>{WALLET_USDT}</code>\n\n"
-            "⚠️ Este importe es solo tuyo: identifica tu pago. Si envías otra cantidad "
-            "no se puede verificar automáticamente.\n"
-            "⚠️ Solo USDT en red TRC20. Si pagas desde un exchange, suma su comisión "
-            "de retirada aparte para que a la wallet lleguen exactamente esos USDT.\n\n"
-            f"Tu importe se mantiene {PAGO_TTL_DIAS} días. Después de pagar, envía el hash:\n/verificar HASH",
-            parse_mode="HTML")
-        return
-    enlace, _ = crear_pago()
-    if enlace:
-        safe_send(chat_id,
-            extra + f"SUSCRIPCIÓN PREMIUM — {PRECIO_MENSUAL}€/mes\n\n"
-            f"👇 Enlace de pago (USDT TRC20):\n{enlace}\n\n"
-            "Tras pagar, avisa al administrador para que active tu acceso.")
-    else:
-        safe_send(chat_id, "Ahora mismo no puedo generar el pago. Contacta al administrador.")
-
-USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # contrato oficial de USDT en Tron
-TX_MAX_EDAD_H = 72
-USED_TX_FILE = os.environ.get("USED_TX_FILE", _p("used_tx.json"))
-_USED_TX_LOCK = threading.Lock()
-
-def _load_used_tx():
-    try:
-        with open(USED_TX_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-_USED_TX = _load_used_tx()  # {hash: chat_id}
-
-def _save_used_tx():
-    try:
-        tmp = USED_TX_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(_USED_TX, f)
-        os.replace(tmp, USED_TX_FILE)
-    except Exception as e:
-        log.warning(f"_save_used_tx: {e}")
-
-# ── Importes únicos por usuario ──
-# Cada usuario recibe un importe exacto (p.ej. 5.347 USDT). Como el importe
-# identifica al pagador, nadie puede reclamar con su cuenta el hash de un
-# pago ajeno: la cantidad de esa transacción no coincide con la suya.
-PRECIO_USDT = float(os.environ.get("PRECIO_USDT", PRECIO_MENSUAL))
-PAGOS_FILE = os.environ.get("PAGOS_PENDIENTES_FILE", _p("pagos_pendientes.json"))
-PAGO_TTL_DIAS = 7
-_PAGOS_LOCK = threading.Lock()
-
-def _load_pagos():
-    try:
-        with open(PAGOS_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-_PAGOS = _load_pagos()  # {str(chat_id): {"k": 1..999, "ts": epoch}}
-
-def _save_pagos():
-    try:
-        tmp = PAGOS_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(_PAGOS, f)
-        os.replace(tmp, PAGOS_FILE)
-    except Exception as e:
-        log.warning(f"_save_pagos: {e}")
-
-def _purgar_pagos_caducados():
-    ahora = time.time()
-    for cid in [c for c, v in _PAGOS.items() if ahora - v.get("ts", 0) > PAGO_TTL_DIAS * 86400]:
-        del _PAGOS[cid]
-
-def importe_para(chat_id):
-    """Importe único en USDT de este usuario. Crea uno si no tiene y renueva
-    su caducidad (7 días). Devuelve None solo si los 999 huecos están ocupados."""
-    with _PAGOS_LOCK:
-        _purgar_pagos_caducados()
-        key = str(chat_id)
-        if key not in _PAGOS:
-            usados = {v["k"] for v in _PAGOS.values()}
-            k = abs(int(chat_id)) % 999 + 1
-            for _ in range(999):
-                if k not in usados:
-                    break
-                k = k % 999 + 1
-            else:
-                return None
-            _PAGOS[key] = {"k": k, "ts": time.time()}
-        else:
-            _PAGOS[key]["ts"] = time.time()
-        _save_pagos()
-        return round(PRECIO_USDT + _PAGOS[key]["k"] / 1000, 3)
-
-def importe_asignado(chat_id):
-    """Solo lectura: el importe que se le asignó a este usuario, o None."""
-    with _PAGOS_LOCK:
-        _purgar_pagos_caducados()
-        v = _PAGOS.get(str(chat_id))
-        return round(PRECIO_USDT + v["k"] / 1000, 3) if v else None
-
-def liberar_importe(chat_id):
-    with _PAGOS_LOCK:
-        if _PAGOS.pop(str(chat_id), None) is not None:
-            _save_pagos()
-
-def _consultar_tronscan(tx_hash):
-    """Una consulta a Tronscan con reintentos. Devuelve el JSON (dict) o None si no responde.
-    Tronscan a veces contesta vacío o con una página en vez de JSON (límite de peticiones);
-    con_retry lo reintenta con espera en lugar de fallar a la primera."""
-    def _do():
-        r = requests.get("https://apilist.tronscan.org/api/transaction-info",
-                         params={"hash": tx_hash}, timeout=10)
-        if r.status_code != 200:
-            raise RuntimeError(f"HTTP {r.status_code}")
-        return r.json() or {}
-    return with_retry(_do, tries=3, base_delay=2, what=f"tronscan {tx_hash[:10]}")
-
-def _transferencias_trc20(data):
-    """Transferencias TRC20 de la respuesta de Tronscan. Tronscan repite la MISMA transferencia
-    en 'trc20TransferInfo' (lista) y en 'tokenTransferInfo' (objeto): sumar las dos duplicaba
-    el importe. Se usa la lista y, solo si viene vacía, el objeto como respaldo."""
-    tr = [t for t in (data.get("trc20TransferInfo") or []) if isinstance(t, dict)]
-    if tr:
-        return tr
-    tti = data.get("tokenTransferInfo")
-    return [tti] if isinstance(tti, dict) and tti else []
-
-def verificar_pago_usdt(tx_hash, data=None):
-    """Devuelve (ok, cantidad_usdt, motivo)."""
-    if not re.fullmatch(r"[0-9a-f]{64}", tx_hash):
-        return False, 0.0, "El hash no tiene formato válido (64 caracteres hexadecimales)."
-    if not WALLET_USDT:
-        return False, 0.0, "El pago manual no está configurado. Contacta al administrador."
-    if data is None:
-        data = _consultar_tronscan(tx_hash)
-    if data is None:
-        return False, 0.0, "Tronscan no responde ahora mismo. Inténtalo de nuevo en un par de minutos."
-    if not data.get("hash"):
-        return False, 0.0, "No encuentro esa transacción. Espera unos minutos e inténtalo de nuevo."
-    if data.get("contractRet") != "SUCCESS":
-        return False, 0.0, "La transacción no fue exitosa en la blockchain."
-    if not data.get("confirmed"):
-        return False, 0.0, "Transacción no confirmada aún. Espera unos minutos e inténtalo de nuevo."
-    ts = data.get("timestamp")
-    if ts and time.time() - ts / 1000 > TX_MAX_EDAD_H * 3600:
-        return False, 0.0, f"Esa transacción tiene más de {TX_MAX_EDAD_H}h. Contacta al administrador."
-
-    transfers = _transferencias_trc20(data)
-
-    total = 0.0
-    for t in transfers:
-        contrato = t.get("contract_address") or t.get("address") or ""
-        if contrato != USDT_TRC20_CONTRACT:   # el símbolo "USDT" se puede falsificar; el contrato no
-            continue
-        if t.get("to_address") != WALLET_USDT:
-            continue
-        try:
-            decimales = int(t.get("decimals") or 6)
-            total += float(t.get("amount_str", "0")) / (10 ** decimales)
-        except (ValueError, TypeError):
-            continue
-    if total <= 0:
-        log.info(f"verificar {tx_hash[:12]}: sin transferencia USDT a la wallet. "
-                 f"Campos recibidos: {list(data.keys())[:25]}")
-        return False, 0.0, "No veo un pago en USDT (TRC20) a la dirección indicada en esa transacción."
-    return True, total, ""
-
-@bot.message_handler(commands=["verificar"])
-def cmd_verificar(msg):
-    chat_id = msg.from_user.id
-    parts = msg.text.split()
-    if len(parts) < 2:
-        safe_send(chat_id, "Uso: /verificar HASH_TRANSACCION")
-        return
-    tx_hash = parts[1].strip().lower()
-    with _USED_TX_LOCK:
-        if tx_hash in _USED_TX:
-            safe_send(chat_id, "Ese hash ya fue utilizado para activar una suscripción.")
-            return
-    esperado = importe_asignado(chat_id)
-    if esperado is None:
-        safe_send(chat_id, "Primero usa /premium para obtener tu importe exacto a pagar.")
-        return
-    try:
-        ok, cantidad, motivo = verificar_pago_usdt(tx_hash)
-    except Exception as e:
-        log.error(f"verificar: {e}")
-        safe_send(chat_id, "No pude verificar automáticamente. Contacta al administrador.")
-        return
-    if not ok:
-        safe_send(chat_id, motivo)
-        return
-    # El importe debe coincidir con el asignado a ESTE usuario (tolerancia: medio milésimo)
-    if abs(cantidad - esperado) > 0.0005:
-        safe_send(chat_id,
-            f"He encontrado tu pago, pero el importe ({cantidad:.4f} USDT) no coincide con el "
-            f"que te asigné ({esperado:.3f} USDT).\n\n"
-            "Si enviaste otra cantidad o tu exchange descontó comisión, contacta al administrador.")
-        return
-    with _USED_TX_LOCK:
-        if tx_hash in _USED_TX:   # re-comprobación por si dos /verificar llegaron a la vez
-            safe_send(chat_id, "Ese hash ya fue utilizado para activar una suscripción.")
-            return
-        _USED_TX[tx_hash] = chat_id
-        _save_used_tx()
-    liberar_importe(chat_id)
-    expiry = activar(chat_id, dias=30)
-    safe_send(chat_id,
-        f"✅ PAGO VERIFICADO — {cantidad:.3f} USDT\n\n"
-        f"Acceso premium hasta {expiry.strftime('%d/%m/%Y')}\n\n"
-        "Comandos: /valor /fundamental /halvingbtc")
-    safe_send(ALLOWED_USER_ID,
-        f"💰 NUEVO SUSCRIPTOR\nChat ID: {chat_id}\n"
-        f"Nombre: {msg.from_user.first_name}\n"
-        f"Pago: {cantidad:.3f} USDT\nTX: {tx_hash[:20]}...")
-
-@bot.message_handler(commands=["mistatus"])
-def cmd_mistatus(msg):
-    chat_id = msg.from_user.id
-    if chat_id == ALLOWED_USER_ID:
-        activos = sum(1 for s in SUSCRIPTORES.values() if s.get("activo"))
-        if WALLET_USDT:
-            w = (f"Wallet de cobro: {WALLET_USDT[:5]}…{WALLET_USDT[-4:]} "
-                 + ("(dirección Tron válida ✅)" if _direccion_tron_valida(WALLET_USDT)
-                    else "(NO parece una dirección Tron válida ⚠️)"))
-        else:
-            w = "Wallet de cobro: no configurada (WALLET_USDT vacía) ⚠️"
-        safe_send(chat_id, f"Eres el administrador.\nSuscriptores activos: {activos}\n{w}")
-        return
-    sub = SUSCRIPTORES.get(chat_id)
-    if not sub or not sub.get("activo"):
-        safe_send(chat_id, f"No tienes suscripción activa.\n\n/trial — 7 días gratis\n/premium — {PRECIO_MENSUAL}€/mes")
-        return
-    expiry = sub.get("expiry")
-    dias = (expiry - datetime.now()).days if expiry else 0
-    safe_send(chat_id,
-        "ESTADO DE TU SUSCRIPCIÓN\n\n"
-        f"Expira: {expiry.strftime('%d/%m/%Y') if expiry else 'N/D'}\n"
-        f"Días restantes: {dias}\n\n"
-        f"{'⚠️ Renueva pronto con /premium' if dias<5 else '✅ Acceso activo'}")
+        "/valor BTC-USD — Índice barato/caro 0-100 para crypto\n"
+        "/valor TSLA — Índice para acciones US\n"
+        "/valor SAN.MC — Acciones españolas\n\n"
+        "/fundamental NVDA — Análisis fundamental 0-100\n"
+        "/halvingbtc — Ciclo 4 años Bitcoin con gráfico\n"
+        "/cartera Buffett — Cartera 13F de grandes inversores\n"
+        "/dominancia — Zonas históricas de compra/venta BTC (USDT.D)\n"
+        "/ballenas BTC — Muros de órdenes grandes (order book)\n"
+        "/noticias — Noticias de bolsa, economía y cripto de varias fuentes\n"
+        "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n"
+        "/ticker — Resumen de mercados al momento (bajo demanda)\n"
+        "/ciclo — Fase actual de BTC en el ciclo de mercado\n"
+        "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
+        "/compresion — Compresión de precio de BTC (volatilidad 30 días)\n"
+        "/liquidaciones [BTC|ETH|SOL|HYPE] — Mapa de liquidaciones estimado (sin moneda, BTC)\n"
+        "/rsiminimos — Cripto y acciones cerca de su mínimo de RSI en 2 años\n"
+        "/vwap TICKER — Precio medio ponderado por volumen de hoy, cripto o acción\n"
+        "/directo — Enlace a la cinta de precios cripto en directo\n\n"
+        "/guia — Explicación completa de cada comando\n"
+        "/dyor — Aviso legal (léelo antes de usar el bot para decidir)\n\n"
+        "Además, cada 2h (9-21h) recibes un resumen automático de mercados y "
+        "cada mañana a las 8h un resumen diario con Fear & Greed y noticias destacadas.\n\n"
+        "Tickers: casi cualquiera funciona, no hace falta que esté en una lista.\n"
+        "Crypto: escribe el símbolo con o sin -USD (BTC, BTC-USD, PEPE...).\n"
+        "Acciones internacionales: ticker + sufijo de bolsa (SAN.MC, BMW.DE, VOD.L...).")
 
 # ═══ /CARTERA — Carteras de grandes inversores (13F oficial SEC) ═
 # Fuente: filings 13F-HR presentados obligatoriamente ante la SEC cada
@@ -1813,7 +1412,7 @@ def calcular_cartera(query):
 @con_dyor
 def cmd_cartera(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     parts = msg.text.split(maxsplit=1)
     if len(parts) < 2:
@@ -1860,36 +1459,6 @@ def cmd_cartera(msg):
               "1. ¿Qué tesis de inversión revela este movimiento?\n2. ¿Qué sector está ganando/perdiendo peso?\n"
               "3. ¿Vale la pena replicar alguna de estas posiciones?")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
-
-@bot.message_handler(commands=["activar"])
-def cmd_activar(msg):
-    if msg.from_user.id != ALLOWED_USER_ID: return
-    parts = msg.text.split()
-    if len(parts) < 2:
-        safe_send(msg.chat.id, "Uso: /activar CHAT_ID [dias]\nEj: /activar 123456789 30")
-        return
-    try:
-        target = int(parts[1])
-        dias = int(parts[2]) if len(parts) > 2 else 30
-        expiry = activar(target, dias=dias)
-        safe_send(msg.chat.id, f"✅ Activado {target} hasta {expiry.strftime('%d/%m/%Y')}")
-        safe_send(target, f"✅ Acceso premium activado hasta {expiry.strftime('%d/%m/%Y')}\n\n/valor /fundamental /halvingbtc")
-    except Exception as e:
-        safe_send(msg.chat.id, f"Error: {e}")
-
-@bot.message_handler(commands=["suscriptores"])
-def cmd_suscriptores(msg):
-    if msg.from_user.id != ALLOWED_USER_ID: return
-    activos = [(cid, s) for cid, s in SUSCRIPTORES.items() if s.get("activo")]
-    if not activos:
-        safe_send(msg.chat.id, "Sin suscriptores activos.")
-        return
-    lines = [f"SUSCRIPTORES ACTIVOS: {len(activos)}\n"]
-    for cid, s in activos:
-        expiry = s.get("expiry")
-        dias = (expiry - datetime.now()).days if expiry else 0
-        lines.append(f"ID: {cid} — {dias} días restantes")
-    safe_send(msg.chat.id, "\n".join(lines))
 
 # ═══ /DOMINANCIA — Zonas históricas de compra/venta de BTC ══════
 # Basado en el Fear & Greed Index de alternative.me: miedo extremo =
@@ -2019,7 +1588,7 @@ def chart_feargreed(series, btc_data):
 @con_dyor
 def cmd_dominancia(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     m = bot.send_message(msg.chat.id, "Calculando zonas de compra/venta BTC... (10-20s)")
     series = fetch_feargreed_history()
@@ -2250,7 +1819,7 @@ def resolve_binance_symbol(ticker):
 @con_dyor
 def cmd_ballenas(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     parts = msg.text.split()
     if len(parts) < 2:
@@ -2347,7 +1916,7 @@ def fetch_todas_noticias():
 @con_dyor
 def cmd_noticias(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     m = bot.send_message(msg.chat.id, "Consultando noticias... (10-15s)")
     data = fetch_todas_noticias()
@@ -2446,7 +2015,7 @@ def fetch_derivados_cripto(symbol):
 @con_dyor
 def cmd_macro(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     if not FRED_API_KEY:
         safe_send(msg.chat.id,
@@ -2716,10 +2285,8 @@ def chart_broadcast(resultados):
     return buf.getvalue()
 
 def _lista_suscriptores_activos():
-    ids = set(SUSCRIPTORES.keys())
-    if ALLOWED_USER_ID:
-        ids.add(ALLOWED_USER_ID)
-    return [cid for cid in ids if is_premium(cid)]
+    """Bot de uso personal: el único destinatario de los envíos automáticos eres tú."""
+    return [ALLOWED_USER_ID] if ALLOWED_USER_ID else []
 
 # ── Noticias relevantes: solo avisamos de titulares NUEVOS desde la
 # última vez, y solo si la IA los juzga realmente importantes (para no
@@ -2777,7 +2344,7 @@ def cmd_ticker(msg):
     quieras sin esperar a que llegue la hora en punto, o simplemente para
     consultarlo fuera del horario 9:00-22:00."""
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     m = bot.send_message(msg.chat.id, "Generando resumen de mercados... (15-20s)")
     resultados = calcular_broadcast()
@@ -2912,66 +2479,6 @@ def cmd_diagnostico(msg):
         L.append("Finnhub: no aplica (solo acciones de EEUU sin sufijo)")
     safe_send(msg.chat.id, "\n".join(L), message_id=m.message_id)
 
-@bot.message_handler(commands=["probartx"])
-def cmd_probartx(msg):
-    """Solo administrador. Prueba de la verificación de pagos SIN pagar ni activar nada: coge
-    cualquier hash de una transferencia USDT (TRC20), lo consulta en Tronscan y enseña qué
-    entiende el bot (contrato, destino, cantidad) y qué veredicto daría."""
-    if msg.from_user.id != ALLOWED_USER_ID:
-        return
-    parts = msg.text.split()
-    if len(parts) < 2:
-        safe_send(msg.chat.id, "Uso: /probartx HASH\n\nPrueba la verificación de pagos con cualquier "
-                               "transferencia USDT (TRC20) ya hecha. No activa nada ni consume el hash.")
-        return
-    tx = parts[1].strip().lower()
-    L = [f"🔎 PRUEBA DE VERIFICACIÓN (no activa nada)\nHash: {tx[:14]}…\n"]
-    if not re.fullmatch(r"[0-9a-f]{64}", tx):
-        safe_send(msg.chat.id, L[0] + "❌ El hash no tiene formato válido (64 caracteres hexadecimales).")
-        return
-    data = _consultar_tronscan(tx)
-    if data is None:
-        safe_send(msg.chat.id, L[0] + "❌ Tronscan no responde ahora mismo (lo intenté 3 veces). Prueba en un minuto.")
-        return
-    claves = [k for k in ("contractRet", "confirmed", "timestamp", "trc20TransferInfo", "tokenTransferInfo")
-              if k in data]
-    L.append(f"Tronscan: respondió · campos que usa el bot presentes: {', '.join(claves) or 'ninguno'}")
-    if not data.get("hash"):
-        L.append("❌ Tronscan no devuelve esa transacción (¿hash incorrecto o muy reciente?).")
-        safe_send(msg.chat.id, "\n".join(L))
-        return
-    L.append(f"Estado: {data.get('contractRet')} · confirmada: {data.get('confirmed')}")
-    ts = data.get("timestamp")
-    if ts:
-        L.append(f"Antigüedad: {(time.time() - ts / 1000) / 3600:.1f} h (el bot acepta hasta {TX_MAX_EDAD_H} h)")
-    transfers = _transferencias_trc20(data)
-    def corto(a):
-        a = a or ""
-        return f"{a[:5]}…{a[-4:]}" if len(a) > 12 else (a or "?")
-    if not transfers:
-        L.append("\nTransferencias TRC20 detectadas: ninguna (¿es una transferencia de USDT?)")
-    else:
-        L.append("\nTransferencias TRC20 detectadas:")
-    for t in transfers[:5]:
-        contrato = t.get("contract_address") or t.get("address") or ""
-        try:
-            cant = float(t.get("amount_str", "0")) / (10 ** int(t.get("decimals") or 6))
-        except (ValueError, TypeError):
-            cant = 0.0
-        L.append(f"• {t.get('symbol') or t.get('name') or '?'} · {cant:,.4f} · "
-                 f"contrato {'USDT oficial ✅' if contrato == USDT_TRC20_CONTRACT else 'OTRO ⚠️ ' + corto(contrato)} · "
-                 f"destino {corto(t.get('to_address'))} "
-                 f"{'= TU WALLET ✅' if WALLET_USDT and t.get('to_address') == WALLET_USDT else '(no es tu wallet)'}")
-    try:
-        ok, cantidad, motivo = verificar_pago_usdt(tx, data=data)
-        L.append("\nVeredicto del bot: " + (f"✅ aceptaría {cantidad:.4f} USDT como pago a tu wallet"
-                                              if ok else f"❌ {motivo}"))
-    except Exception as e:
-        L.append(f"\nVeredicto del bot: error → {str(e)[:150]}")
-    L.append("\nSi los campos y la cantidad salen bien, la lectura de Tronscan funciona. "
-             "Con un pago real, además tendría que coincidir el destino y el importe asignado.")
-    safe_send(msg.chat.id, "\n".join(L))
-
 @bot.message_handler(commands=["scheduler_estado"])
 def cmd_scheduler_estado(msg):
     if msg.from_user.id != ALLOWED_USER_ID: return
@@ -3083,57 +2590,6 @@ def _debe_emitir_ahora(ahora):
     if (ahora.hour - 9) % 2 != 0:
         return False
     return ahora.minute < 15  # margen amplio por si hay un redeploy justo entonces
-
-# ── Aviso de caducidad: un solo mensaje cuando quedan ≤30h de acceso ──
-# Se guarda a qué caducidad se avisó (en el volumen), así un redeploy no repite
-# el aviso, y si el usuario renueva (nueva caducidad) puede volver a avisarse.
-AVISOS_CAD_FILE = os.environ.get("AVISOS_CADUCIDAD_FILE", _p("avisos_caducidad.json"))
-AVISO_CAD_HORAS = 30
-
-def _load_avisos_cad():
-    try:
-        with open(AVISOS_CAD_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-_AVISOS_CAD = _load_avisos_cad()  # {str(chat_id): caducidad_iso ya avisada}
-
-def _save_avisos_cad():
-    try:
-        tmp = AVISOS_CAD_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(_AVISOS_CAD, f)
-        os.replace(tmp, AVISOS_CAD_FILE)
-    except Exception as e:
-        log.warning(f"_save_avisos_cad: {e}")
-
-def revisar_caducidades():
-    ahora = datetime.now()
-    hubo_cambios = False
-    for cid, s in list(SUSCRIPTORES.items()):
-        if cid == ALLOWED_USER_ID or not s.get("activo") or not s.get("expiry"):
-            continue
-        exp = s["expiry"]
-        horas = (exp - ahora).total_seconds() / 3600
-        if not (0 < horas <= AVISO_CAD_HORAS):
-            continue
-        if _AVISOS_CAD.get(str(cid)) == exp.isoformat():
-            continue  # ya avisado para esta caducidad
-        safe_send(cid,
-            f"⏳ TU ACCESO CADUCA PRONTO\n\n"
-            f"Caduca el {exp.strftime('%d/%m/%Y')} (en unas {max(1, round(horas))} horas).\n\n"
-            "Para no perderlo: /premium — los 30 días nuevos se suman al final de tu acceso "
-            "actual, así que no pierdes nada por renovar antes.\n"
-            "Si ya has pagado, envía /verificar HASH.")
-        _AVISOS_CAD[str(cid)] = exp.isoformat()
-        hubo_cambios = True
-        log.info(f"aviso de caducidad enviado a {cid} (caduca {exp.isoformat()})")
-        time.sleep(0.05)
-    if hubo_cambios:
-        _save_avisos_cad()
-
-_ultimo_aviso_cad_key = None
 
 # Estas tres constantes las usa /rsiminimos para su universo de cripto (mismo filtro de
 # liquidez que tenía /calientes, ya retirado).
@@ -3325,7 +2781,7 @@ def texto_compresion(res):
 @con_dyor
 def cmd_compresion(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     m = bot.send_message(msg.chat.id, "Calculando la compresión de precio de BTC... (10-15s)")
     res = calcular_compresion()
@@ -3991,7 +3447,7 @@ def texto_liquidaciones(res, res_corto=None):
 @con_dyor
 def cmd_liquidaciones(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     partes = msg.text.split()
     moneda = partes[1].upper().replace("-USD", "").replace("USDT", "") if len(partes) > 1 else "BTC"
@@ -4386,7 +3842,7 @@ def cmd_reset_rsiminimos(msg):
 @con_dyor
 def cmd_rsiminimos(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     m = bot.send_message(msg.chat.id, "Escaneando cripto y el S&P 500 en busca de mínimos de RSI... "
                                       "(la primera vez del día puede tardar 2-3 min)")
@@ -4422,7 +3878,7 @@ def cmd_rsiminimos(msg):
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
 def _scheduler_loop():
-    global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_aviso_cad_key
+    global _ultimo_broadcast_key, _ultimo_resumen_diario_key
     log.info("Scheduler de difusión automática arrancado")
     _n_check = 0
     while True:
@@ -4444,11 +3900,6 @@ def _scheduler_loop():
                     _ultimo_resumen_diario_key = clave_dia
                     log.info(f"Ejecutando resumen diario ({clave_dia})")
                     ejecutar_resumen_diario()
-            if 9 <= ahora.hour <= 21 and ahora.minute < 15:
-                clave_cad = ahora.strftime("%Y-%m-%d %H")
-                if clave_cad != _ultimo_aviso_cad_key:
-                    _ultimo_aviso_cad_key = clave_cad
-                    revisar_caducidades()
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
@@ -4637,11 +4088,27 @@ def texto_vwap(res):
          "• Muy al principio de la sesión hay pocas velas y las bandas pueden ser poco fiables."]
     return "\n".join(L)
 
+URL_CINTA_DIRECTO = os.environ.get(
+    "URL_CINTA_DIRECTO",
+    "https://francescgonzalezarribas-pixel.github.io/dashboard/cinta_bolsa.html"
+)
+
+@bot.message_handler(commands=["directo"])
+def cmd_directo(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
+        return
+    safe_send(msg.chat.id,
+        "📡 CINTA DE PRECIOS EN DIRECTO\n\n"
+        "35 criptos moviéndose en tiempo real, con aviso cuando alguna se mueve más de un 5% hoy.\n\n"
+        f"{URL_CINTA_DIRECTO}\n\n"
+        "Es una página aparte (no dentro de Telegram): tócala para abrirla en el navegador.")
+
 @bot.message_handler(commands=["vwap"])
 @con_dyor
 def cmd_vwap(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     partes = msg.text.split(maxsplit=1)
     ticker = partes[1].strip().upper() if len(partes) > 1 else "BTC"
@@ -4814,7 +4281,7 @@ def chart_ciclo_mercado(res):
 @con_dyor
 def cmd_ciclo(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     m = bot.send_message(msg.chat.id, "Calculando posición de BTC en el ciclo... (10-15s)")
     res = calcular_ciclo_btc()
@@ -4964,7 +4431,7 @@ def calcular_insiders(ticker):
 @con_dyor
 def cmd_insiders(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     parts = msg.text.split()
     if len(parts) < 2:
@@ -5074,12 +4541,6 @@ Resumen visual al momento de ~30 activos (cripto, acciones, índices, oro).
 • Cada mañana 8h: resumen diario (BTC, Fear&Greed, titulares)
 • Alertas de noticias muy relevantes, cuando la IA las detecta
 
-━━━ Suscripción ━━━
-/trial — 7 días gratis
-/premium — 5€/mes
-/verificar HASH — confirmar pago manual
-/mistatus — ver tu suscripción
-
 ━━━ Importante ━━━
 Usa /dyor para leer el aviso legal antes de tomar decisiones con lo que veas aquí."""
 ]
@@ -5087,7 +4548,7 @@ Usa /dyor para leer el aviso legal antes de tomar decisiones con lo que veas aqu
 @bot.message_handler(commands=["guia"])
 def cmd_guia(msg):
     if not is_premium(msg.from_user.id):
-        safe_send(msg.chat.id, "Necesitas suscripción activa.\n\n/trial — 7 días gratis\n/premium — 5€/mes")
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
         return
     for parte in GUIA_PARTES:
         safe_send(msg.chat.id, parte)
@@ -5122,10 +4583,6 @@ MENU_COMANDOS = [
     ("dyor", "⚠️ Aviso legal — léelo antes de usar el bot"),
     ("start", "Inicio y lista de comandos"),
     ("guia", "Explicación completa de cada comando"),
-    ("trial", "Prueba gratuita de 7 días"),
-    ("premium", "Suscripción premium"),
-    ("verificar", "Confirmar tu pago con el hash de la transacción"),
-    ("mistatus", "Ver el estado de tu suscripción"),
     ("valor", "Índice barato/caro 0-100 de un activo"),
     ("fundamental", "Análisis fundamental 0-100 de una acción"),
     ("halvingbtc", "Ciclo de 4 años de Bitcoin"),
@@ -5141,6 +4598,7 @@ MENU_COMANDOS = [
     ("vwap", "VWAP de hoy con bandas — cripto o acciones, TICKER opcional"),
     ("noticias", "Noticias de bolsa, economía y cripto"),
     ("ticker", "Resumen de mercados al momento"),
+    ("directo", "Enlace a la cinta de precios cripto en directo (35 monedas)"),
 ]
 
 if __name__ == "__main__":
