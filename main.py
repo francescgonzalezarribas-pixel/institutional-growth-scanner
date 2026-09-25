@@ -1209,6 +1209,7 @@ def cmd_start(msg):
         "/macro — Tipos, inflación, paro (FRED) + derivados cripto (Binance)\n"
         "/ticker — Resumen de mercados al momento (bajo demanda)\n"
         "/ciclo — Fase actual de BTC en el ciclo de mercado\n"
+        "/rotacion — Ciclo económico y rotación sectorial (mapa RRG)\n"
         "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
         "/compresion — Compresión de precio de BTC (volatilidad 30 días)\n"
         "/liquidaciones [BTC|ETH|SOL|HYPE] — Mapa de liquidaciones estimado (sin moneda, BTC)\n"
@@ -3561,6 +3562,338 @@ SP500_TICKERS = [
     'WAB', 'WMT', 'DIS', 'WBD', 'WM', 'WAT', 'WEC', 'WFC', 'WELL', 'WST', 'WDC', 'WY',
     'WSM', 'WMB', 'WTW', 'WDAY', 'WYNN', 'XEL', 'XYL', 'YUM', 'ZBRA', 'ZBH', 'ZTS',
 ]
+# ═══ /ROTACION — Ciclo económico y rotación sectorial (estilo RRG) ═════
+# Reconstruido a petición del usuario (el original se perdió). Dos imágenes:
+#
+# 1) Las 4 fases clásicas del ciclo económico (Recuperación, Expansión, Desaceleración,
+#    Recesión), con qué sectores SUELEN ir mejor en cada una según el patrón histórico de
+#    libro de texto, y cómo está CADA sector HOY (Liderando/Mejorando/Perdiendo fuerza/
+#    Rezagado) según el punto 2. "Encaje hoy" = media de esos estados para los sectores de
+#    esa fase (Liderando +2, Mejorando +1, Perdiendo fuerza 0, Rezagado −1): cuánto encaja
+#    lo que lidera ahora con lo que tocaría liderar en esa fase, no una predicción de en qué
+#    fase estamos.
+#
+# 2) Un gráfico de rotación relativa (aproximación propia de un RRG — Relative Rotation
+#    Graph): eje X = fuerza relativa frente al S&P 500 en las últimas ~10 semanas
+#    (100 = igual que el índice), eje Y = si esa fuerza está acelerando o frenando semana
+#    a semana. Con cola de las últimas 5 semanas. Describe dónde está cada sector ahora
+#    mismo, no predice hacia dónde va.
+#
+# Datos: ETFs sectoriales de EEUU (Stooq/Twelve Data/Yahoo, la misma cadena que usa el
+# resto del bot) + BTC vía Binance. Sin claves nuevas.
+
+SECTORES_ROTACION = {
+    "Financiero":        "XLF",
+    "Industria":         "XLI",
+    "Cons. discrecional":"XLY",
+    "Inmobiliario":      "XLRE",
+    "Tecnología":        "XLK",
+    "Semiconductores":   "SMH",
+    "Comunicaciones":    "XLC",
+    "Cons. básico":      "XLP",
+    "Salud":             "XLV",
+    "Utilities":         "XLU",
+    "Bonos 20a":         "TLT",
+    "Energía":           "XLE",
+    "Materiales":        "XLB",
+    "Oro":               "GLD",
+    "Plata":             "SLV",
+    "Bitcoin":           "BTC-USD",
+}
+
+FASES_CICLO = [
+    {"nombre":"1. RECUPERACIÓN", "sub":"(desde el valle)", "color":"#00CC44",
+     "pib":"empieza a crecer", "inflacion":"baja", "tipos":"bajos",
+     "sectores":["Financiero","Industria","Cons. discrecional","Inmobiliario"]},
+    {"nombre":"2. EXPANSIÓN", "sub":"(crecimiento fuerte)", "color":"#3388FF",
+     "pib":"crece con fuerza", "inflacion":"en aumento", "tipos":"suben",
+     "sectores":["Tecnología","Semiconductores","Comunicaciones","Financiero","Industria"]},
+    {"nombre":"3. DESACELERACIÓN", "sub":"(el crecimiento se enfría)", "color":"#FF9900",
+     "pib":"se frena", "inflacion":"alta", "tipos":"altos",
+     "sectores":["Energía","Materiales","Salud","Oro","Plata"]},
+    {"nombre":"4. RECESIÓN", "sub":"(contracción)", "color":"#FF3333",
+     "pib":"se contrae", "inflacion":"baja", "tipos":"bajan",
+     "sectores":["Cons. básico","Salud","Utilities","Bonos 20a","Oro"]},
+]
+
+ROT_SEMANAS_RS = 10   # ventana de "fuerza relativa" (en pseudo-semanas de 5 sesiones)
+ROT_COLA = 5          # semanas de cola en el gráfico RRG
+
+ESTADO_COLOR = {"Liderando":"#00CC44","Mejorando":"#3388FF","Perdiendo fuerza":"#FFCC00","Rezagado":"#FF3333"}
+ESTADO_PUNTOS = {"Liderando":2,"Mejorando":1,"Perdiendo fuerza":0,"Rezagado":-1}
+
+def _serie_pseudo_semanal(closes, n_semanas):
+    """De una serie diaria, toma un valor cada 5 sesiones (aprox. 1 semana) contando desde
+    el final, para tener 'n_semanas' puntos. Aproximación deliberada: no alineamos por
+    fecha exacta, solo por nº de sesiones — suficiente para ver la forma de la rotación."""
+    c = closes.dropna().reset_index(drop=True)
+    if len(c) < n_semanas*5 + 5:
+        return None
+    idx = list(range(len(c)-1, len(c)-1-n_semanas*5-1, -5))[::-1]
+    idx = [i for i in idx if i >= 0]
+    return c.iloc[idx].reset_index(drop=True)
+
+def calcular_rotacion():
+    ck = "rotacion"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    spy = get_quote("SPY")
+    if not spy:
+        return None
+    spy_sem = _serie_pseudo_semanal(spy["closes"], ROT_SEMANAS_RS + ROT_COLA + 2)
+    if spy_sem is None:
+        return None
+
+    resultados = {}
+    for nombre, ticker in SECTORES_ROTACION.items():
+        try:
+            d = get_quote(ticker)
+            if not d:
+                continue
+            sem = _serie_pseudo_semanal(d["closes"], ROT_SEMANAS_RS + ROT_COLA + 2)
+            if sem is None or len(sem) != len(spy_sem):
+                n = min(len(sem) if sem is not None else 0, len(spy_sem))
+                if n < ROT_SEMANAS_RS + ROT_COLA + 1:
+                    continue
+                sem, spy_ali = sem.iloc[-n:].reset_index(drop=True), spy_sem.iloc[-n:].reset_index(drop=True)
+            else:
+                spy_ali = spy_sem
+            ratio = sem / spy_ali
+            # RS móvil: cada punto se compara con el propio ratio de ROT_SEMANAS_RS semanas antes
+            # (no un único punto fijo), así la serie oscila de forma realista alrededor de 100.
+            rs_completa = (ratio / ratio.shift(ROT_SEMANAS_RS) * 100).dropna().reset_index(drop=True)
+            if len(rs_completa) < ROT_COLA + 1:
+                continue
+            rs = rs_completa.iloc[-(ROT_COLA+1):].reset_index(drop=True)
+            momentum = (rs / rs.shift(1) * 100).dropna().reset_index(drop=True)
+            rs_cola = rs.iloc[-len(momentum):].reset_index(drop=True)
+            if len(rs_cola) < 2:
+                continue
+            x_ahora, y_ahora = float(rs_cola.iloc[-1]), float(momentum.iloc[-1])
+            if x_ahora>=100 and y_ahora>=100: estado = "Liderando"
+            elif x_ahora<100 and y_ahora>=100: estado = "Mejorando"
+            elif x_ahora<100 and y_ahora<100: estado = "Rezagado"
+            else: estado = "Perdiendo fuerza"
+            resultados[nombre] = {
+                "ticker": ticker, "cola_x": rs_cola.tolist(), "cola_y": momentum.tolist(),
+                "x": x_ahora, "y": y_ahora, "estado": estado,
+            }
+        except Exception as e:
+            log.warning(f"calcular_rotacion {nombre} ({ticker}): {e}")
+
+    if len(resultados) < 6:  # con muy pocos sectores el mapa no dice nada útil
+        return None
+
+    for f in FASES_CICLO:
+        pts = [ESTADO_PUNTOS[resultados[s]["estado"]] for s in f["sectores"] if s in resultados]
+        f["encaje"] = sum(pts)/len(pts) if pts else 0.0
+
+    res = {"sectores": resultados, "fases": FASES_CICLO,
+           "hora": datetime.now(MADRID).strftime("%d/%m %H:%M")}
+    cache_set(ck, res)
+    return res
+
+def chart_ciclo_fases(res):
+    fig = plt.figure(figsize=(15, 11))
+    fig.patch.set_facecolor('#0d1117')
+    fig.text(0.5, 0.975, "CICLO ECONÓMICO Y ROTACIÓN SECTORIAL", ha='center', color='white',
+             fontsize=19, fontweight='bold')
+    fig.text(0.5, 0.952, "Qué sectores suelen ir mejor en cada fase (patrón histórico) y cómo están HOY en el mapa",
+             ha='center', color='#FFB84D', fontsize=10.5)
+
+    # ── Onda del ciclo con las 4 franjas de color ──
+    axo = fig.add_axes([0.05, 0.76, 0.90, 0.15])
+    axo.set_facecolor('#0d1117')
+    xs = np.linspace(0, 4*np.pi, 400)
+    ys = np.sin(xs - np.pi/2)
+    for i, f in enumerate(res["fases"]):
+        axo.axvspan(i, i+1, color=f["color"], alpha=0.10)
+        axo.text(i+0.5, 1.35, f["nombre"], ha='center', color=f["color"], fontsize=11.5, fontweight='bold')
+        axo.text(i+0.5, 1.12, f["sub"], ha='center', color='#999999', fontsize=9)
+    xs_norm = xs/(4*np.pi)*4
+    segs = np.linspace(0,4,400)
+    for i in range(len(segs)-1):
+        frac = i/len(segs)
+        col = res["fases"][min(3,int(frac*4))]["color"]
+        axo.plot(segs[i:i+2], ys[i:i+2], color=col, linewidth=3.5, solid_capstyle='round')
+    axo.set_xlim(0,4); axo.set_ylim(-1.3,1.6); axo.axis('off')
+
+    # ── 4 paneles con sectores y estado actual ──
+    for i, f in enumerate(res["fases"]):
+        x0 = 0.05 + i*0.225
+        ax = fig.add_axes([x0, 0.06, 0.205, 0.66])
+        ax.set_facecolor('#131722'); ax.axis('off')
+        for spine_col, lw in [(f["color"], 2.2)]:
+            for s in ['top','bottom','left','right']:
+                pass
+        rect = plt.Rectangle((0,0),1,1, transform=ax.transAxes, facecolor='#131722',
+                             edgecolor=f["color"], linewidth=2, zorder=0)
+        ax.add_patch(rect)
+        y = 0.97
+        ax.text(0.08, y, f"PIB: {f['pib']}", color='#CCCCCC', fontsize=9.5, transform=ax.transAxes, va='top'); y-=0.045
+        ax.text(0.08, y, f"Inflación: {f['inflacion']}", color='#CCCCCC', fontsize=9.5, transform=ax.transAxes, va='top'); y-=0.045
+        ax.text(0.08, y, f"Tipos: {f['tipos']}", color='#CCCCCC', fontsize=9.5, transform=ax.transAxes, va='top'); y-=0.07
+        ax.plot([0.06,0.94],[y+0.02,y+0.02], color='#333333', linewidth=0.7, transform=ax.transAxes)
+        y -= 0.035
+        ax.text(0.08, y, "Suelen ir mejor:", color=f["color"], fontsize=10.5, fontweight='bold',
+                transform=ax.transAxes, va='top'); y-=0.075
+        for s in f["sectores"]:
+            info = res["sectores"].get(s)
+            estado = info["estado"] if info else "N/D"
+            col = ESTADO_COLOR.get(estado, "#666666")
+            ax.plot(0.10, y-0.012, 'o', color=col, markersize=7, transform=ax.transAxes, clip_on=False)
+            ax.text(0.16, y, s, color='white', fontsize=10, fontweight='bold', transform=ax.transAxes, va='top')
+            y -= 0.038
+            ax.text(0.16, y, estado.lower(), color=col, fontsize=8.5, transform=ax.transAxes, va='top')
+            y -= 0.065
+        ax.text(0.5, 0.085, "Encaje hoy", color='#999999', fontsize=9, ha='center', transform=ax.transAxes)
+        ax.text(0.5, 0.02, f"{f['encaje']:+.1f}", color=f["color"], fontsize=19, fontweight='bold',
+                ha='center', transform=ax.transAxes)
+
+    mejor = max(res["fases"], key=lambda f: f["encaje"])
+    resto = sorted(res["fases"], key=lambda f: -f["encaje"])
+    if len(resto) > 1 and (resto[0]["encaje"] - resto[1]["encaje"]) < 0.4:
+        linea = f"Lo que lidera ahora no encaja claramente con una sola fase: mezcla de {resto[0]['nombre'].split('. ')[1]} y {resto[1]['nombre'].split('. ')[1]}."
+    else:
+        linea = f"Lo que lidera ahora encaja más con {mejor['nombre'].split('. ')[1]}."
+    fig.text(0.5, 0.775, linea, ha='center', color='white', fontsize=11.5, fontweight='bold')
+
+    fig.text(0.5, 0.030, "Color del punto = cuadrante actual en el mapa de rotación:", ha='center', color='#999999', fontsize=9.5)
+    leyx = 0.30
+    for estado, col in ESTADO_COLOR.items():
+        fig.text(leyx, 0.014, f"● {estado}", color=col, fontsize=9.5, fontweight='bold')
+        leyx += 0.115
+    fig.text(0.5, -0.002, "Encaje: media de Liderando +2, Mejorando +1, Perdiendo fuerza 0, Rezagado −1. "
+             "Patrón histórico, no una regla ni una recomendación.", ha='center', color='#666666', fontsize=8)
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+def chart_rrg(res):
+    fig = plt.figure(figsize=(13, 12))
+    fig.patch.set_facecolor('#0d1117')
+    ax = fig.add_axes([0.09, 0.08, 0.87, 0.80])
+    ax.set_facecolor('#0d1117')
+
+    todos_x = [v for s in res["sectores"].values() for v in s["cola_x"]]
+    todos_y = [v for s in res["sectores"].values() for v in s["cola_y"]]
+    xlo, xhi = min(todos_x+[99.5]), max(todos_x+[100.5])
+    ylo, yhi = min(todos_y+[99.5]), max(todos_y+[100.5])
+    padx, pady = (xhi-xlo)*0.08, (yhi-ylo)*0.08
+    xlo-=padx; xhi+=padx; ylo-=pady; yhi+=pady
+
+    ax.axvspan(100, xhi, 100, 1, color='#00CC44', alpha=0.06)  # placeholder, se ajusta abajo con fill
+    ax.fill_between([100,xhi],[100,100],[yhi,yhi], color='#00CC44', alpha=0.07, zorder=0)
+    ax.fill_between([xlo,100],[100,100],[yhi,yhi], color='#3388FF', alpha=0.07, zorder=0)
+    ax.fill_between([xlo,100],[ylo,ylo],[100,100], color='#FF3333', alpha=0.07, zorder=0)
+    ax.fill_between([100,xhi],[ylo,ylo],[100,100], color='#FFCC00', alpha=0.07, zorder=0)
+    ax.axhline(100, color='#444444', linewidth=1, zorder=1)
+    ax.axvline(100, color='#444444', linewidth=1, zorder=1)
+
+    ax.text(xlo+padx*0.3, yhi-pady*0.3, "MEJORANDO", color='#3388FF', fontsize=13, fontweight='bold', va='top')
+    ax.text(xhi-padx*0.3, yhi-pady*0.3, "LIDERANDO", color='#00CC44', fontsize=13, fontweight='bold', va='top', ha='right')
+    ax.text(xlo+padx*0.3, ylo+pady*0.3, "REZAGADO", color='#FF3333', fontsize=13, fontweight='bold', va='bottom')
+    ax.text(xhi-padx*0.3, ylo+pady*0.3, "PERDIENDO FUERZA", color='#FFCC00', fontsize=13, fontweight='bold', va='bottom', ha='right')
+
+    for nombre, s in res["sectores"].items():
+        col = ESTADO_COLOR[s["estado"]]
+        ax.plot(s["cola_x"], s["cola_y"], color=col, linewidth=1.1, alpha=0.6, zorder=3)
+        ax.plot(s["cola_x"][:-1], s["cola_y"][:-1], 'o', color=col, markersize=4, alpha=0.6, zorder=3)
+        ax.plot(s["x"], s["y"], 'o', color=col, markersize=13, markeredgecolor='white',
+                markeredgewidth=1.3, zorder=5)
+        ax.annotate(nombre, xy=(s["x"], s["y"]), xytext=(6,6), textcoords='offset points',
+                    fontsize=10, color='white', fontweight='bold', zorder=6,
+                    bbox=dict(boxstyle='round,pad=0.25', facecolor='#131722', edgecolor=col, alpha=0.9))
+
+    ax.set_xlim(xlo, xhi); ax.set_ylim(ylo, yhi)
+    ax.set_xlabel("Fuerza relativa vs S&P 500  →  más fuerte que el índice", color='#AAAAAA', fontsize=10.5)
+    ax.set_ylabel("Momentum de esa fuerza  →  acelerando", color='#AAAAAA', fontsize=10.5)
+    ax.tick_params(colors='#777777', labelsize=9)
+    for sp in ax.spines.values(): sp.set_color('#333333')
+    ax.grid(color='#1a1e2a', linestyle='--', linewidth=0.5, zorder=0)
+
+    fig.text(0.5, 0.965, f"{res['hora']} (Madrid)  ·  datos semanales  ·  cola = últimas {ROT_COLA} semanas (el punto grande es ahora)",
+             ha='center', color='#FFB84D', fontsize=10.5)
+    fig.text(0.5, 0.940, "Giro habitual: Mejorando → Liderando → Perdiendo fuerza → Rezagado. Aproximación propia del RRG: describe, no predice.",
+             ha='center', color='#999999', fontsize=9.5)
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120, facecolor='#0d1117', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+def texto_rotacion(res):
+    mejor = max(res["fases"], key=lambda f: f["encaje"])
+    L = ["📖 QUÉ ES ESTO\n",
+         "Arriba, las 4 fases clásicas del ciclo económico y qué sectores suelen ir mejor en cada "
+         "una, según el patrón histórico de manual. Se compara con cómo está HOY cada sector en el "
+         "mapa de rotación (abajo): Liderando, Mejorando, Perdiendo fuerza o Rezagado.\n",
+         "El mapa de rotación sitúa cada sector según su fuerza frente al S&P 500 (eje horizontal) y "
+         "si esa fuerza acelera o frena semana a semana (eje vertical). El giro habitual es en el "
+         "sentido de las agujas del reloj: Mejorando → Liderando → Perdiendo fuerza → Rezagado.\n",
+         f"📊 Ahora mismo, lo que lidera encaja más con la fase de {mejor['nombre'].split('. ')[1].title()} "
+         f"(encaje {mejor['encaje']:+.1f}).\n"]
+    liderando = [n for n,s in res["sectores"].items() if s["estado"]=="Liderando"]
+    rezagado = [n for n,s in res["sectores"].items() if s["estado"]=="Rezagado"]
+    if liderando: L.append(f"🟢 Liderando ahora: {', '.join(liderando)}")
+    if rezagado: L.append(f"🔴 Rezagado ahora: {', '.join(rezagado)}")
+    L.append("\n⚠️ Cómo leerlo con cabeza:\n"
+             "• Es una aproximación propia, no un RRG oficial ni datos de una terminal profesional: "
+             "sirve para ver la forma general, no para el dato exacto.\n"
+             "• Describe dónde está cada sector ahora, no predice hacia dónde va a ir.\n"
+             "• Los sectores que 'suelen' ir mejor en cada fase son patrón histórico de manual, no una "
+             "garantía: cada ciclo es distinto.")
+    return "\n".join(L)
+
+@bot.message_handler(commands=["rotacion"])
+@con_dyor
+def cmd_rotacion(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
+        return
+    m = bot.send_message(msg.chat.id, "Calculando ciclo económico y rotación sectorial... (20-30s)")
+    try:
+        res = calcular_rotacion()
+    except Exception as e:
+        log.warning(f"calcular_rotacion: {e}")
+        res = None
+    if not res:
+        safe_send(msg.chat.id, "No he podido obtener suficientes datos de los sectores ahora mismo. Reintenta en un momento.",
+                  message_id=m.message_id)
+        return
+    try:
+        bot.delete_message(msg.chat.id, m.message_id)
+    except Exception:
+        pass
+    try:
+        img1 = chart_ciclo_fases(res)
+        bot.send_photo(msg.chat.id, img1, caption="CICLO ECONÓMICO Y ROTACIÓN SECTORIAL")
+    except Exception as e:
+        log.warning(f"chart_ciclo_fases: {e}")
+    try:
+        img2 = chart_rrg(res)
+        bot.send_photo(msg.chat.id, img2)
+    except Exception as e:
+        log.warning(f"chart_rrg: {e}")
+    safe_send(msg.chat.id, texto_rotacion(res))
+
+    resumen = ", ".join(f"{n}:{s['estado']}" for n,s in res["sectores"].items())
+    mejor = max(res["fases"], key=lambda f: f["encaje"])
+    prompt = (f"Rotación sectorial (aproximación propia, no oficial). Estado actual de cada sector "
+              f"frente al S&P 500: {resumen}.\nLa fase del ciclo económico con mejor encaje ahora es "
+              f"{mejor['nombre']} (encaje {mejor['encaje']:+.1f}).\n\n"
+              "Datos ya interpretados, úsalos tal cual. No inventes cifras ni noticias. Reglas: NO des "
+              "recomendaciones de operativa (comprar, vender, entradas, stops, objetivos).\n\n"
+              "1. ¿Qué historia cuenta este mapa sobre el momento actual del mercado?\n"
+              "2. ¿Qué sectores conviene vigilar por si empiezan a girar?\n"
+              "3. Limitaciones de esta aproximación frente a un RRG profesional real")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
 # ═══ /RSIMINIMOS — Activos tocando mínimos de RSI semanal (cripto + S&P 500) ═══
 # "Tocando mínimos" = el RSI semanal ACTUAL está muy cerca del RSI más bajo que ese mismo activo
 # ha tenido en los últimos RSIMIN_VENTANA_SEM (2 años). No es un umbral fijo tipo "RSI < 30": un
@@ -4509,7 +4842,10 @@ Ejemplo: /fundamental NVDA
 Gráfico del ciclo de 4 años de BTC (halvings históricos + proyección).
 
 ━━━ /ciclo ━━━
-BTC situado sobre la curva Pico→Contracción→Suelo→Expansión→Recuperación→Prosperidad. Usa el máximo y mínimo REALES de este ciclo, no supuestos.""",
+BTC situado sobre la curva Pico→Contracción→Suelo→Expansión→Recuperación→Prosperidad. Usa el máximo y mínimo REALES de este ciclo, no supuestos.
+
+━━━ /rotacion ━━━
+Ciclo económico (Recuperación, Expansión, Desaceleración, Recesión) con qué sectores suelen ir mejor en cada fase según el patrón histórico, y un mapa de rotación (aproximación propia de un RRG) con dónde está HOY cada sector: Liderando, Mejorando, Perdiendo fuerza o Rezagado, con su cola de las últimas 5 semanas. Describe, no predice.""",
 
 """📖 GUÍA DE COMANDOS (2/3) — Sentimiento y datos en vivo
 
@@ -4599,6 +4935,7 @@ MENU_COMANDOS = [
     ("fundamental", "Análisis fundamental 0-100 de una acción"),
     ("halvingbtc", "Ciclo de 4 años de Bitcoin"),
     ("ciclo", "Fase actual de BTC en el ciclo de mercado"),
+    ("rotacion", "Ciclo económico y rotación sectorial (mapa RRG)"),
     ("dominancia", "Zonas de compra/venta de BTC (Fear & Greed)"),
     ("ballenas", "Muros de órdenes grandes en Binance"),
     ("cartera", "Carteras 13F de grandes inversores"),
