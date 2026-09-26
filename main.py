@@ -4394,7 +4394,7 @@ def _debe_emitir_oportunidades(ahora):
 # entre ejecuciones), y el tope de turnos de abajo existe para que no se
 # dispare en tiempo ni en coste de la API.
 
-AGENTE_MAX_TURNOS = 6
+AGENTE_MAX_TURNOS = 10
 
 def _tool_escanear_rsi_minimos():
     res = calcular_rsiminimos()
@@ -4504,7 +4504,7 @@ tiene una lista pública consultable.
 Tienes herramientas para investigar. Normalmente conviene empezar por escanear_rsi_minimos para tener
 candidatos de partida, y decidir tú, según lo que veas, a cuáles merece la pena investigar más a fondo y
 con qué herramientas (insiders, fundamental, funding, noticias). No hace falta comprobar todos los
-candidatos: elige los que tengan más sentido investigar. Cuando ya tengas suficiente información, escribe
+candidatos: elige los que tengan más sentido investigar. Tienes un número limitado de pasos, así que repártelos: no gastes todos investigando solo acciones o solo cripto, mira de los dos tipos antes de concluir — sobre todo cuando la bolsa de acciones esté cerrada (fin de semana o fuera de horario), momento en que la cripto es la única que se sigue moviendo de verdad. Cuando ya tengas suficiente información, escribe
 tu conclusión final en texto plano, sin más llamadas a herramientas: qué activos destacan, qué señales
 coinciden en cada uno, y qué habría que vigilar o comprobar todavía. Responde siempre en español, sin
 negritas ni almohadillas de markdown.
@@ -4514,8 +4514,14 @@ stops, objetivos, ni tamaño de posición. Describe señales y coincidencias; la
 esto, no tuya."""
 
 def ejecutar_agente_oportunidades():
+    ahora = datetime.now(MADRID)
+    dias = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+    bolsa_abierta = _bolsa_eeuu_abierta()
+    contexto = (f"Hoy es {dias[ahora.weekday()]} {ahora.strftime('%d/%m')}. "
+                f"La bolsa de EEUU está {'ABIERTA' if bolsa_abierta else 'CERRADA'} ahora mismo"
+                + ("." if bolsa_abierta else " (fin de semana o fuera de horario) — reparte tus pasos dando más peso a la cripto, que sigue cotizando."))
     mensajes = [{"role": "system", "content": AGENTE_SYSTEM},
-                {"role": "user", "content": "Investiga y dime qué activos destacan hoy, y por qué."}]
+                {"role": "user", "content": f"{contexto}\n\nInvestiga y dime qué activos destacan hoy, y por qué."}]
     pasos = []
     for _turno in range(AGENTE_MAX_TURNOS):
         r = None
