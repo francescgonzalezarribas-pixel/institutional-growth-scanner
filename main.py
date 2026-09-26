@@ -4404,7 +4404,7 @@ def _tool_escanear_rsi_minimos():
         {"nombre": f["nombre"], "tipo": f["tipo"], "rsi_actual": round(f["actual"], 1),
          "distancia_a_su_minimo_2a_en_puntos_rsi": round(f["dist"], 1),
          "semanas_desde_el_minimo": f["semanas_desde_min"]}
-        for f in sorted(res["filas"], key=lambda x: x["dist"])[:40]
+        for f in sorted(res["filas"], key=lambda x: x["dist"])[:18]
     ]}
 
 def _tool_comprobar_insiders(ticker):
@@ -4518,15 +4518,23 @@ def ejecutar_agente_oportunidades():
                 {"role": "user", "content": "Investiga y dime qué activos destacan hoy, y por qué."}]
     pasos = []
     for _turno in range(AGENTE_MAX_TURNOS):
-        try:
-            r = ai.chat.completions.create(
-                model="openai/gpt-oss-120b", messages=mensajes,
-                tools=HERRAMIENTAS_AGENTE, tool_choice="auto",
-                max_tokens=1500, temperature=0.4)
-        except Exception as e:
-            log.error(f"ejecutar_agente_oportunidades (turno {_turno}): {e}")
+        r = None
+        ultimo_error = None
+        for _intento in range(2):  # un reintento extra por si es un fallo puntual de la API (rate limit, timeout)
+            try:
+                r = ai.chat.completions.create(
+                    model="openai/gpt-oss-120b", messages=mensajes,
+                    tools=HERRAMIENTAS_AGENTE, tool_choice="auto",
+                    max_tokens=1500, temperature=0.4)
+                break
+            except Exception as e:
+                ultimo_error = e
+                log.warning(f"ejecutar_agente_oportunidades (turno {_turno}, intento {_intento}): {e}")
+                time.sleep(2)
+        if r is None:
+            log.error(f"ejecutar_agente_oportunidades (turno {_turno}): fallo tras reintento — {ultimo_error}")
             return (None, pasos) if not pasos else (
-                "El agente ha tenido un fallo técnico a mitad de la investigación.", pasos)
+                f"El agente ha tenido un fallo técnico a mitad de la investigación ({ultimo_error}).", pasos)
         msg = r.choices[0].message
         tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
