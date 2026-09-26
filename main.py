@@ -1210,6 +1210,8 @@ def cmd_start(msg):
         "/ticker — Resumen de mercados al momento (bajo demanda)\n"
         "/ciclo — Fase actual de BTC en el ciclo de mercado\n"
         "/rotacion — Ciclo económico y rotación sectorial (mapa RRG)\n"
+        "/oportunidades — Confluencias de señales en S&P 500 + criptos principales\n"
+        "/agente — IA que investiga sola qué mirar (RSI, insiders, funding, noticias)\n"
         "/insiders TICKER — Compras/ventas de directivos (SEC Form 4)\n"
         "/compresion — Compresión de precio de BTC (volatilidad 30 días)\n"
         "/liquidaciones [BTC|ETH|SOL|HYPE] — Mapa de liquidaciones estimado (sin moneda, BTC)\n"
@@ -3562,6 +3564,7 @@ SP500_TICKERS = [
     'WAB', 'WMT', 'DIS', 'WBD', 'WM', 'WAT', 'WEC', 'WFC', 'WELL', 'WST', 'WDC', 'WY',
     'WSM', 'WMB', 'WTW', 'WDAY', 'WYNN', 'XEL', 'XYL', 'YUM', 'ZBRA', 'ZBH', 'ZTS',
 ]
+import urllib.parse
 # ═══ /ROTACION — Ciclo económico y rotación sectorial (estilo RRG) ═════
 # Reconstruido a petición del usuario (el original se perdió). Dos imágenes:
 #
@@ -4210,8 +4213,378 @@ def cmd_rsiminimos(msg):
               "3. ¿Qué otras señales conviene mirar junto a esto antes de sacar conclusiones?")
     safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
 
+# ═══ /OPORTUNIDADES — Cruce de señales para detectar confluencias ═════
+# Esto NO "descubre alfa": cruza varias señales que el bot ya calcula por
+# separado (RSI semanal en mínimos de 2 años, compras agrupadas de insiders,
+# funding extremo en cripto) y avisa cuando coinciden VARIAS a la vez en el
+# mismo activo — eso es más señal que cualquiera de ellas sola.
+#
+# Universo: el S&P 500 completo + las principales criptos de Binance (las
+# mismas listas que ya usa /rsiminimos). No existe una API pública gratuita
+# con el catálogo exacto de Trade Republic, así que esto es una aproximación
+# — cubre la gran mayoría de lo que suele haber ahí, pero no es idéntico.
+
+OPORT_MAX_RSI_DIST = 6          # solo activos con el RSI a menos de esto de su propio mínimo de 2 años
+OPORT_MAX_INSIDERS_CHECK = 8    # cuántas acciones candidatas se comprueban en la SEC (una por una, es lento)
+OPORT_CACHE_H = 20              # no repetir el escaneo completo si ya se hizo hoy
+OPORT_CACHE_FILE = os.environ.get("OPORT_CACHE_FILE", _p("oportunidades_cache.json"))
+_OPORT_MEM = {"ts": 0, "res": None}
+
+def _oport_cache_leer():
+    ahora = time.time()
+    if _OPORT_MEM["res"] is not None and ahora - _OPORT_MEM["ts"] < OPORT_CACHE_H*3600:
+        return _OPORT_MEM["res"]
+    try:
+        with open(OPORT_CACHE_FILE, "r") as f:
+            disco = json.load(f)
+        if ahora - disco.get("ts", 0) < OPORT_CACHE_H*3600 and disco.get("res") is not None:
+            _OPORT_MEM.update(ts=disco["ts"], res=disco["res"])
+            return disco["res"]
+    except Exception:
+        pass
+    return None
+
+def _oport_cache_guardar(res):
+    ahora = time.time()
+    _OPORT_MEM.update(ts=ahora, res=res)
+    try:
+        tmp = OPORT_CACHE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"ts": ahora, "res": res}, f)
+        os.replace(tmp, OPORT_CACHE_FILE)
+    except Exception as e:
+        log.warning(f"oportunidades cache disco: {e}")
+
+def calcular_oportunidades(forzar=False):
+    if not forzar:
+        cacheado = _oport_cache_leer()
+        if cacheado is not None:
+            return cacheado
+
+    base = calcular_rsiminimos()
+    if not base:
+        return None
+    candidatos = sorted([f for f in base["filas"] if f["dist"] <= OPORT_MAX_RSI_DIST], key=lambda f: f["dist"])
+
+    fg = get_fear_greed()
+    resultados = []
+    comprobados_insiders = 0
+    for f in candidatos:
+        señales = [f"RSI semanal a {f['dist']:.0f} puntos de su propio mínimo de 2 años"]
+        fuerte = f["dist"] <= 2
+
+        if f["tipo"] == "acción" and comprobados_insiders < OPORT_MAX_INSIDERS_CHECK:
+            comprobados_insiders += 1
+            try:
+                ins = calcular_insiders(f["nombre"])
+            except Exception as e:
+                log.warning(f"oportunidades insiders {f['nombre']}: {e}")
+                ins = None
+            if ins and ins.get("insiders_compradores", 0) >= 2:
+                señales.append(f"{ins['insiders_compradores']} insiders distintos comprando en mercado abierto")
+                fuerte = True
+        elif f["tipo"] == "cripto":
+            sym = BINANCE_MAP.get(f"{f['nombre']}-USD")
+            if sym:
+                try:
+                    fr = get_funding(sym)
+                except Exception:
+                    fr = None
+                if fr is not None and fr < -0.02:
+                    señales.append(f"funding en {fr:+.4f}% — los cortos están pagando a los largos")
+                    fuerte = True
+            if fg and fg["valor"] < 25:
+                señales.append(f"Fear & Greed en {fg['valor']} (miedo)")
+
+        if fuerte and len(señales) >= 2:
+            resultados.append({**f, "señales": señales})
+
+    res = {"candidatos_totales": len(candidatos), "confluencias": resultados,
+           "hora": datetime.now(MADRID).strftime("%d/%m %H:%M")}
+    _oport_cache_guardar(res)
+    return res
+
+def texto_oportunidades(res):
+    L = ["📖 QUÉ ES ESTO\n",
+         "Cruza señales que el bot ya calcula por separado (RSI semanal en mínimos de 2 años, compras "
+         "agrupadas de insiders, funding extremo en cripto) y avisa cuando coinciden varias en el mismo "
+         "activo a la vez. Universo: S&P 500 completo + las principales criptos de Binance — no es el "
+         "catálogo exacto de Trade Republic (no existe una API pública de eso), pero cubre la gran "
+         "mayoría de lo que suele haber ahí.\n"]
+    if not res["confluencias"]:
+        L.append(f"Hoy no hay ninguna confluencia clara entre los {res['candidatos_totales']} activos que "
+                 "estaban cerca de su mínimo de RSI semanal. No significa que no haya nada interesante, "
+                 "solo que no coincide más de una señal a la vez ahora mismo.")
+        return "\n".join(L)
+    L.append(f"📊 {len(res['confluencias'])} confluencias encontradas (de {res['candidatos_totales']} "
+             "activos cerca de su mínimo de RSI):\n")
+    for c in res["confluencias"]:
+        L.append(f"• {c['nombre']} ({c['tipo']}): " + "; ".join(c["señales"]))
+    L.append("\n⚠️ Esto no es una señal de compra. Son coincidencias detectadas automáticamente entre "
+             "indicadores que ya existen por separado en el bot, y muchas veces no significan nada.")
+    return "\n".join(L)
+
+@bot.message_handler(commands=["oportunidades"])
+@con_dyor
+def cmd_oportunidades(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
+        return
+    m = bot.send_message(msg.chat.id,
+        "Buscando confluencias de señales en el S&P 500 y las principales criptos... "
+        "(puede tardar varios minutos la primera vez del día; si ya se hizo hoy, es instantáneo)")
+    try:
+        res = calcular_oportunidades()
+    except Exception as e:
+        log.warning(f"calcular_oportunidades: {e}")
+        res = None
+    if not res:
+        safe_send(msg.chat.id, "No he podido completar el escaneo ahora mismo. Reintenta en un rato.",
+                  message_id=m.message_id)
+        return
+    safe_send(msg.chat.id, texto_oportunidades(res), message_id=m.message_id)
+    if not res["confluencias"]:
+        return  # nada que analizar con IA
+    resumen = "\n".join(f"- {c['nombre']} ({c['tipo']}): " + "; ".join(c["señales"]) for c in res["confluencias"])
+    prompt = (f"Activos donde coinciden varias señales técnicas/fundamentales a la vez ahora mismo "
+              f"(detectado automáticamente, no es una recomendación):\n{resumen}\n\n"
+              "No inventes datos que no estén aquí. Reglas: NO des recomendaciones de operativa (comprar, "
+              "vender, entradas, stops, objetivos, tamaño de posición).\n\n"
+              "1. De estas confluencias, ¿cuáles te parecen más dignas de investigar más a fondo y por qué?\n"
+              "2. Qué explicación alternativa, no alcista, podría tener cada una\n"
+              "3. Qué más habría que comprobar antes de sacar ninguna conclusión")
+    safe_send(msg.chat.id, f"ANÁLISIS IA\n\n{ask_ai(prompt)}")
+
+OPORT_HORA_DIARIA = 9  # hora en Madrid a la que se revisa cada día si hay confluencias
+_ultimo_oportunidades_key = None
+
+def ejecutar_oportunidades_diarias():
+    destinatarios = _lista_suscriptores_activos()
+    if not destinatarios:
+        log.info("ejecutar_oportunidades_diarias: sin suscriptores activos, nada que enviar")
+        return
+    try:
+        res = calcular_oportunidades()
+        if not res or not res["confluencias"]:
+            log.info("oportunidades diarias: nada que avisar hoy")
+            return
+        texto = "🔎 CONFLUENCIA DE SEÑALES DETECTADA\n\n" + texto_oportunidades(res)
+        for cid in destinatarios:
+            try:
+                safe_send(cid, texto)
+            except Exception as e:
+                log.warning(f"oportunidades diaria -> {cid}: {e}")
+            time.sleep(0.05)
+    except Exception as e:
+        log.error(f"ejecutar_oportunidades_diarias: {e}")
+
+def _debe_emitir_oportunidades(ahora):
+    return ahora.hour == OPORT_HORA_DIARIA and ahora.minute < 15
+
+# ═══ /AGENTE — Investigación autónoma de verdad (function calling) ═════
+# A diferencia de /oportunidades (una receta fija que escribí yo), aquí es la
+# propia IA la que decide qué herramienta usar, sobre qué activo, y cuándo ya
+# tiene suficiente para concluir. Yo solo le doy las herramientas; el camino
+# lo elige ella, turno a turno, viendo lo que va encontrando.
+#
+# Universo de referencia: S&P 500 + principales criptos de Binance, como
+# aproximación a Trade Republic (sigue sin existir un catálogo público exacto).
+#
+# Limitaciones honestas: no aprende de un día para otro (no guarda memoria
+# entre ejecuciones), y el tope de turnos de abajo existe para que no se
+# dispare en tiempo ni en coste de la API.
+
+AGENTE_MAX_TURNOS = 6
+
+def _tool_escanear_rsi_minimos():
+    res = calcular_rsiminimos()
+    if not res:
+        return {"error": "no se pudo escanear"}
+    return {"candidatos": [
+        {"nombre": f["nombre"], "tipo": f["tipo"], "rsi_actual": round(f["actual"], 1),
+         "distancia_a_su_minimo_2a_en_puntos_rsi": round(f["dist"], 1),
+         "semanas_desde_el_minimo": f["semanas_desde_min"]}
+        for f in sorted(res["filas"], key=lambda x: x["dist"])[:40]
+    ]}
+
+def _tool_comprobar_insiders(ticker):
+    try:
+        ins = calcular_insiders((ticker or "").upper().strip())
+    except Exception as e:
+        return {"error": str(e)}
+    if not ins:
+        return {"error": "ticker no encontrado en la SEC o sin operaciones de insiders registradas"}
+    return {"compras_recientes": len(ins.get("compras", [])), "ventas_recientes": len(ins.get("ventas", [])),
+            "insiders_distintos_comprando": ins.get("insiders_compradores", 0)}
+
+def _tool_comprobar_fundamental(ticker):
+    try:
+        r = calcular_fundamental((ticker or "").upper().strip())
+    except Exception as e:
+        return {"error": str(e)}
+    if not r:
+        return {"error": "sin datos fundamentales para ese ticker"}
+    return {"score_0_100": r["score"], "zona": r["zona"],
+            "puntos_por_categoria": {k: v["pts"] for k, v in r["cats"].items()}}
+
+def _tool_comprobar_funding_cripto(moneda):
+    m = (moneda or "").upper().replace("-USD", "").replace("USDT", "").strip()
+    sym = BINANCE_MAP.get(f"{m}-USD")
+    if not sym:
+        return {"error": f"'{moneda}' no está en la lista de criptos principales que sigue el bot"}
+    try:
+        fr = get_funding(sym)
+    except Exception as e:
+        return {"error": str(e)}
+    if fr is None:
+        return {"error": "sin dato de funding disponible ahora mismo"}
+    return {"funding_pct_actual": fr,
+            "lectura": "cortos pagando a largos (posible presión bajista agotada)" if fr < -0.01 else
+                       "largos pagando a cortos (apalancamiento largo elevado)" if fr > 0.05 else "normal"}
+
+def _tool_comprobar_fear_greed():
+    try:
+        fg = get_fear_greed()
+    except Exception as e:
+        return {"error": str(e)}
+    return fg or {"error": "sin dato disponible"}
+
+def _tool_buscar_noticias(consulta):
+    try:
+        q = urllib.parse.quote((consulta or "").strip())
+        if not q:
+            return {"error": "consulta vacía"}
+        url = f"https://news.google.com/rss/search?q={q}&hl=es&gl=ES&ceid=ES:es"
+        items = fetch_rss(url, max_items=6)
+        return {"titulares": [it["title"] for it in items]} if items else {"titulares": [], "aviso": "sin resultados"}
+    except Exception as e:
+        return {"error": str(e)}
+
+HERRAMIENTAS_AGENTE = [
+    {"type": "function", "function": {
+        "name": "escanear_rsi_minimos",
+        "description": "Punto de partida habitual: devuelve acciones del S&P 500 y criptos principales cuyo RSI semanal está cerca de su propio mínimo de los últimos 2 años.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "comprobar_insiders",
+        "description": "Compras/ventas de directivos de una acción de EEUU en mercado abierto (SEC Form 4). Varios insiders distintos comprando a la vez es una señal fuerte.",
+        "parameters": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}}},
+    {"type": "function", "function": {
+        "name": "comprobar_fundamental",
+        "description": "Análisis fundamental 0-100 de una acción: valoración, salud financiera, rentabilidad, crecimiento.",
+        "parameters": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}}},
+    {"type": "function", "function": {
+        "name": "comprobar_funding_cripto",
+        "description": "Funding rate actual de una criptomoneda en futuros perpetuos de Binance.",
+        "parameters": {"type": "object", "properties": {"moneda": {"type": "string"}}, "required": ["moneda"]}}},
+    {"type": "function", "function": {
+        "name": "comprobar_fear_greed",
+        "description": "Índice de miedo/codicia (0-100) del mercado cripto en general, no de una moneda concreta.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "buscar_noticias",
+        "description": "Busca titulares recientes en Google Noticias sobre una empresa, ticker o moneda.",
+        "parameters": {"type": "object", "properties": {"consulta": {"type": "string"}}, "required": ["consulta"]}}},
+]
+
+FUNCIONES_AGENTE = {
+    "escanear_rsi_minimos": lambda **kw: _tool_escanear_rsi_minimos(),
+    "comprobar_insiders": lambda **kw: _tool_comprobar_insiders(kw.get("ticker", "")),
+    "comprobar_fundamental": lambda **kw: _tool_comprobar_fundamental(kw.get("ticker", "")),
+    "comprobar_funding_cripto": lambda **kw: _tool_comprobar_funding_cripto(kw.get("moneda", "")),
+    "comprobar_fear_greed": lambda **kw: _tool_comprobar_fear_greed(),
+    "buscar_noticias": lambda **kw: _tool_buscar_noticias(kw.get("consulta", "")),
+}
+
+AGENTE_SYSTEM = """Eres un analista que investiga qué acciones (S&P 500) y criptomonedas (las principales de
+Binance) tienen AHORA MISMO varias señales técnicas, fundamentales o informativas coincidiendo a la vez —
+eso es más fuerte que cualquier señal sola. Es una aproximación al catálogo de Trade Republic, que no
+tiene una lista pública consultable.
+
+Tienes herramientas para investigar. Normalmente conviene empezar por escanear_rsi_minimos para tener
+candidatos de partida, y decidir tú, según lo que veas, a cuáles merece la pena investigar más a fondo y
+con qué herramientas (insiders, fundamental, funding, noticias). No hace falta comprobar todos los
+candidatos: elige los que tengan más sentido investigar. Cuando ya tengas suficiente información, escribe
+tu conclusión final en texto plano, sin más llamadas a herramientas: qué activos destacan, qué señales
+coinciden en cada uno, y qué habría que vigilar o comprobar todavía. Responde siempre en español, sin
+negritas ni almohadillas de markdown.
+
+Regla estricta e innegociable: NUNCA recomiendes comprar ni vender, ni des precios de entrada o salida,
+stops, objetivos, ni tamaño de posición. Describe señales y coincidencias; la decisión es de quien lea
+esto, no tuya."""
+
+def ejecutar_agente_oportunidades():
+    mensajes = [{"role": "system", "content": AGENTE_SYSTEM},
+                {"role": "user", "content": "Investiga y dime qué activos destacan hoy, y por qué."}]
+    pasos = []
+    for _turno in range(AGENTE_MAX_TURNOS):
+        try:
+            r = ai.chat.completions.create(
+                model="openai/gpt-oss-120b", messages=mensajes,
+                tools=HERRAMIENTAS_AGENTE, tool_choice="auto",
+                max_tokens=1500, temperature=0.4)
+        except Exception as e:
+            log.error(f"ejecutar_agente_oportunidades (turno {_turno}): {e}")
+            return (None, pasos) if not pasos else (
+                "El agente ha tenido un fallo técnico a mitad de la investigación.", pasos)
+        msg = r.choices[0].message
+        tool_calls = getattr(msg, "tool_calls", None)
+        if not tool_calls:
+            texto = (msg.content or "").strip()
+            texto = texto.replace("**", "").replace("__", "")
+            texto = re.sub(r"^\s*#{1,6}\s*", "", texto, flags=re.M)
+            return (texto or "El agente no ha dado una conclusión clara."), pasos
+        mensajes.append({"role": "assistant", "content": msg.content or "", "tool_calls": [
+            {"id": tc.id, "type": "function",
+             "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+            for tc in tool_calls]})
+        for tc in tool_calls:
+            nombre = tc.function.name
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except Exception:
+                args = {}
+            fn = FUNCIONES_AGENTE.get(nombre)
+            try:
+                resultado = fn(**args) if fn else {"error": f"herramienta desconocida: {nombre}"}
+            except Exception as e:
+                resultado = {"error": str(e)}
+            pasos.append({"herramienta": nombre, "args": args})
+            mensajes.append({"role": "tool", "tool_call_id": tc.id,
+                             "content": json.dumps(resultado, ensure_ascii=False)[:4000]})
+    return "El agente ha hecho varias comprobaciones pero no llegó a una conclusión dentro del límite de pasos.", pasos
+
+@bot.message_handler(commands=["agente"])
+@con_dyor
+def cmd_agente(msg):
+    if not is_premium(msg.from_user.id):
+        safe_send(msg.chat.id, "Este bot es de uso personal y no está disponible para otros usuarios.")
+        return
+    m = bot.send_message(msg.chat.id,
+        "🤖 El agente está investigando por su cuenta (decide él qué mirar)... puede tardar 1-3 minutos.")
+    try:
+        texto, pasos = ejecutar_agente_oportunidades()
+    except Exception as e:
+        log.error(f"cmd_agente: {e}")
+        texto, pasos = None, []
+    if not texto:
+        safe_send(msg.chat.id, "El agente no ha podido completar la investigación ahora mismo. Reintenta en un rato.",
+                  message_id=m.message_id)
+        return
+    if pasos:
+        resumen_pasos = "\n".join(
+            "• " + p["herramienta"] + ("(" + ", ".join(f"{k}={v}" for k, v in p["args"].items()) + ")" if p["args"] else "()")
+            for p in pasos)
+        safe_send(msg.chat.id, "🔍 Pasos que ha seguido el agente:\n" + resumen_pasos, message_id=m.message_id)
+    else:
+        try:
+            bot.delete_message(msg.chat.id, m.message_id)
+        except Exception:
+            pass
+    safe_send(msg.chat.id, f"🤖 CONCLUSIÓN DEL AGENTE\n\n{texto}")
+
 def _scheduler_loop():
-    global _ultimo_broadcast_key, _ultimo_resumen_diario_key
+    global _ultimo_broadcast_key, _ultimo_resumen_diario_key, _ultimo_oportunidades_key
     log.info("Scheduler de difusión automática arrancado")
     _n_check = 0
     while True:
@@ -4233,6 +4606,12 @@ def _scheduler_loop():
                     _ultimo_resumen_diario_key = clave_dia
                     log.info(f"Ejecutando resumen diario ({clave_dia})")
                     ejecutar_resumen_diario()
+            if _debe_emitir_oportunidades(ahora):
+                clave_op = ahora.strftime("%Y-%m-%d")
+                if clave_op != _ultimo_oportunidades_key:
+                    _ultimo_oportunidades_key = clave_op
+                    log.info(f"Ejecutando revisión diaria de oportunidades ({clave_op})")
+                    ejecutar_oportunidades_diarias()
         except Exception as e:
             log.error(f"_scheduler_loop: {e}")
         time.sleep(60)
@@ -4845,7 +5224,13 @@ Gráfico del ciclo de 4 años de BTC (halvings históricos + proyección).
 BTC situado sobre la curva Pico→Contracción→Suelo→Expansión→Recuperación→Prosperidad. Usa el máximo y mínimo REALES de este ciclo, no supuestos.
 
 ━━━ /rotacion ━━━
-Ciclo económico (Recuperación, Expansión, Desaceleración, Recesión) con qué sectores suelen ir mejor en cada fase según el patrón histórico, y un mapa de rotación (aproximación propia de un RRG) con dónde está HOY cada sector: Liderando, Mejorando, Perdiendo fuerza o Rezagado, con su cola de las últimas 5 semanas. Describe, no predice.""",
+Ciclo económico (Recuperación, Expansión, Desaceleración, Recesión) con qué sectores suelen ir mejor en cada fase según el patrón histórico, y un mapa de rotación (aproximación propia de un RRG) con dónde está HOY cada sector: Liderando, Mejorando, Perdiendo fuerza o Rezagado, con su cola de las últimas 5 semanas. Describe, no predice.
+
+━━━ /oportunidades ━━━
+Cruza varias señales que el bot ya calcula por separado (RSI semanal en mínimos de 2 años, compras agrupadas de insiders, funding extremo en cripto) y avisa cuando coinciden varias a la vez en el mismo activo. Universo: S&P 500 + principales criptos de Binance, como aproximación a lo que suele haber en Trade Republic. Además, cada mañana a las 9h se revisa solo y te avisa por su cuenta ÚNICAMENTE si encuentra alguna confluencia — si no hay nada, no manda nada. No es una señal de compra, son coincidencias entre indicadores.
+
+━━━ /agente ━━━
+A diferencia de /oportunidades (una receta fija), aquí la IA decide POR SÍ SOLA qué mirar y en qué orden: puede escanear RSI, mirar insiders, fundamentales, funding, miedo/codicia, y buscar noticias reales sobre lo que va encontrando, hasta que decide que ya tiene suficiente para concluir. Te enseña los pasos que ha seguido antes de la conclusión. Tarda más (1-3 min) porque va paso a paso. No aprende de un día para otro ni guarda memoria entre ejecuciones.""",
 
 """📖 GUÍA DE COMANDOS (2/3) — Sentimiento y datos en vivo
 
@@ -4936,6 +5321,8 @@ MENU_COMANDOS = [
     ("halvingbtc", "Ciclo de 4 años de Bitcoin"),
     ("ciclo", "Fase actual de BTC en el ciclo de mercado"),
     ("rotacion", "Ciclo económico y rotación sectorial (mapa RRG)"),
+    ("oportunidades", "Confluencias de señales en S&P 500 + criptos principales"),
+    ("agente", "IA que investiga sola qué mirar (RSI, insiders, funding, noticias)"),
     ("dominancia", "Zonas de compra/venta de BTC (Fear & Greed)"),
     ("ballenas", "Muros de órdenes grandes en Binance"),
     ("cartera", "Carteras 13F de grandes inversores"),
